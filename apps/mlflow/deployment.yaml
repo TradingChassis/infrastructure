@@ -23,33 +23,6 @@ spec:
               readOnly: true
 
           env:
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-secret
-                  key: OCI_ACCESS_KEY
-
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-secret
-                  key: OCI_SECRET_KEY
-
-            - name: OCI_NAMESPACE
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-secret
-                  key: OCI_NAMESPACE
-
-            - name: MLFLOW_S3_ENDPOINT_URL
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-secret
-                  key: OCI_S3_ENDPOINT
-
-            - name: AWS_DEFAULT_REGION
-              value: ${OCI_REGION}
-
             - name: MLFLOW_BACKEND_STORE_URI
               valueFrom:
                 secretKeyRef:
@@ -63,7 +36,6 @@ spec:
               pip install psycopg2-binary==2.9.9 && \
               mlflow server \
                 --backend-store-uri="$MLFLOW_BACKEND_STORE_URI" \
-                --default-artifact-root="s3://mlflow-artifacts@${OCI_NAMESPACE}/" \
                 --host=0.0.0.0 \
                 --port=5000
 
