@@ -2,133 +2,118 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Declarative GitOps-based infrastructure stack for quantitative research and backtesting.
+Declarative infrastructure for quantitative research and backtesting on a single OCI VM.
 
-Provisions and manages a single-node Kubernetes cluster on Oracle Cloud Infrastructure (OCI) using MicroK8s and Argo CD. All workloads are managed declaratively via GitOps after a one-time bootstrap.
+This repository bootstraps a single-node MicroK8s cluster and hands over ongoing operations to Argo CD. After the initial setup, workloads are managed from Git manifests in this repository.
 
-Designed for reproducible research infrastructure with explicit storage, secret management, and operational boundaries.
+## What This Project Is
 
-## What is this?
+This repo provides the infrastructure layer for a quant research platform, with a focus on reproducibility and explicit operational boundaries.
 
-This repository defines a fully declarative infrastructure layer for a quantitative trading research platform.
+It combines:
 
-It bootstraps:
+- MicroK8s for Kubernetes on one host
+- Argo CD for GitOps-based application lifecycle management
+- OCI Vault integration for secret delivery
+- A split storage model for system data and research artifacts
+- Predefined workload manifests for core research services
 
-- A single-node MicroK8s Kubernetes cluster
-- GitOps management via Argo CD
-- Integrated experiment tracking, monitoring, orchestration
-- Explicit local storage model
-- OCI-native secret integration
+## What Problem It Solves
 
-After bootstrap, all cluster state is managed through Git via Argo CD.
+Small research environments often accumulate:
 
-No imperative Kubernetes workflows are required.
+- Manual Kubernetes changes that are hard to audit
+- Secrets spread across scripts, manifests, and local files
+- Drift between expected and actual cluster state
+- Overly complex multi-node setups for single-node needs
 
-## What does it solve?
+This stack addresses those issues with:
 
-Research infrastructure often suffers from:
+- GitOps-first cluster lifecycle management
+- Declarative application definitions in Git
+- OCI Vault-backed secret injection via CSI
+- Clear storage boundaries (boot volume vs. scratch volume)
 
-- Manual Kubernetes management
-- Secret sprawl
-- Mixed imperative and declarative workflows
-- Poor reproducibility
-- Overengineered multi-node setups for small research workloads
+## Core Capabilities
 
-This stack provides:
-
-- GitOps-first cluster lifecycle
-- Strict secret isolation via OCI Vault
-- Explicit storage boundaries (boot vs scratch)
-- Fully declarative application management
-- Minimal single-node production-grade design
-
-It enables structured research infrastructure without managed Kubernetes complexity.
+- One-shot bootstrap for host prerequisites and base cluster setup
+- GitOps-managed workloads through Argo CD `Application` resources
+- Runtime patching of vault and region values from environment variables
+- Built-in workloads for PostgreSQL, MLflow, monitoring, Argo Workflows, and scratch PVCs
+- SSH-forwarded access model with NodePort services not exposed publicly
 
 ## Architecture Overview
 
-The system is divided into two clear layers.
-
 ### Host Layer (Bootstrap Phase)
 
-Installed once via bootstrap script:
+Installed once by `scripts/bootstrap-cluster.sh`:
 
 - MicroK8s
 - Secrets Store CSI Driver
-- OCI Secrets Store Provider [custom multi-arch image](https://github.com/TradingChassis/oci-secrets-store-csi-driver-provider/pkgs/container/oci-secrets-store-csi-driver-provider)
+- OCI Secrets Store Provider ([custom multi-arch image](https://github.com/TradingChassis/oci-secrets-store-csi-driver-provider/pkgs/container/oci-secrets-store-csi-driver-provider))
 - Argo CD
-- Scratch Block Volume formatting and mounting
+- Scratch block volume formatting and mounting
 
 ### Cluster Layer (GitOps Managed)
 
-Managed exclusively via Argo CD:
+Managed through Argo CD from repository manifests:
 
-- PostgreSQL (MLflow metadata)
+- PostgreSQL (MLflow metadata backend)
 - MLflow
-- Prometheus + Grafana
-- Argo Workflows
-- Scratch PersistentVolume
+- Prometheus + Grafana (via Helm chart)
+- Argo Workflows (via Helm chart)
+- Scratch PersistentVolumeClaim overlays
 
-All workloads are defined declaratively in:
+Primary declarative sources:
 
-```
+```text
 apps/
 argocd/
 ```
 
-## Core Stack
-
-- [MicroK8s](https://microk8s.io) (Kubernetes distribution)
-- [Argo CD](https://argo-cd.readthedocs.io) (GitOps continuous delivery)
-- [PostgreSQL](https://www.postgresql.org) (metadata & experiment storage)
-- [MLflow](https://mlflow.org) (experiment tracking & model registry)
-- [Prometheus](https://prometheus.io) + [Grafana](https://grafana.com) (monitoring & observability)
-- [Argo Workflows](https://argoproj.github.io/workflows) (batch & pipeline execution)
-- [Oracle Cloud Infrastructure](https://cloud.oracle.com) (compute, networking, secrets, storage)
-
 ## Repository Structure
 
-```
+```text
 .
-├── apps/
+├── apps/                  # Workload manifests and Helm values
 │   ├── argo/
 │   ├── mlflow/
 │   ├── monitoring/
 │   ├── postgres/
 │   └── scratch/
-├── argocd/
-├── infrastructure/
+├── argocd/                # Argo CD Application resources
+├── infrastructure/        # Infrastructure components (OCI provider manifests)
 │   └── oci-provider/
-├── scripts/
+├── scripts/               # Bootstrap and runtime-injection scripts
 ├── CONTRIBUTING.md
+├── SECURITY.md
 └── README.md
 ```
 
-## Quickstart (Fresh VM)
-
-### Requirements
+## Prerequisites
 
 - Ubuntu VM
-- Attached Block Volume for Scratch (`/dev/oracleoci/oraclevds`)
-- OCI Instance Principal configured
-- Repository cloned onto the VM
-- OCI Vault with predefined secrets
+- Attached block volume for scratch storage at `/dev/oracleoci/oraclevds`
+- OCI Instance Principal configured on the VM
+- OCI Vault created with required secrets
+- Repository cloned on the target VM
 
-### Environment Configuration
+## Installation and Setup
 
-Create environment file:
+### 1) Configure environment values
 
 ```bash
 cp .env.example .env
 ```
 
-Configure:
+Set values in `.env`:
 
 ```env
 VAULT_ID=ocid1.vault.oc1.eu-frankfurt-1.xxxxx
 OCI_REGION=eu-frankfurt-1
 ```
 
-Load environment:
+Load the variables:
 
 ```bash
 set -a
@@ -136,44 +121,47 @@ source .env
 set +a
 ```
 
-### Bootstrap the Cluster
+### 2) Run bootstrap (fresh VM only)
 
-> ⚠ Bootstrap is one-shot only.
-> Run on a fresh VM or perform a [full reset](#full-reset).
+> Bootstrap is intended as a one-shot process.
 > Re-running on an existing cluster is not supported.
-> All subsequent changes must occur via GitOps.
+> For a clean rerun, use [Full reset](#full-reset) first.
 
 ```bash
 chmod +x scripts/*
 ./scripts/bootstrap-cluster.sh
 ```
 
-Installs:
+Bootstrap sequence:
 
-- MicroK8s
-- CSI Driver
-- OCI Provider
-- Argo CD
+1. Host preparation and iptables reset
+2. MicroK8s installation and base addons
+3. Scratch disk formatting/mounting
+4. CSI driver and OCI provider installation
+5. Monitoring CRDs installation
+6. Argo CD installation and configuration
+7. Argo `Application` registration
+8. Runtime value injection (vault ID / OCI region)
 
-Deploys:
+## Usage Model
 
-- PostgreSQL
-- MLflow
-- Monitoring
-- Argo Workflows
-- Scratch PV/PVC
+After bootstrap, update manifests in Git and let Argo CD reconcile.
 
-## Service Access Model
+1. Edit YAML or Helm values under `apps/<component>/`
+2. Commit and push changes
+3. Argo CD syncs desired state automatically
 
-Kubernetes services are exposed internally as NodePorts.
+The intended workflow is declarative and Git-driven; avoid manual imperative drift where possible.
 
-OCI network configuration:
+## Service Access
 
-- Only SSH (port 22) allowed externally
-- All service ports blocked externally
-- Access exclusively via SSH local port forwarding
+Services use NodePort internally, while OCI network rules keep them private:
 
-Example SSH configuration:
+- SSH (port 22) is the only externally exposed port
+- Service NodePorts are blocked externally
+- Access happens through SSH local forwarding
+
+Example SSH config:
 
 ```bash
 Host vps
@@ -186,45 +174,42 @@ Host vps
     LocalForward 30500 localhost:30500   # MLflow
 ```
 
-This enables development access while preventing public exposure.
+## Configuration Notes
+
+### OCI secrets integration (required)
+
+- Secrets are stored in OCI Vault (not in Git)
+- Secret names must match references in manifests
+- Secrets are mounted through `SecretProviderClass` resources
+- Authentication uses OCI Instance Principals
+
+### Runtime value injection
+
+`scripts/inject-runtime-values.sh` patches Argo CD applications with:
+
+- `VAULT_ID` for relevant `SecretProviderClass` objects
+- `OCI_REGION` as `AWS_DEFAULT_REGION` for the MLflow deployment
+
+If you change app names, deployment names, or secret class names, review this script.
 
 ## Storage Model
 
-Explicit separation between system storage and workload storage.
+### Boot volume (VM root disk)
 
-### Boot Volume (VM Root Disk)
+- Stores OS and Kubernetes system data
+- Stores PostgreSQL data used by MLflow metadata
+- Typically sized to minimal OCI boot requirements
 
-- ~47 GB (minimum OCI size)
-- Hosts:
+### Scratch block volume (`/mnt/scratch`)
 
-  - Operating system
-  - Kubernetes system data
-  - PostgreSQL database
+- Dedicated for data-heavy workloads (backtesting data, artifacts, intermediates)
+- Mounted and prepared during bootstrap
+- Exposed to workloads through PVC manifests in `apps/scratch/`
+- Single-node hostPath-backed behavior; not a multi-node storage model
 
-MLflow metadata persists in local PostgreSQL backed by boot volume.
+### Reuse scratch data on a new VM
 
-### Scratch Block Volume
-
-- 153 GB (≈142.5 GiB)
-- Mounted at:
-
-```
-/mnt/scratch
-```
-
-Intended for:
-
-- Backtesting data
-- Research artifacts
-- Large intermediate datasets
-
-Exposed via PersistentVolume / PersistentVolumeClaim.
-
-⚠ Single-node only (hostPath-based).
-
-### Reusing Scratch Storage
-
-Old VM:
+On old VM:
 
 ```bash
 sudo microk8s kubectl delete namespace scratch
@@ -232,108 +217,34 @@ sudo microk8s kubectl delete pv scratch-pv
 sudo umount /mnt/scratch/
 ```
 
-Detach volume.
+Then detach the volume and attach it to the new VM with the same device path, run bootstrap, and verify PV/PVC naming alignment.
 
-New VM:
+## Monitoring Persistence Notes
 
-1. Attach volume with same device name
-2. Run bootstrap
-3. Ensure PV/PVC names match
-4. Data reused automatically
+Prometheus is configured with local ephemeral storage by default:
 
-### Full Reset
+- No dedicated PV configured for Prometheus metrics
+- Metrics are lost on pod restart or node reboot
 
-```bash
-sudo snap remove microk8s --purge
-sudo rm -rf /var/snap/microk8s/
-sudo rm -rf ~/.kube/
-```
-
-## OCI Secrets Integration (Required)
-
-All sensitive configuration is stored in OCI Vault.
-
-Requirements:
-
-- OCI Vault must exist
-- Secrets must be created in advance
-- Secret names must match Helm/YAML references
-
-Secrets retrieved using:
-
-- Secrets Store CSI Driver
-- OCI Provider (custom multi-arch image)
-- Instance Principal authentication
-
-Secrets defined via `SecretProviderClass`.
-
-No secrets stored in Git.
-
-## Monitoring & Persistence Model
-
-Prometheus runs with ephemeral local storage by default.
-
-- Metrics stored inside pod filesystem
-- No PersistentVolume configured
-- Data lost on pod restart or node reboot
-
-Intended for lightweight research environments.
-
-### Storage Monitoring
-
-Because metrics are local:
+Check disk usage regularly:
 
 ```bash
 df -h /
 sudo du -h --max-depth=1 /var/snap/microk8s/common/var/
 ```
 
-Used to track disk usage and prevent exhaustion.
-
-## Why Oracle Cloud Infrastructure?
-
-OCI selected primarily for ARM free tier:
-
-- 4 vCPU ARM VM
-- 24 GB RAM
-- ~200 GB free storage
-
-Suitable for:
-
-- Single-node Kubernetes research clusters
-- Persistent external storage
-- Zero-cost experimentation
-
-Boot volume kept minimal; scratch volume handles data-heavy workloads.
-
-## Updating the Platform
-
-1. Modify YAML / Helm values in `apps/<component>/`
-2. Commit & push
-3. Argo CD auto-syncs
-
-No manual `kubectl` required.
-
 ## Security Model
 
-- No secrets in Git
-- Public VM with OCI firewall (NSGs / Security Lists)
-- Only SSH exposed
-- All service ports closed externally
-- Egress allowed
-- Secrets in OCI Vault
+- No secrets committed to Git
+- OCI firewall controls (NSGs/Security Lists) with SSH-only public ingress
+- Internal service access through SSH forwarding
+- Declarative Git history for infrastructure changes
 
-## Design Principles
-
-- GitOps-first
-- Single source of truth
-- Declarative workflows only
-- Multi-arch native
-- Minimal but production-grade
+For vulnerability reporting and policy details, see `SECURITY.md`.
 
 ## Project Status
 
-**Operational**
+### Operational
 
 - MicroK8s bootstrap
 - Argo CD GitOps layer
@@ -341,16 +252,38 @@ No manual `kubectl` required.
 - PostgreSQL
 - Scratch storage model
 
-**Experimental**
+### Experimental
 
-- Monitoring stack
+- Monitoring stack tuning
 - Argo Workflows pipelines
 - Higher-level research workflows
 
-## Who is this for?
+## Intended Audience and Scope
 
-- Quant research & backtesting
-- GitOps Kubernetes experimentation
-- Reproducible infrastructure setups
+Good fit for:
 
-Not intended for multi-node production clusters or managed Kubernetes platforms.
+- Quant research and backtesting infrastructure
+- GitOps experimentation on a single node
+- Reproducible self-managed environment setups
+
+Out of scope:
+
+- Multi-node production clusters
+- Managed Kubernetes platforms
+- Publicly exposed application services
+
+## Additional Documentation
+
+- `CONTRIBUTING.md` for contribution workflow and quality expectations
+- `SECURITY.md` for vulnerability reporting and security scope
+- `CHANGELOG.md` for tracked repository changes
+
+## Full Reset
+
+Use this when you need to recreate the cluster from scratch.
+
+```bash
+sudo snap remove microk8s --purge
+sudo rm -rf /var/snap/microk8s/
+sudo rm -rf ~/.kube/
+```

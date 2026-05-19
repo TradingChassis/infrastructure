@@ -2,8 +2,8 @@
 
 Thank you for your interest in contributing!
 
-This repository focuses on cloud trading infrastructure.
-Contributions should preserve clarity, explicitness and reproducibility.
+This repository focuses on cloud infrastructure for trading research.
+Contributions should preserve clarity, explicitness, and reproducibility.
 
 ## Design Principles
 
@@ -13,7 +13,7 @@ Contributions should preserve clarity, explicitness and reproducibility.
 - Keep changes minimal and documented
 - Single source of truth
 - No imperative workflows
-- multi-arch native
+- Multi-arch native
 - Minimal but production-grade
 
 ## Workflow
@@ -21,19 +21,19 @@ Contributions should preserve clarity, explicitness and reproducibility.
 1. Fork the repository
 2. Create a feature branch
 3. Commit small, logical changes
-4. Open a Pull Request with clear description
+4. Open a pull request with a clear description
 
 ## Commit Style
 
-Use clear messages:
+Use clear commit messages:
 
-feat: add monitoring overlay  
-fix: correct SecretProviderClass parameters  
-docs: update bootstrap instructions  
+- `feat: add monitoring overlay`
+- `fix: correct SecretProviderClass parameters`
+- `docs: update bootstrap instructions`
 
 ## Testing
 
 Before submitting:
 
-- kustomize build must succeed
+- `kustomize build` must succeed
 - YAML must be valid
