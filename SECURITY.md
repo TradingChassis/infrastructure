@@ -6,8 +6,6 @@ Only the latest version on the `main` branch is actively maintained.
 
 Older commits and historical states of the repository may not receive security updates or patches.
 
----
-
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability, please **do not open a public GitHub issue**.
@@ -26,8 +24,6 @@ When submitting a report, please include:
 
 Valid reports will be acknowledged in a timely manner and handled through responsible disclosure.
 
----
-
 ## Security Principles
 
 This project follows a defense-in-depth infrastructure model:
@@ -40,8 +36,6 @@ This project follows a defense-in-depth infrastructure model:
 - Infrastructure changes are fully declarative and auditable
 
 Dependency and base image updates should be applied regularly.
-
----
 
 ## Security Scope
 
@@ -61,8 +55,6 @@ It does **not** provide:
 
 This infrastructure is intended for controlled research and experimentation environments.
 
----
-
 ## Network & Access Model
 
 - The VM is publicly reachable only via SSH
@@ -72,16 +64,12 @@ This infrastructure is intended for controlled research and experimentation envi
 
 This minimizes the public attack surface while preserving developer usability.
 
----
-
 ## Dependency & Image Security
 
 - Base OS and Kubernetes components should be kept updated
 - Container images should be sourced from trusted registries
 - Helm charts and manifests should be reviewed for security implications
 - Vulnerable dependencies should be upgraded promptly
-
----
 
 ## Responsible Usage
 
@@ -93,8 +81,6 @@ Users are responsible for:
 - Applying additional security hardening when required
 
 This repository is provided as infrastructure automation and makes no guarantees regarding security compliance for regulated or production-critical workloads.
-
----
 
 ## Disclosure Policy
 

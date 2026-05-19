@@ -1,4 +1,4 @@
-# Trading Infrastructure – GitOps Kubernetes Stack (MicroK8s + Argo CD)
+# TradingChassis Infrastructure GitOps Kubernetes Stack (MicroK8s + Argo CD)
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -8,9 +8,7 @@ Provisions and manages a single-node Kubernetes cluster on Oracle Cloud Infrastr
 
 Designed for reproducible research infrastructure with explicit storage, secret management, and operational boundaries.
 
----
-
-## 🧠 What is this?
+## What is this?
 
 This repository defines a fully declarative infrastructure layer for a quantitative trading research platform.
 
@@ -26,9 +24,7 @@ After bootstrap, all cluster state is managed through Git via Argo CD.
 
 No imperative Kubernetes workflows are required.
 
----
-
-## 🧩 What does it solve?
+## What does it solve?
 
 Research infrastructure often suffers from:
 
@@ -48,9 +44,7 @@ This stack provides:
 
 It enables structured research infrastructure without managed Kubernetes complexity.
 
----
-
-## 🏗 Architecture Overview
+## Architecture Overview
 
 The system is divided into two clear layers.
 
@@ -81,9 +75,7 @@ apps/
 argocd/
 ```
 
----
-
-## 🧰 Core Stack
+## Core Stack
 
 - [MicroK8s](https://microk8s.io) (Kubernetes distribution)
 - [Argo CD](https://argo-cd.readthedocs.io) (GitOps continuous delivery)
@@ -93,9 +85,7 @@ argocd/
 - [Argo Workflows](https://argoproj.github.io/workflows) (batch & pipeline execution)
 - [Oracle Cloud Infrastructure](https://cloud.oracle.com) (compute, networking, secrets, storage)
 
----
-
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 .
@@ -113,11 +103,9 @@ argocd/
 └── README.md
 ```
 
----
+## Quickstart (Fresh VM)
 
-## 🚀 Quickstart (Fresh VM)
-
-### 1️⃣ Requirements
+### Requirements
 
 - Ubuntu VM
 - Attached Block Volume for Scratch (`/dev/oracleoci/oraclevds`)
@@ -125,7 +113,7 @@ argocd/
 - Repository cloned onto the VM
 - OCI Vault with predefined secrets
 
-### 2️⃣ Environment Configuration
+### Environment Configuration
 
 Create environment file:
 
@@ -148,7 +136,7 @@ source .env
 set +a
 ```
 
-### 3️⃣ Bootstrap the Cluster
+### Bootstrap the Cluster
 
 > ⚠ Bootstrap is one-shot only.
 > Run on a fresh VM or perform a [full reset](#full-reset).
@@ -175,9 +163,7 @@ Deploys:
 - Argo Workflows
 - Scratch PV/PVC
 
----
-
-## 🌐 Service Access Model
+## Service Access Model
 
 Kubernetes services are exposed internally as NodePorts.
 
@@ -202,9 +188,7 @@ Host vps
 
 This enables development access while preventing public exposure.
 
----
-
-## 💾 Storage Model
+## Storage Model
 
 Explicit separation between system storage and workload storage.
 
@@ -265,9 +249,7 @@ sudo rm -rf /var/snap/microk8s/
 sudo rm -rf ~/.kube/
 ```
 
----
-
-## 🔐 OCI Secrets Integration (Required)
+## OCI Secrets Integration (Required)
 
 All sensitive configuration is stored in OCI Vault.
 
@@ -287,9 +269,7 @@ Secrets defined via `SecretProviderClass`.
 
 No secrets stored in Git.
 
----
-
-## 📊 Monitoring & Persistence Model
+## Monitoring & Persistence Model
 
 Prometheus runs with ephemeral local storage by default.
 
@@ -310,9 +290,7 @@ sudo du -h --max-depth=1 /var/snap/microk8s/common/var/
 
 Used to track disk usage and prevent exhaustion.
 
----
-
-## ☁️ Why Oracle Cloud Infrastructure?
+## Why Oracle Cloud Infrastructure?
 
 OCI selected primarily for ARM free tier:
 
@@ -328,9 +306,7 @@ Suitable for:
 
 Boot volume kept minimal; scratch volume handles data-heavy workloads.
 
----
-
-## 🔄 Updating the Platform
+## Updating the Platform
 
 1. Modify YAML / Helm values in `apps/<component>/`
 2. Commit & push
@@ -338,9 +314,7 @@ Boot volume kept minimal; scratch volume handles data-heavy workloads.
 
 No manual `kubectl` required.
 
----
-
-## 🔐 Security Model
+## Security Model
 
 - No secrets in Git
 - Public VM with OCI firewall (NSGs / Security Lists)
@@ -349,9 +323,7 @@ No manual `kubectl` required.
 - Egress allowed
 - Secrets in OCI Vault
 
----
-
-## 🎯 Design Principles
+## Design Principles
 
 - GitOps-first
 - Single source of truth
@@ -359,9 +331,7 @@ No manual `kubectl` required.
 - Multi-arch native
 - Minimal but production-grade
 
----
-
-## 📌 Project Status
+## Project Status
 
 **Operational**
 
@@ -377,20 +347,10 @@ No manual `kubectl` required.
 - Argo Workflows pipelines
 - Higher-level research workflows
 
----
-
-## 👥 Who is this for?
+## Who is this for?
 
 - Quant research & backtesting
 - GitOps Kubernetes experimentation
 - Reproducible infrastructure setups
 
 Not intended for multi-node production clusters or managed Kubernetes platforms.
-
----
-
-## 🏷️ Versioning
-
-MIT license.
-Semantic versioning.
-Initial public release: `v0.1.0`.

@@ -7,8 +7,6 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-02-17
-
 ### Added
 - MicroK8s bootstrap automation
 - Argo CD GitOps deployment
