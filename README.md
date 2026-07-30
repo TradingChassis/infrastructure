@@ -1,8 +1,24 @@
 # TradingChassis Infrastructure GitOps Kubernetes Stack (MicroK8s + Argo CD)
 
-Declarative infrastructure for quantitative research and backtesting on a single OCI VM.
+Single-node infrastructure baseline for quantitative research and backtesting on an existing OCI Ubuntu VM.
 
-This repository bootstraps a single-node MicroK8s cluster and then manages workloads through Argo CD Applications.
+This repository combines imperative host bootstrap scripts with Argo CD GitOps for selected Kubernetes workloads. It does not provision OCI infrastructure and is not presented as a highly available production platform.
+
+## Version 1 Baseline
+
+“Version 1” refers to the first-generation architecture documented in this repository:
+
+```text
+Existing OCI infrastructure
+→ Bash host and cluster bootstrap
+→ MicroK8s
+→ Argo CD
+→ Kubernetes platform applications
+```
+
+The project uses pre-1.0 semantic versioning while the infrastructure model is being stabilized. This release documents the Bash-, MicroK8s-, and Argo-CD-based baseline. Terraform and Ansible are not part of this release.
+
+For ownership boundaries, known limitations, unresolved questions, and the planned Version 2 architecture direction, see [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
 
 ## What This Repository Provides
 
@@ -49,6 +65,7 @@ argocd/
 ├── infrastructure/
 │   └── oci-provider/      # OCI CSI provider DaemonSet/RBAC
 ├── scripts/               # Bootstrap and runtime-injection scripts
+├── VERSION_1_BASELINE.md  # Version 1 ownership, limits, and V2 direction
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 └── README.md
@@ -281,9 +298,13 @@ For vulnerability reporting and security policy, see `SECURITY.md`.
 - Managed Kubernetes providers
 - Public service exposure configuration
 - Application business logic and trade execution systems
+- OCI resource provisioning (VM, network, volumes, IAM, Vault lifecycle)
+
+Additional Version 1 limitations and evidence gaps are listed in [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
 
 ## Additional Documentation
 
+- `VERSION_1_BASELINE.md` for Version 1 ownership, limitations, and Version 2 direction
 - `CONTRIBUTING.md` for contribution workflow
 - `SECURITY.md` for vulnerability reporting and security model
 - `CHANGELOG.md` for tracked changes
