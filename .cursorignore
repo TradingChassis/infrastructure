@@ -1,0 +1,67 @@
+# .cursorignore reduces indexing and context exposure for Cursor.
+# It does NOT protect access through terminal commands or MCP tools.
+
+# Environment files (keep tracked examples usable)
+.env
+.env.*
+!.env.example
+*.env
+!*.env.example
+
+# Terraform state and real variable files
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+*.tfvars
+!*.tfvars.example
+
+# OCI configuration and key material
+.oci/
+oci_api_key*.pem
+oci_api_key*.key
+
+# Kubernetes configs
+.kube/
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+
+# Keys and certificates
+*.pem
+*.key
+*.p12
+*.ppk
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+id_dsa
+id_dsa.*
+
+# Ansible secrets
+*.vault_pass
+*.vault-pass
+.vault_pass
+.vault-pass
+vault_password
+vault_password.txt
+group_vars/**/vault.yml
+host_vars/**/vault.yml
+**/secrets.yml
+**/secret_vars.yml
+
+# Local virtual environments
+.venv/
+venv/
+
+# Rendered secrets and local diagnostics
+rendered-secrets/
+secrets-rendered/
+diagnostics/
+local-diagnostics/
+*.runtime.log
+*.diag.log

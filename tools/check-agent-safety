@@ -1,0 +1,717 @@
+#!/usr/bin/env bash
+# Local, read-only agent safety self-check for TradingChassis infrastructure.
+# No network access, no dependency installation, no infrastructure tooling.
+
+set -euo pipefail
+
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+fail() {
+  printf 'FAIL: %s\n' "$1"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+
+skip() {
+  printf 'SKIP: %s\n' "$1"
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+}
+
+usage() {
+  cat <<'EOF'
+Usage: check-agent-safety [--root DIR]
+
+Environment:
+  AGENT_SAFETY_ROOT  Optional override for the repository (or fixture) root.
+
+Defaults to the repository root (parent of tools/).
+EOF
+}
+
+resolve_root() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  DEFAULT_ROOT="$(cd "${script_dir}/.." && pwd)"
+
+  ROOT="${AGENT_SAFETY_ROOT:-$DEFAULT_ROOT}"
+
+  if [[ "${1:-}" == "--root" ]]; then
+    if [[ -z "${2:-}" ]]; then
+      echo "FAIL: --root requires a directory argument" >&2
+      exit 2
+    fi
+    ROOT="$2"
+    shift 2
+  elif [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+  elif [[ -n "${1:-}" ]]; then
+    echo "FAIL: unknown argument: $1" >&2
+    usage >&2
+    exit 2
+  fi
+
+  if [[ ! -d "$ROOT" ]]; then
+    echo "FAIL: root directory does not exist: $ROOT" >&2
+    exit 2
+  fi
+
+  ROOT="$(cd "$ROOT" && pwd)"
+}
+
+file_exists() {
+  [[ -f "$1" ]]
+}
+
+file_contains() {
+  local file="$1"
+  local pattern="$2"
+  grep -Eq -- "$pattern" "$file"
+}
+
+parse_json_or_fail() {
+  local file="$1"
+  local label="$2"
+  if ! python3 - "$file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    json.load(handle)
+PY
+  then
+    fail "${label} is not valid JSON"
+    return 1
+  fi
+  return 0
+}
+
+json_text() {
+  cat "$1"
+}
+
+check_required_files() {
+  local required=(
+    ".cursor/rules/safe-infrastructure-development.mdc"
+    ".cursor/permissions.json"
+    ".cursor/cli.json"
+    ".cursor/BUGBOT.md"
+    ".cursorignore"
+    "AGENTS.md"
+    "tools/check-agent-safety"
+    "tools/validate-safe"
+    "tests/unit/test_agent_safety.sh"
+  )
+  local missing=0
+  local path
+  for path in "${required[@]}"; do
+    if ! file_exists "${ROOT}/${path}"; then
+      fail "required safety file missing: ${path}"
+      missing=1
+    fi
+  done
+  if [[ "$missing" -eq 0 ]]; then
+    pass "required safety files exist"
+  fi
+}
+
+check_mdc_rule() {
+  local rule="${ROOT}/.cursor/rules/safe-infrastructure-development.mdc"
+  if ! file_exists "$rule"; then
+    fail "canonical MDC rule missing"
+    return
+  fi
+  if [[ "$rule" != *.mdc ]]; then
+    fail "canonical rule must use .mdc extension"
+    return
+  fi
+  if file_contains "$rule" 'alwaysApply:[[:space:]]*true'; then
+    pass "MDC rule sets alwaysApply: true"
+  else
+    fail "MDC rule must contain alwaysApply: true"
+  fi
+}
+
+check_permissions_json() {
+  local file="${ROOT}/.cursor/permissions.json"
+  if ! file_exists "$file"; then
+    fail "permissions.json missing"
+    return
+  fi
+  if parse_json_or_fail "$file" "permissions.json"; then
+    pass "permissions.json is valid JSON"
+  else
+    return
+  fi
+
+  if python3 - "$file" <<'PY'
+import json
+import re
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+
+expected_top = {"mcpAllowlist", "terminalAllowlist", "autoRun"}
+actual_top = set(data.keys())
+unknown_top = sorted(actual_top - expected_top)
+missing_top = sorted(expected_top - actual_top)
+if unknown_top or missing_top:
+    parts = []
+    if unknown_top:
+        parts.append("unknown top-level keys: " + ", ".join(unknown_top))
+    if missing_top:
+        parts.append("missing top-level keys: " + ", ".join(missing_top))
+    print("; ".join(parts))
+    sys.exit(1)
+
+def require_string_list(obj, label):
+    if not isinstance(obj, list) or any(not isinstance(item, str) for item in obj):
+        print(f"{label} must be an array of strings")
+        sys.exit(1)
+
+require_string_list(data.get("mcpAllowlist"), "mcpAllowlist")
+require_string_list(data.get("terminalAllowlist"), "terminalAllowlist")
+
+auto_run = data.get("autoRun")
+if not isinstance(auto_run, dict):
+    print("autoRun must be an object")
+    sys.exit(1)
+expected_auto = {"allow_instructions", "block_instructions"}
+unknown_auto = sorted(set(auto_run.keys()) - expected_auto)
+missing_auto = sorted(expected_auto - set(auto_run.keys()))
+if unknown_auto or missing_auto:
+    parts = []
+    if unknown_auto:
+        parts.append("unknown autoRun keys: " + ", ".join(unknown_auto))
+    if missing_auto:
+        parts.append("missing autoRun keys: " + ", ".join(missing_auto))
+    print("; ".join(parts))
+    sys.exit(1)
+require_string_list(auto_run.get("allow_instructions"), "autoRun.allow_instructions")
+require_string_list(auto_run.get("block_instructions"), "autoRun.block_instructions")
+
+allow = data["terminalAllowlist"]
+# Bare `git` is forbidden; `git status` and other narrow forms remain allowed.
+forbidden_exact_only = {"git"}
+# First command token (basename) may not be an interpreter, wrapper, or escalator.
+forbidden_command_tokens = {
+    "sudo",
+    "su",
+    "doas",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "env",
+    "xargs",
+    "find",
+    "make",
+    "python",
+    "python3",
+    "perl",
+    "ruby",
+    "node",
+    "terraform",
+    "ansible",
+    "kubectl",
+    "helm",
+    "oci",
+}
+content_reading_prefixes = (
+    "git diff",
+    "git grep",
+    "git show",
+    "git log",
+)
+dangerous_args = ("--no-index", "--ext-diff", "--textconv")
+
+def command_token(entry: str) -> str:
+    raw = entry.strip().split()[0] if entry.strip() else ""
+    return raw.rsplit("/", 1)[-1]
+
+broad = []
+for entry in allow:
+    tokens = entry.strip().split()
+    if not tokens:
+        continue
+    token = command_token(entry)
+    if token in forbidden_exact_only and len(tokens) == 1:
+        broad.append(entry)
+    elif token in forbidden_command_tokens:
+        broad.append(entry)
+
+content = []
+for entry in allow:
+    lowered = entry.strip()
+    for prefix in content_reading_prefixes:
+        if lowered == prefix or lowered.startswith(prefix + " "):
+            content.append(entry)
+            break
+    # Prefix-style entries that would auto-allow content-reading Git forms.
+    if re.match(r"^git\s+(diff|grep|show|log)(\s|$|\*)", lowered):
+        if entry not in content:
+            content.append(entry)
+
+dangerous = [entry for entry in allow if any(arg in entry for arg in dangerous_args)]
+
+if broad:
+    print("forbidden command entries: " + ", ".join(broad))
+    sys.exit(2)
+if content:
+    print("content-reading git entries: " + ", ".join(content))
+    sys.exit(3)
+if dangerous:
+    print("dangerous git argument patterns: " + ", ".join(dangerous))
+    sys.exit(4)
+PY
+  then
+    pass "IDE permissions.json structure and terminal allowlist are safe"
+  else
+    status=$?
+    case "$status" in
+      2)
+        fail "IDE terminal allowlist contains privilege-escalation tools, shells, wrappers, or other forbidden command tokens"
+        ;;
+      3)
+        fail "IDE terminal allowlist contains Git commands capable of reading ignored or arbitrary files"
+        ;;
+      4)
+        fail "IDE terminal allowlist contains dangerous Git argument patterns such as --no-index, --ext-diff, or --textconv"
+        ;;
+      *)
+        fail "permissions.json has invalid structure or unexpected keys"
+        ;;
+    esac
+  fi
+}
+
+check_cli_json() {
+  local file="${ROOT}/.cursor/cli.json"
+  if ! file_exists "$file"; then
+    fail "cli.json missing"
+    return
+  fi
+  if parse_json_or_fail "$file" "cli.json"; then
+    pass "cli.json is valid JSON"
+  else
+    return
+  fi
+
+  if python3 - "$file" <<'PY'
+import json
+import re
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+
+if set(data.keys()) != {"permissions"}:
+    unknown = sorted(set(data.keys()) - {"permissions"})
+    missing = [] if "permissions" in data else ["permissions"]
+    parts = []
+    if unknown:
+        parts.append("unknown top-level keys: " + ", ".join(unknown))
+    if missing:
+        parts.append("missing top-level keys: " + ", ".join(missing))
+    print("; ".join(parts) if parts else "top-level must contain only permissions")
+    sys.exit(1)
+
+perms = data.get("permissions")
+if not isinstance(perms, dict):
+    print("permissions must be an object")
+    sys.exit(1)
+
+expected_perm_keys = {"allow", "deny"}
+unknown_perm = sorted(set(perms.keys()) - expected_perm_keys)
+missing_perm = sorted(expected_perm_keys - set(perms.keys()))
+if unknown_perm or missing_perm:
+    parts = []
+    if unknown_perm:
+        parts.append("unknown permissions keys: " + ", ".join(unknown_perm))
+    if missing_perm:
+        parts.append("missing permissions keys: " + ", ".join(missing_perm))
+    print("; ".join(parts))
+    sys.exit(1)
+
+def require_string_list(obj, label):
+    if not isinstance(obj, list) or any(not isinstance(item, str) for item in obj):
+        print(f"{label} must be an array of strings")
+        sys.exit(1)
+
+allow = perms.get("allow")
+deny = perms.get("deny")
+require_string_list(allow, "permissions.allow")
+require_string_list(deny, "permissions.deny")
+
+forbidden = {
+    "Shell(*)",
+    "Shell(git)",
+    "Write(**)",
+    "Mcp(*:*)",
+    "WebFetch(*)",
+}
+bad = [entry for entry in allow if entry in forbidden]
+
+content_patterns = [
+    re.compile(r"^Shell\(git:diff\b"),
+    re.compile(r"^Shell\(git:grep\b"),
+    re.compile(r"^Shell\(git:show\b"),
+    re.compile(r"^Shell\(git:log\b"),
+]
+content = [entry for entry in allow if any(pat.search(entry) for pat in content_patterns)]
+
+dangerous_args = ("--no-index", "--ext-diff", "--textconv")
+dangerous = [entry for entry in allow if any(arg in entry for arg in dangerous_args)]
+
+# Reject broad Git wildcard allows that exceed a single controlled subcommand form.
+broad_git = []
+for entry in allow:
+    if entry == "Shell(git)" or entry.startswith("Shell(git:*"):
+        broad_git.append(entry)
+        continue
+    # e.g. Shell(git:rev-parse*) or Shell(git:ls-files*)
+    if re.match(r"^Shell\(git:[^)]+\*\)$", entry):
+        broad_git.append(entry)
+
+if bad:
+    print("forbidden allow entries: " + ", ".join(bad))
+    sys.exit(2)
+if content:
+    print("content-reading git entries: " + ", ".join(content))
+    sys.exit(3)
+if dangerous:
+    print("dangerous git argument patterns: " + ", ".join(dangerous))
+    sys.exit(4)
+if broad_git:
+    print("broad git wildcard allows: " + ", ".join(broad_git))
+    sys.exit(5)
+PY
+  then
+    pass "CLI permissions structure and allow list avoid broad Git content readers"
+  else
+    status=$?
+    case "$status" in
+      2)
+        fail "CLI allow list contains forbidden broad entries"
+        ;;
+      3)
+        fail "CLI allow list contains broad Git content-reading commands"
+        ;;
+      4)
+        fail "CLI allow list contains dangerous Git argument patterns such as --no-index, --ext-diff, or --textconv"
+        ;;
+      5)
+        fail "CLI allow list contains broad Git wildcard allows"
+        ;;
+      *)
+        fail "cli.json has invalid structure or unexpected keys"
+        ;;
+    esac
+  fi
+}
+
+check_cli_denies() {
+  local file="${ROOT}/.cursor/cli.json"
+  if ! file_exists "$file"; then
+    return
+  fi
+
+  if python3 - "$file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+deny = (data.get("permissions") or {}).get("deny") or []
+deny_set = set(deny)
+
+required_groups = {
+    "privilege_and_shell": [
+        "Shell(sudo)",
+        "Shell(su)",
+        "Shell(doas)",
+        "Shell(bash)",
+        "Shell(sh)",
+        "Shell(env)",
+        "Shell(xargs)",
+        "Shell(make)",
+        "Shell(find)",
+        "Shell(python)",
+        "Shell(python3)",
+    ],
+    "infrastructure": [
+        "Shell(terraform)",
+        "Shell(oci)",
+        "Shell(ansible)",
+        "Shell(ansible-playbook)",
+        "Shell(kubectl)",
+        "Shell(helm)",
+        "Shell(microk8s)",
+        "Shell(argocd)",
+    ],
+    "host_mutation": [
+        "Shell(mount)",
+        "Shell(umount)",
+        "Shell(iptables)",
+        "Shell(systemctl)",
+        "Shell(apt)",
+        "Shell(curl)",
+        "Shell(wget)",
+        "Shell(ssh)",
+    ],
+    "git_writes": [
+        "Shell(git:commit)",
+        "Shell(git:push)",
+        "Shell(git:tag)",
+        "Shell(git:reset)",
+        "Shell(git:rebase)",
+        "Shell(git:clean)",
+        "Shell(git:merge)",
+        "Shell(git:checkout)",
+        "Shell(git:switch)",
+        "Shell(git:cherry-pick)",
+        "Shell(git:revert)",
+        "Shell(git:config)",
+    ],
+}
+
+def parse_shell_inner(entry: str):
+    if not (entry.startswith("Shell(") and entry.endswith(")")):
+        return None
+    return entry[len("Shell(") : -1]
+
+def covered(required: str) -> bool:
+    """Return True only for an exact deny or a deliberate Shell(...*) wildcard cover.
+
+    Wildcard coverage expands the candidate deny, never treats the required
+    entry as a prefix of an unrelated longer deny (e.g. Shell(su) vs Shell(sudo)).
+    """
+    if required in deny_set:
+        return True
+
+    req_inner = parse_shell_inner(required)
+    if req_inner is None:
+        return False
+
+    for item in deny_set:
+        cand_inner = parse_shell_inner(item)
+        if cand_inner is None:
+            continue
+        if cand_inner == req_inner:
+            return True
+        if cand_inner.endswith("*"):
+            stem = cand_inner[:-1]
+            if req_inner == stem or req_inner.startswith(stem):
+                return True
+    return False
+
+missing = []
+for group, entries in required_groups.items():
+    for entry in entries:
+        if not covered(entry):
+            missing.append(f"{group}:{entry}")
+
+if missing:
+    print("missing deny entries: " + ", ".join(missing[:12]))
+    sys.exit(1)
+PY
+  then
+    pass "CLI deny list covers dangerous command categories"
+  else
+    fail "CLI deny list is missing required dangerous-command categories"
+  fi
+
+  if python3 - "$file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+deny = (data.get("permissions") or {}).get("deny") or []
+deny_set = set(deny)
+
+# Each category is an independent check against deny array entries.
+# mode "all": every listed entry must be present.
+# mode "any": at least one listed entry must be present.
+required_sensitive = {
+    "env_read": {"mode": "all", "entries": ["Read(**/.env)", "Read(**/*.env)"]},
+    "env_write": {"mode": "all", "entries": ["Write(**/.env)", "Write(**/*.env)"]},
+    "tfstate_read": {"mode": "all", "entries": ["Read(**/*.tfstate)"]},
+    "tfstate_write": {"mode": "all", "entries": ["Write(**/*.tfstate)"]},
+    "tfvars_read": {"mode": "all", "entries": ["Read(**/terraform.tfvars)"]},
+    "tfvars_write": {"mode": "all", "entries": ["Write(**/terraform.tfvars)"]},
+    "oci_read": {"mode": "all", "entries": ["Read(**/.oci/**)"]},
+    "oci_write": {"mode": "all", "entries": ["Write(**/.oci/**)"]},
+    "kubeconfig_read": {"mode": "all", "entries": ["Read(**/kubeconfig)"]},
+    "kubeconfig_write": {"mode": "all", "entries": ["Write(**/kubeconfig)"]},
+    "pem_read": {"mode": "all", "entries": ["Read(**/*.pem)"]},
+    "pem_write": {"mode": "all", "entries": ["Write(**/*.pem)"]},
+    "key_read": {"mode": "all", "entries": ["Read(**/*.key)"]},
+    "key_write": {"mode": "all", "entries": ["Write(**/*.key)"]},
+    "p12_read": {"mode": "all", "entries": ["Read(**/*.p12)"]},
+    "p12_write": {"mode": "all", "entries": ["Write(**/*.p12)"]},
+    "ppk_read": {"mode": "all", "entries": ["Read(**/*.ppk)"]},
+    "ppk_write": {"mode": "all", "entries": ["Write(**/*.ppk)"]},
+    "id_rsa_read": {"mode": "all", "entries": ["Read(**/id_rsa)"]},
+    "id_rsa_write": {"mode": "all", "entries": ["Write(**/id_rsa)"]},
+    "id_ed25519_read": {"mode": "all", "entries": ["Read(**/id_ed25519)"]},
+    "id_ed25519_write": {"mode": "all", "entries": ["Write(**/id_ed25519)"]},
+    "vault_read": {
+        "mode": "any",
+        "entries": ["Read(**/*.vault_pass)", "Read(**/vault_password)"],
+    },
+    "safety_write_cursor": {"mode": "all", "entries": ["Write(.cursor/**)"]},
+    "safety_write_cursorignore": {"mode": "all", "entries": ["Write(.cursorignore)"]},
+    "safety_write_agents": {"mode": "all", "entries": ["Write(AGENTS.md)"]},
+    "safety_write_checker": {"mode": "all", "entries": ["Write(tools/check-agent-safety)"]},
+    "safety_write_validate": {"mode": "all", "entries": ["Write(tools/validate-safe)"]},
+    "safety_write_tests": {
+        "mode": "all",
+        "entries": ["Write(tests/unit/test_agent_safety.sh)"],
+    },
+}
+
+missing = []
+for category, spec in required_sensitive.items():
+    entries = spec["entries"]
+    mode = spec["mode"]
+    if mode == "all":
+        ok = all(entry in deny_set for entry in entries)
+    else:
+        ok = any(entry in deny_set for entry in entries)
+    if not ok:
+        missing.append(category)
+
+if missing:
+    print("missing sensitive deny categories: " + ", ".join(missing[:12]))
+    sys.exit(1)
+PY
+  then
+    pass "CLI deny list covers sensitive read/write categories"
+  else
+    fail "CLI deny list is missing sensitive read/write categories"
+  fi
+}
+
+check_cursorignore() {
+  local file="${ROOT}/.cursorignore"
+  if ! file_exists "$file"; then
+    fail ".cursorignore missing"
+    return
+  fi
+
+  local missing=()
+  file_contains "$file" '\.env' || missing+=("env")
+  file_contains "$file" 'tfstate' || missing+=("tfstate")
+  file_contains "$file" 'tfvars' || missing+=("tfvars")
+  file_contains "$file" '\.terraform/' || missing+=(".terraform/")
+  file_contains "$file" 'kubeconfig' || missing+=("kubeconfig")
+  file_contains "$file" '\.pem|\*\.pem' || missing+=("pem")
+  file_contains "$file" '\.key|\*\.key' || missing+=("key")
+  file_contains "$file" 'id_rsa|id_ed25519' || missing+=("ssh-private-key-names")
+  file_contains "$file" 'vault' || missing+=("vault")
+  file_contains "$file" '\.oci/' || missing+=("oci")
+  file_contains "$file" 'rendered-secrets|secrets-rendered' || missing+=("rendered-secrets")
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass ".cursorignore covers required secret/state/key/kubeconfig categories"
+  else
+    fail ".cursorignore missing categories: ${missing[*]}"
+  fi
+}
+
+check_agents_md() {
+  local file="${ROOT}/AGENTS.md"
+  if ! file_exists "$file"; then
+    fail "AGENTS.md missing"
+    return
+  fi
+  if file_contains "$file" 'safe-infrastructure-development\.mdc'; then
+    pass "AGENTS.md references the canonical rule"
+  else
+    fail "AGENTS.md must reference safe-infrastructure-development.mdc"
+  fi
+}
+
+check_bugbot_md() {
+  local file="${ROOT}/.cursor/BUGBOT.md"
+  if ! file_exists "$file"; then
+    fail "BUGBOT.md missing"
+    return
+  fi
+
+  local missing=()
+  file_contains "$file" '[Ss]ecret|[Cc]redential|[Pp]rivate key|tfstate|OCID' || missing+=("secrets")
+  file_contains "$file" '[Oo]wnership|Terraform|Ansible|Argo' || missing+=("ownership")
+  file_contains "$file" 'firewall|storage|host' || missing+=("destructive-ops")
+  file_contains "$file" 'pin|provider|module|Actions' || missing+=("pinning")
+  file_contains "$file" 'idempoten|error suppression' || missing+=("ansible-quality")
+  file_contains "$file" 'RBAC|security context|NodePort|Secret' || missing+=("kubernetes")
+  file_contains "$file" 'pull_request_target|Actions permissions' || missing+=("gha")
+  file_contains "$file" '[Ll]ive' || missing+=("live-infra")
+  file_contains "$file" '[Ss]afety' || missing+=("safety-bypass")
+  file_contains "$file" 'evidence|static|CI' || missing+=("evidence")
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass "BUGBOT.md contains critical review categories"
+  else
+    fail "BUGBOT.md missing review categories: ${missing[*]}"
+  fi
+}
+
+check_wrappers_safe() {
+  local wrappers=(
+    "${ROOT}/tools/check-agent-safety"
+    "${ROOT}/tools/validate-safe"
+  )
+  # Match likely invocations, not deny-list mentions or documentation strings.
+  local invocation_re='(^|[[:space:];|&`(])(curl|wget)[[:space:]]+(https?://|ftp://)|(^|[[:space:];|&`(])(terraform|tofu)[[:space:]]+(init|plan|apply|destroy|import|state|force-unlock)|(^|[[:space:];|&`(])(oci|ansible|ansible-playbook|ansible-pull|ansible-galaxy|kubectl|helm|kustomize|microk8s|argocd)[[:space:]]|(^|[[:space:];|&`(])(apt-get|apt|dnf|yum|rpm|systemctl|mkfs|iptables|nft|ufw)[[:space:]]|(^|[[:space:];|&`(])(pip|npm|gem)[[:space:]]+install'
+  local bad=0
+  local wrapper
+  for wrapper in "${wrappers[@]}"; do
+    if ! file_exists "$wrapper"; then
+      fail "wrapper missing: ${wrapper#"$ROOT"/}"
+      bad=1
+      continue
+    fi
+    if grep -Ev '^[[:space:]]*#' "$wrapper" | grep -Eq "$invocation_re"; then
+      fail "wrapper may contain live infrastructure or network download commands: ${wrapper#"$ROOT"/}"
+      bad=1
+    fi
+  done
+  if [[ "$bad" -eq 0 ]]; then
+    pass "safe wrappers contain no obvious live-infrastructure or network download commands"
+  fi
+}
+
+main() {
+  resolve_root "$@"
+
+  echo "Agent safety check root: ${ROOT}"
+  check_required_files
+  check_mdc_rule
+  check_permissions_json
+  check_cli_json
+  check_cli_denies
+  check_cursorignore
+  check_agents_md
+  check_bugbot_md
+  check_wrappers_safe
+
+  echo
+  echo "Summary: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} SKIP=${SKIP_COUNT}"
+  if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+main "$@"

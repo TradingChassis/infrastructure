@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Local static validation wrapper for TradingChassis agent safety.
+# No network, no dependency installation, no infrastructure tooling,
+# no formatting or automatic fixes, and no execution of scripts/*.sh.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CHECKER="${ROOT}/tools/check-agent-safety"
+UNIT_TEST="${ROOT}/tests/unit/test_agent_safety.sh"
+
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+fail() {
+  printf 'FAIL: %s\n' "$1"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+
+skip() {
+  printf 'SKIP: %s\n' "$1"
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+}
+
+run_checker() {
+  echo "==> Running tools/check-agent-safety"
+  if "$CHECKER"; then
+    pass "check-agent-safety"
+  else
+    fail "check-agent-safety"
+  fi
+}
+
+syntax_check_file() {
+  local file="$1"
+  if bash -n "$file"; then
+    pass "bash -n ${file#"$ROOT"/}"
+  else
+    fail "bash -n ${file#"$ROOT"/}"
+  fi
+}
+
+run_syntax_checks() {
+  echo "==> Running bash -n syntax checks"
+  local file
+  shopt -s nullglob
+  for file in "${ROOT}/scripts/"*.sh; do
+    syntax_check_file "$file"
+  done
+  shopt -u nullglob
+
+  syntax_check_file "$CHECKER"
+  syntax_check_file "${ROOT}/tools/validate-safe"
+  syntax_check_file "$UNIT_TEST"
+}
+
+run_unit_test() {
+  echo "==> Running agent-safety unit test"
+  # Avoid recursion: the unit test must not invoke validate-safe.
+  if AGENT_SAFETY_VALIDATE_SAFE_ACTIVE=1 "$UNIT_TEST"; then
+    pass "tests/unit/test_agent_safety.sh"
+  else
+    fail "tests/unit/test_agent_safety.sh"
+  fi
+}
+
+run_shellcheck_if_present() {
+  echo "==> shellcheck (optional)"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    skip "shellcheck not installed"
+    return
+  fi
+
+  local targets=()
+  local file
+  shopt -s nullglob
+  for file in "${ROOT}/scripts/"*.sh; do
+    targets+=("$file")
+  done
+  shopt -u nullglob
+  targets+=("$CHECKER" "${ROOT}/tools/validate-safe" "$UNIT_TEST")
+
+  if shellcheck "${targets[@]}"; then
+    pass "shellcheck"
+  else
+    fail "shellcheck"
+  fi
+}
+
+main() {
+  echo "Safe validation root: ${ROOT}"
+  echo "Evidence class for this wrapper: statically validated only"
+  echo
+
+  run_checker
+  run_syntax_checks
+  run_unit_test
+  run_shellcheck_if_present
+
+  echo
+  echo "Summary: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} SKIP=${SKIP_COUNT}"
+  echo "Evidence: statically validated (not live validated, not CI validated)"
+  if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+main "$@"
