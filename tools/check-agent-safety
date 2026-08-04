@@ -151,18 +151,55 @@ check_permissions_json() {
     return
   fi
 
-  local text
-  text="$(json_text "$file")"
-
-  # Broad IDE allowlist entries must not appear as whole allowlist strings.
   if python3 - "$file" <<'PY'
 import json
+import re
 import sys
 
 path = sys.argv[1]
 data = json.load(open(path, encoding="utf-8"))
-allow = data.get("terminalAllowlist") or []
-forbidden = {
+
+expected_top = {"mcpAllowlist", "terminalAllowlist", "autoRun"}
+actual_top = set(data.keys())
+unknown_top = sorted(actual_top - expected_top)
+missing_top = sorted(expected_top - actual_top)
+if unknown_top or missing_top:
+    parts = []
+    if unknown_top:
+        parts.append("unknown top-level keys: " + ", ".join(unknown_top))
+    if missing_top:
+        parts.append("missing top-level keys: " + ", ".join(missing_top))
+    print("; ".join(parts))
+    sys.exit(1)
+
+def require_string_list(obj, label):
+    if not isinstance(obj, list) or any(not isinstance(item, str) for item in obj):
+        print(f"{label} must be an array of strings")
+        sys.exit(1)
+
+require_string_list(data.get("mcpAllowlist"), "mcpAllowlist")
+require_string_list(data.get("terminalAllowlist"), "terminalAllowlist")
+
+auto_run = data.get("autoRun")
+if not isinstance(auto_run, dict):
+    print("autoRun must be an object")
+    sys.exit(1)
+expected_auto = {"allow_instructions", "block_instructions"}
+unknown_auto = sorted(set(auto_run.keys()) - expected_auto)
+missing_auto = sorted(expected_auto - set(auto_run.keys()))
+if unknown_auto or missing_auto:
+    parts = []
+    if unknown_auto:
+        parts.append("unknown autoRun keys: " + ", ".join(unknown_auto))
+    if missing_auto:
+        parts.append("missing autoRun keys: " + ", ".join(missing_auto))
+    print("; ".join(parts))
+    sys.exit(1)
+require_string_list(auto_run.get("allow_instructions"), "autoRun.allow_instructions")
+require_string_list(auto_run.get("block_instructions"), "autoRun.block_instructions")
+
+allow = data["terminalAllowlist"]
+forbidden_exact = {
     "git",
     "bash",
     "sh",
@@ -175,15 +212,57 @@ forbidden = {
     "helm",
     "oci",
 }
-bad = [entry for entry in allow if entry in forbidden]
-if bad:
-    print("broad entries: " + ", ".join(bad))
-    sys.exit(1)
+content_reading_prefixes = (
+    "git diff",
+    "git grep",
+    "git show",
+    "git log",
+)
+dangerous_args = ("--no-index", "--ext-diff", "--textconv")
+
+broad = [entry for entry in allow if entry in forbidden_exact]
+content = []
+for entry in allow:
+    lowered = entry.strip()
+    for prefix in content_reading_prefixes:
+        if lowered == prefix or lowered.startswith(prefix + " "):
+            content.append(entry)
+            break
+    # Prefix-style entries that would auto-allow content-reading Git forms.
+    if re.match(r"^git\s+(diff|grep|show|log)(\s|$|\*)", lowered):
+        if entry not in content:
+            content.append(entry)
+
+dangerous = [entry for entry in allow if any(arg in entry for arg in dangerous_args)]
+
+if broad:
+    print("broad entries: " + ", ".join(broad))
+    sys.exit(2)
+if content:
+    print("content-reading git entries: " + ", ".join(content))
+    sys.exit(3)
+if dangerous:
+    print("dangerous git argument patterns: " + ", ".join(dangerous))
+    sys.exit(4)
 PY
   then
-    pass "IDE terminal allowlist has no broad dangerous prefixes"
+    pass "IDE permissions.json structure and terminal allowlist are safe"
   else
-    fail "IDE terminal allowlist contains broad entries such as plain git/bash/python/make/terraform/ansible/kubectl/helm/oci"
+    status=$?
+    case "$status" in
+      2)
+        fail "IDE terminal allowlist contains broad entries such as plain git/bash/python/make/terraform/ansible/kubectl/helm/oci"
+        ;;
+      3)
+        fail "IDE terminal allowlist contains Git commands capable of reading ignored or arbitrary files"
+        ;;
+      4)
+        fail "IDE terminal allowlist contains dangerous Git argument patterns such as --no-index, --ext-diff, or --textconv"
+        ;;
+      *)
+        fail "permissions.json has invalid structure or unexpected keys"
+        ;;
+    esac
   fi
 }
 
@@ -201,12 +280,50 @@ check_cli_json() {
 
   if python3 - "$file" <<'PY'
 import json
+import re
 import sys
 
 path = sys.argv[1]
 data = json.load(open(path, encoding="utf-8"))
-perms = data.get("permissions") or {}
-allow = perms.get("allow") or []
+
+if set(data.keys()) != {"permissions"}:
+    unknown = sorted(set(data.keys()) - {"permissions"})
+    missing = [] if "permissions" in data else ["permissions"]
+    parts = []
+    if unknown:
+        parts.append("unknown top-level keys: " + ", ".join(unknown))
+    if missing:
+        parts.append("missing top-level keys: " + ", ".join(missing))
+    print("; ".join(parts) if parts else "top-level must contain only permissions")
+    sys.exit(1)
+
+perms = data.get("permissions")
+if not isinstance(perms, dict):
+    print("permissions must be an object")
+    sys.exit(1)
+
+expected_perm_keys = {"allow", "deny"}
+unknown_perm = sorted(set(perms.keys()) - expected_perm_keys)
+missing_perm = sorted(expected_perm_keys - set(perms.keys()))
+if unknown_perm or missing_perm:
+    parts = []
+    if unknown_perm:
+        parts.append("unknown permissions keys: " + ", ".join(unknown_perm))
+    if missing_perm:
+        parts.append("missing permissions keys: " + ", ".join(missing_perm))
+    print("; ".join(parts))
+    sys.exit(1)
+
+def require_string_list(obj, label):
+    if not isinstance(obj, list) or any(not isinstance(item, str) for item in obj):
+        print(f"{label} must be an array of strings")
+        sys.exit(1)
+
+allow = perms.get("allow")
+deny = perms.get("deny")
+require_string_list(allow, "permissions.allow")
+require_string_list(deny, "permissions.deny")
+
 forbidden = {
     "Shell(*)",
     "Shell(git)",
@@ -215,14 +332,62 @@ forbidden = {
     "WebFetch(*)",
 }
 bad = [entry for entry in allow if entry in forbidden]
+
+content_patterns = [
+    re.compile(r"^Shell\(git:diff\b"),
+    re.compile(r"^Shell\(git:grep\b"),
+    re.compile(r"^Shell\(git:show\b"),
+    re.compile(r"^Shell\(git:log\b"),
+]
+content = [entry for entry in allow if any(pat.search(entry) for pat in content_patterns)]
+
+dangerous_args = ("--no-index", "--ext-diff", "--textconv")
+dangerous = [entry for entry in allow if any(arg in entry for arg in dangerous_args)]
+
+# Reject broad Git wildcard allows that exceed a single controlled subcommand form.
+broad_git = []
+for entry in allow:
+    if entry == "Shell(git)" or entry.startswith("Shell(git:*"):
+        broad_git.append(entry)
+        continue
+    # e.g. Shell(git:rev-parse*) or Shell(git:ls-files*)
+    if re.match(r"^Shell\(git:[^)]+\*\)$", entry):
+        broad_git.append(entry)
+
 if bad:
     print("forbidden allow entries: " + ", ".join(bad))
-    sys.exit(1)
+    sys.exit(2)
+if content:
+    print("content-reading git entries: " + ", ".join(content))
+    sys.exit(3)
+if dangerous:
+    print("dangerous git argument patterns: " + ", ".join(dangerous))
+    sys.exit(4)
+if broad_git:
+    print("broad git wildcard allows: " + ", ".join(broad_git))
+    sys.exit(5)
 PY
   then
-    pass "CLI allow list avoids Shell(*), Shell(git), Write(**), Mcp(*:*), WebFetch(*)"
+    pass "CLI permissions structure and allow list avoid broad Git content readers"
   else
-    fail "CLI allow list contains forbidden broad entries"
+    status=$?
+    case "$status" in
+      2)
+        fail "CLI allow list contains forbidden broad entries"
+        ;;
+      3)
+        fail "CLI allow list contains broad Git content-reading commands"
+        ;;
+      4)
+        fail "CLI allow list contains dangerous Git argument patterns such as --no-index, --ext-diff, or --textconv"
+        ;;
+      5)
+        fail "CLI allow list contains broad Git wildcard allows"
+        ;;
+      *)
+        fail "cli.json has invalid structure or unexpected keys"
+        ;;
+    esac
   fi
 }
 

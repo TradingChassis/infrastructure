@@ -14,7 +14,7 @@ Contributions should preserve clarity, explicitness, and reproducibility.
 - Single source of truth for each owned resource
 - Avoid ad-hoc live cluster mutations outside an explicit architecture decision
 - Multi-arch native
-- Minimal but production-grade
+- Minimal, reviewable, and operationally explicit
 
 ## Agent and safety workflow
 

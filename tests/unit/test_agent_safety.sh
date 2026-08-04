@@ -76,16 +76,21 @@ EOF
   "mcpAllowlist": [],
   "terminalAllowlist": [
     "git status",
-    "git diff",
+    "git branch --show-current",
+    "git rev-parse HEAD",
+    "git rev-parse --show-toplevel",
+    "git remote -v",
+    "git ls-files",
     "./tools/check-agent-safety",
     "./tools/validate-safe"
   ],
   "autoRun": {
     "allow_instructions": [
-      "Allow read-only repository inspection."
+      "Allow narrow read-only repository state queries."
     ],
     "block_instructions": [
-      "Block privilege escalation including sudo."
+      "Block privilege escalation including sudo.",
+      "Require manual review for git diff, git grep, git show, and git log."
     ]
   }
 }
@@ -97,10 +102,11 @@ EOF
     "allow": [
       "Read(**/*.md)",
       "Shell(git:status)",
-      "Shell(git:diff)",
-      "Shell(git:log)",
-      "Shell(git:show)",
-      "Shell(git:rev-parse)",
+      "Shell(git:branch --show-current)",
+      "Shell(git:rev-parse HEAD)",
+      "Shell(git:rev-parse --show-toplevel)",
+      "Shell(git:remote -v)",
+      "Shell(git:ls-files)",
       "Shell(./tools/check-agent-safety)",
       "Shell(./tools/validate-safe)"
     ],
@@ -349,6 +355,97 @@ json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
 PY
   echo "==> Missing dangerous Terraform or Kubernetes deny category fails"
   assert_failure "missing terraform/kubectl deny fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/ide-git-diff"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/permissions.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["terminalAllowlist"].append("git diff")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> IDE allowlist with git diff fails"
+  assert_failure "IDE git diff allow fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/ide-git-grep"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/permissions.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["terminalAllowlist"].append("git grep")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> IDE allowlist with git grep fails"
+  assert_failure "IDE git grep allow fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/cli-git-diff"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["allow"].append("Shell(git:diff*)")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> CLI allowlist with Shell(git:diff*) fails"
+  assert_failure "CLI git diff allow fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/cli-git-grep"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["allow"].append("Shell(git:grep*)")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> CLI allowlist with Shell(git:grep*) fails"
+  assert_failure "CLI git grep allow fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/no-index"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/permissions.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["terminalAllowlist"].append("git status --no-index")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Allow entry with --no-index fails"
+  assert_failure "allow entry with --no-index fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/unknown-key"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/permissions.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["terminalAllowLists"] = ["git status"]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Unknown relevant JSON key fails"
+  assert_failure "unknown permissions.json key fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/wrong-type"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["allow"] = "Shell(git:status)"
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Wrong allow-list data type fails"
+  assert_failure "wrong allow list type fails" "$CHECKER" --root "$fixture"
 
   echo
   echo "Summary: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"

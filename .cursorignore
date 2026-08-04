@@ -57,7 +57,6 @@ host_vars/**/vault.yml
 # Local virtual environments
 .venv/
 venv/
-env/
 
 # Rendered secrets and local diagnostics
 rendered-secrets/

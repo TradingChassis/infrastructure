@@ -2,26 +2,24 @@
   "mcpAllowlist": [],
   "terminalAllowlist": [
     "git status",
-    "git diff",
-    "git log",
-    "git show",
-    "git rev-parse",
     "git branch --show-current",
+    "git rev-parse HEAD",
+    "git rev-parse --show-toplevel",
     "git remote -v",
     "git ls-files",
-    "git grep",
     "./tools/check-agent-safety",
     "./tools/validate-safe"
   ],
   "autoRun": {
     "allow_instructions": [
-      "Allow read-only repository inspection such as viewing tracked files, diffs, and logs without changing state.",
+      "Allow narrow read-only repository state queries such as git status, branch, rev-parse, remote -v, and ls-files.",
       "Allow running ./tools/check-agent-safety or ./tools/validate-safe only after their contents have been reviewed."
     ],
     "block_instructions": [
       "Block privilege escalation including sudo, su, and doas.",
       "Block shell-wrapper bypasses such as bash -c, sh -c, env, xargs, find -exec, make, and python -c used to run other commands.",
       "Block Git write and history operations including commit, push, tag, reset, rebase, clean, merge, checkout, switch, cherry-pick, revert, amend, and config changes.",
+      "Require manual review for git diff, git grep, git show, git log, and any Git invocation using --no-index, --ext-diff, or --textconv, including commands that can read ignored, untracked, or out-of-workspace files.",
       "Block live Terraform and OCI operations including plan with credentials, apply, destroy, import, state changes, and force-unlock.",
       "Block Ansible execution against any inventory, including ansible-playbook, ansible-pull, and ansible-galaxy.",
       "Block Kubernetes and Helm operations including kubectl, helm, kustomize, and argocd mutations or secret reads.",
