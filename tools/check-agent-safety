@@ -199,13 +199,26 @@ require_string_list(auto_run.get("allow_instructions"), "autoRun.allow_instructi
 require_string_list(auto_run.get("block_instructions"), "autoRun.block_instructions")
 
 allow = data["terminalAllowlist"]
-forbidden_exact = {
-    "git",
+# Bare `git` is forbidden; `git status` and other narrow forms remain allowed.
+forbidden_exact_only = {"git"}
+# First command token (basename) may not be an interpreter, wrapper, or escalator.
+forbidden_command_tokens = {
+    "sudo",
+    "su",
+    "doas",
     "bash",
     "sh",
+    "zsh",
+    "fish",
+    "env",
+    "xargs",
+    "find",
+    "make",
     "python",
     "python3",
-    "make",
+    "perl",
+    "ruby",
+    "node",
     "terraform",
     "ansible",
     "kubectl",
@@ -220,7 +233,21 @@ content_reading_prefixes = (
 )
 dangerous_args = ("--no-index", "--ext-diff", "--textconv")
 
-broad = [entry for entry in allow if entry in forbidden_exact]
+def command_token(entry: str) -> str:
+    raw = entry.strip().split()[0] if entry.strip() else ""
+    return raw.rsplit("/", 1)[-1]
+
+broad = []
+for entry in allow:
+    tokens = entry.strip().split()
+    if not tokens:
+        continue
+    token = command_token(entry)
+    if token in forbidden_exact_only and len(tokens) == 1:
+        broad.append(entry)
+    elif token in forbidden_command_tokens:
+        broad.append(entry)
+
 content = []
 for entry in allow:
     lowered = entry.strip()
@@ -236,7 +263,7 @@ for entry in allow:
 dangerous = [entry for entry in allow if any(arg in entry for arg in dangerous_args)]
 
 if broad:
-    print("broad entries: " + ", ".join(broad))
+    print("forbidden command entries: " + ", ".join(broad))
     sys.exit(2)
 if content:
     print("content-reading git entries: " + ", ".join(content))
@@ -251,7 +278,7 @@ PY
     status=$?
     case "$status" in
       2)
-        fail "IDE terminal allowlist contains broad entries such as plain git/bash/python/make/terraform/ansible/kubectl/helm/oci"
+        fail "IDE terminal allowlist contains privilege-escalation tools, shells, wrappers, or other forbidden command tokens"
         ;;
       3)
         fail "IDE terminal allowlist contains Git commands capable of reading ignored or arbitrary files"
@@ -456,19 +483,35 @@ required_groups = {
     ],
 }
 
+def parse_shell_inner(entry: str):
+    if not (entry.startswith("Shell(") and entry.endswith(")")):
+        return None
+    return entry[len("Shell(") : -1]
+
 def covered(required: str) -> bool:
+    """Return True only for an exact deny or a deliberate Shell(...*) wildcard cover.
+
+    Wildcard coverage expands the candidate deny, never treats the required
+    entry as a prefix of an unrelated longer deny (e.g. Shell(su) vs Shell(sudo)).
+    """
     if required in deny_set:
         return True
-    # Accept wildcard forms such as Shell(git:commit*) for Shell(git:commit).
-    if required.endswith(")") and (required[:-1] + "*)") in deny_set:
-        return True
-    prefix = required[:-1] if required.endswith(")") else required
-    return any(
-        item == required
-        or item == prefix + "*)"
-        or item.startswith(prefix)
-        for item in deny_set
-    )
+
+    req_inner = parse_shell_inner(required)
+    if req_inner is None:
+        return False
+
+    for item in deny_set:
+        cand_inner = parse_shell_inner(item)
+        if cand_inner is None:
+            continue
+        if cand_inner == req_inner:
+            return True
+        if cand_inner.endswith("*"):
+            stem = cand_inner[:-1]
+            if req_inner == stem or req_inner.startswith(stem):
+                return True
+    return False
 
 missing = []
 for group, entries in required_groups.items():
@@ -493,31 +536,62 @@ import sys
 path = sys.argv[1]
 data = json.load(open(path, encoding="utf-8"))
 deny = (data.get("permissions") or {}).get("deny") or []
-text = "\n".join(deny)
+deny_set = set(deny)
 
-needed_substrings = [
-    ".env",
-    "tfstate",
-    "tfvars",
-    ".oci",
-    "kubeconfig",
-    "*.pem",
-    "*.key",
-    "*.p12",
-    "*.ppk",
-    "id_rsa",
-    "vault",
-    ".cursor/**",
-    ".cursorignore",
-    "AGENTS.md",
-    "tools/check-agent-safety",
-    "tools/validate-safe",
-    "tests/unit/test_agent_safety.sh",
-]
+# Each category is an independent check against deny array entries.
+# mode "all": every listed entry must be present.
+# mode "any": at least one listed entry must be present.
+required_sensitive = {
+    "env_read": {"mode": "all", "entries": ["Read(**/.env)", "Read(**/*.env)"]},
+    "env_write": {"mode": "all", "entries": ["Write(**/.env)", "Write(**/*.env)"]},
+    "tfstate_read": {"mode": "all", "entries": ["Read(**/*.tfstate)"]},
+    "tfstate_write": {"mode": "all", "entries": ["Write(**/*.tfstate)"]},
+    "tfvars_read": {"mode": "all", "entries": ["Read(**/terraform.tfvars)"]},
+    "tfvars_write": {"mode": "all", "entries": ["Write(**/terraform.tfvars)"]},
+    "oci_read": {"mode": "all", "entries": ["Read(**/.oci/**)"]},
+    "oci_write": {"mode": "all", "entries": ["Write(**/.oci/**)"]},
+    "kubeconfig_read": {"mode": "all", "entries": ["Read(**/kubeconfig)"]},
+    "kubeconfig_write": {"mode": "all", "entries": ["Write(**/kubeconfig)"]},
+    "pem_read": {"mode": "all", "entries": ["Read(**/*.pem)"]},
+    "pem_write": {"mode": "all", "entries": ["Write(**/*.pem)"]},
+    "key_read": {"mode": "all", "entries": ["Read(**/*.key)"]},
+    "key_write": {"mode": "all", "entries": ["Write(**/*.key)"]},
+    "p12_read": {"mode": "all", "entries": ["Read(**/*.p12)"]},
+    "p12_write": {"mode": "all", "entries": ["Write(**/*.p12)"]},
+    "ppk_read": {"mode": "all", "entries": ["Read(**/*.ppk)"]},
+    "ppk_write": {"mode": "all", "entries": ["Write(**/*.ppk)"]},
+    "id_rsa_read": {"mode": "all", "entries": ["Read(**/id_rsa)"]},
+    "id_rsa_write": {"mode": "all", "entries": ["Write(**/id_rsa)"]},
+    "id_ed25519_read": {"mode": "all", "entries": ["Read(**/id_ed25519)"]},
+    "id_ed25519_write": {"mode": "all", "entries": ["Write(**/id_ed25519)"]},
+    "vault_read": {
+        "mode": "any",
+        "entries": ["Read(**/*.vault_pass)", "Read(**/vault_password)"],
+    },
+    "safety_write_cursor": {"mode": "all", "entries": ["Write(.cursor/**)"]},
+    "safety_write_cursorignore": {"mode": "all", "entries": ["Write(.cursorignore)"]},
+    "safety_write_agents": {"mode": "all", "entries": ["Write(AGENTS.md)"]},
+    "safety_write_checker": {"mode": "all", "entries": ["Write(tools/check-agent-safety)"]},
+    "safety_write_validate": {"mode": "all", "entries": ["Write(tools/validate-safe)"]},
+    "safety_write_tests": {
+        "mode": "all",
+        "entries": ["Write(tests/unit/test_agent_safety.sh)"],
+    },
+}
 
-missing = [item for item in needed_substrings if item not in text]
+missing = []
+for category, spec in required_sensitive.items():
+    entries = spec["entries"]
+    mode = spec["mode"]
+    if mode == "all":
+        ok = all(entry in deny_set for entry in entries)
+    else:
+        ok = any(entry in deny_set for entry in entries)
+    if not ok:
+        missing.append(category)
+
 if missing:
-    print("missing sensitive deny coverage: " + ", ".join(missing[:10]))
+    print("missing sensitive deny categories: " + ", ".join(missing[:12]))
     sys.exit(1)
 PY
   then

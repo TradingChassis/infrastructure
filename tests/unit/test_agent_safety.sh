@@ -178,6 +178,7 @@ EOF
       "Shell(git:remote)",
       "Read(**/.env)",
       "Read(**/.env.*)",
+      "Read(**/*.env)",
       "Read(**/*.tfstate)",
       "Read(**/*.tfstate.*)",
       "Read(**/terraform.tfvars)",
@@ -190,8 +191,10 @@ EOF
       "Read(**/*.p12)",
       "Read(**/*.ppk)",
       "Read(**/id_rsa)",
-      "Read(**/*vault*)",
+      "Read(**/id_ed25519)",
+      "Read(**/*.vault_pass)",
       "Write(**/.env)",
+      "Write(**/*.env)",
       "Write(**/*.tfstate)",
       "Write(**/terraform.tfvars)",
       "Write(**/.oci/**)",
@@ -200,6 +203,8 @@ EOF
       "Write(**/*.key)",
       "Write(**/*.p12)",
       "Write(**/*.ppk)",
+      "Write(**/id_rsa)",
+      "Write(**/id_ed25519)",
       "Write(.cursor/**)",
       "Write(.cursorignore)",
       "Write(AGENTS.md)",
@@ -446,6 +451,194 @@ json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
 PY
   echo "==> Wrong allow-list data type fails"
   assert_failure "wrong allow list type fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/sh-not-covered-by-ssh"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [
+    entry for entry in data["permissions"]["deny"]
+    if entry not in {"Shell(sh)", "Shell(sh:*)"}
+]
+if "Shell(ssh)" not in data["permissions"]["deny"]:
+    data["permissions"]["deny"].append("Shell(ssh)")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Shell(sh) is not covered by Shell(ssh)"
+  assert_failure "Shell(sh) not covered by Shell(ssh)" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/su-not-covered-by-sudo"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [
+    entry for entry in data["permissions"]["deny"]
+    if entry not in {"Shell(su)", "Shell(su:*)"}
+]
+if "Shell(sudo)" not in data["permissions"]["deny"]:
+    data["permissions"]["deny"].append("Shell(sudo)")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Shell(su) is not covered by Shell(sudo)"
+  assert_failure "Shell(su) not covered by Shell(sudo)" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/exact-shell-sh-passes"
+  seed_valid_fixture "$fixture"
+  echo "==> Exact required Shell(sh) deny passes"
+  assert_success "exact Shell(sh) deny passes" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/git-commit-wildcard-covers"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+deny = [
+    entry for entry in data["permissions"]["deny"]
+    if entry != "Shell(git:commit)"
+]
+if "Shell(git:commit*)" not in deny:
+    deny.append("Shell(git:commit*)")
+data["permissions"]["deny"] = deny
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Supported Shell(git:commit*) wildcard covers Shell(git:commit)"
+  assert_success "Shell(git:commit*) covers Shell(git:commit)" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-id-rsa-read"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [e for e in data["permissions"]["deny"] if e != "Read(**/id_rsa)"]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Missing id_rsa Read deny fails"
+  assert_failure "missing id_rsa Read deny fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-id-rsa-write"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [e for e in data["permissions"]["deny"] if e != "Write(**/id_rsa)"]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Missing id_rsa Write deny fails"
+  assert_failure "missing id_rsa Write deny fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-id-ed25519-read"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [e for e in data["permissions"]["deny"] if e != "Read(**/id_ed25519)"]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Missing id_ed25519 Read deny fails"
+  assert_failure "missing id_ed25519 Read deny fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-id-ed25519-write"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [e for e in data["permissions"]["deny"] if e != "Write(**/id_ed25519)"]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Missing id_ed25519 Write deny fails"
+  assert_failure "missing id_ed25519 Write deny fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/id-rsa-not-ed25519"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [
+    e for e in data["permissions"]["deny"]
+    if "id_ed25519" not in e
+]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> id_rsa entries do not satisfy id_ed25519 requirements"
+  assert_failure "id_rsa does not satisfy id_ed25519" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/id-ed25519-not-rsa"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [
+    e for e in data["permissions"]["deny"]
+    if "id_rsa" not in e
+]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> id_ed25519 entries do not satisfy id_rsa requirements"
+  assert_failure "id_ed25519 does not satisfy id_rsa" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/unrelated-key-substring"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/cli.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["permissions"]["deny"] = [
+    e for e in data["permissions"]["deny"]
+    if "id_rsa" not in e and "id_ed25519" not in e
+]
+# Visibly fake path fragment; not a real key path.
+data["permissions"]["deny"].append("Read(**/example-not-a-secret-id_rsa-fragment)")
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Unrelated substring does not satisfy key categories"
+  assert_failure "unrelated substring does not satisfy key denies" "$CHECKER" --root "$fixture"
+
+  for cmd in zsh fish doas env xargs find; do
+    fixture="${TMP_ROOT}/ide-forbidden-${cmd}"
+    seed_valid_fixture "$fixture"
+    python3 - "$fixture/.cursor/permissions.json" "$cmd" <<'PY'
+import json, sys
+path = sys.argv[1]
+cmd = sys.argv[2]
+data = json.load(open(path, encoding="utf-8"))
+data["terminalAllowlist"].append(cmd)
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+    echo "==> IDE allowlist with ${cmd} fails"
+    assert_failure "IDE forbidden token ${cmd} fails" "$CHECKER" --root "$fixture"
+  done
+
+  fixture="${TMP_ROOT}/ide-safe-entries-still-ok"
+  seed_valid_fixture "$fixture"
+  python3 - "$fixture/.cursor/permissions.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["terminalAllowlist"] = [
+    "git status",
+    "git branch --show-current",
+    "git rev-parse HEAD",
+    "./tools/check-agent-safety",
+    "./tools/validate-safe",
+]
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+  echo "==> Safe IDE allowlist entries still pass"
+  assert_success "safe IDE allowlist entries pass" "$CHECKER" --root "$fixture"
 
   echo
   echo "Summary: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"
