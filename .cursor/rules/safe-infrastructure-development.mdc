@@ -1,0 +1,102 @@
+---
+description: "Safety and workflow rules for TradingChassis infrastructure development"
+alwaysApply: true
+---
+
+# Safe Infrastructure Development
+
+Verify first. Fix only if confirmed.
+
+These repository guardrails are an additional protection layer. They do not replace OS sandboxing, operating-system permissions, manual confirmation, or Git review.
+
+## Communication
+
+- User-facing communication is in German.
+- All repository content is in English (rules, comments, errors, tests, docs, commits, and PR text).
+
+## Verification
+
+- Verify every reported problem against the current checkout before changing code.
+- Classify findings as `confirmed`, `partially confirmed`, `not confirmed`, or `insufficient evidence`.
+- Do not implement speculative fixes.
+- Prefer the smallest change that addresses a confirmed problem.
+
+## Environment safety
+
+- Classify the execution environment before running commands:
+  - `reliably isolated workspace sandbox`
+  - `direct host`
+  - `remote/cloud workspace`
+  - `unknown`
+- Do not treat an environment variable, UID, allowlist entry, or the word "sandbox" as proof of isolation.
+- Unknown and direct-host environments default to static inspection only.
+- Repository guardrails do not prove sandbox isolation.
+
+## Git
+
+- No work directly on `main`.
+- No force push.
+- No rebase, amend, history rewrite, automatic merge, tag mutation, or release mutation without an explicit dedicated scope.
+- One logical change per branch and pull request.
+- Do not commit or push unless the current prompt explicitly authorizes it.
+
+## Secrets
+
+- Do not read or output real environment files, Terraform state, tfvars, OCI credentials, private keys, kubeconfigs, Ansible Vault content, tokens, or GitHub credentials.
+- Do not copy values from local environments into repository examples.
+- Fake examples must be visibly non-functional (for example `example-not-a-secret`).
+
+## Terraform ownership
+
+- Terraform owns OCI resources.
+- Cursor must not run live `apply`, `destroy`, `import`, state manipulation, force-unlock, or credential-backed plans.
+- Provider and module versions must be controlled and pinned.
+- Terraform must not own normal Kubernetes application resources.
+
+## Ansible ownership
+
+- Ansible owns host configuration, storage, MicroK8s, and initial Argo CD bootstrap.
+- Do not execute playbooks against real inventories.
+- Syntax and lint evidence do not prove runtime idempotency.
+- Avoid broad error suppression (`ignore_errors`, catch-all rescues without justification).
+
+## Argo CD and Kubernetes ownership
+
+- Argo CD owns long-lived Kubernetes resources.
+- Cursor must not mutate a live cluster or read Kubernetes Secrets.
+- A resource must have one clear owner.
+- Out-of-band live patches require an explicit architecture decision.
+
+## Host protection
+
+- No package, service, firewall, routing, DNS, filesystem, mount, formatting, MicroK8s lifecycle, or host-network changes.
+- Never execute the existing Version-1 bootstrap scripts automatically.
+
+## Validation evidence
+
+Distinguish evidence clearly:
+
+- `live validated`
+- `CI validated`
+- `statically validated`
+- `statically identified`
+- `not yet validated`
+- `intentional behavior`
+- `planned`
+
+Do not turn static validation into a live-runtime claim.
+
+## Safety files
+
+- Changes to `.cursor/**`, `.cursorignore`, `AGENTS.md`, safety wrappers, or their tests require a dedicated scope.
+- Review the complete diff before running a newly edited safety wrapper.
+- Do not weaken checks merely to make validation pass.
+
+## Safe local validation
+
+Use only:
+
+- `./tools/check-agent-safety`
+- `./tools/validate-safe`
+
+after reviewing their contents when they change.

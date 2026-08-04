@@ -26,3 +26,49 @@ charts/
 
 # Temporary
 tmp/
+
+# --- Version 2 local artifacts (keep tracked examples usable) ---
+
+# Terraform local plugin/cache directory (keep .terraform.lock.hcl tracked)
+.terraform/
+crash.log
+crash.*.log
+
+# Kubernetes local kubeconfig filenames
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+
+# Certificate and SSH private-key filenames
+*.p12
+*.ppk
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+id_dsa
+id_dsa.*
+
+# Local Python virtual environments
+.venv/
+venv/
+
+# Ansible Vault password files
+*.vault_pass
+*.vault-pass
+.vault_pass
+.vault-pass
+vault_password
+vault_password.txt
+
+# Rendered secret output directories
+rendered-secrets/
+secrets-rendered/
+
+# Local diagnostics
+diagnostics/
+local-diagnostics/
+*.runtime.log
+*.diag.log

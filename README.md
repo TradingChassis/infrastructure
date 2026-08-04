@@ -302,9 +302,14 @@ For vulnerability reporting and security policy, see `SECURITY.md`.
 
 Additional Version 1 limitations and evidence gaps are listed in [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
 
+## AI-Assisted Development
+
+This repository includes Cursor and agent guardrails for AI-assisted work. Start at [`AGENTS.md`](AGENTS.md). These guardrails are an additional protection layer; they do not replace OS sandboxing, operating-system permissions, manual confirmation, or Git review.
+
 ## Additional Documentation
 
 - `VERSION_1_BASELINE.md` for Version 1 ownership, limitations, and Version 2 direction
+- `AGENTS.md` for the cross-agent safety entry point
 - `CONTRIBUTING.md` for contribution workflow
 - `SECURITY.md` for vulnerability reporting and security model
 - `CHANGELOG.md` for tracked changes
