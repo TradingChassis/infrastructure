@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Agent workflow documentation entry points (`AGENTS.md`, CONTRIBUTING and README notes)
 - GitHub Actions repository validation for agent safety checks, unit tests, safe static validation, and ShellCheck
 - Added the Terraform foundation for OCI infrastructure ownership and static CI validation
+- Added Terraform-managed OCI network infrastructure for the V2 reference implementation
 
 ### Fixed
 

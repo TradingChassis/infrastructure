@@ -82,8 +82,11 @@ jobs:
 
       - name: Terraform validate
         working-directory: terraform
-        # Non-secret placeholder for configuration validation only.
+        # Non-secret placeholders for configuration validation only.
+        # Values are documentation/examples and must not be treated as real tenancy data.
         # Does not authenticate to OCI and does not provision resources.
         env:
           TF_VAR_oci_region: eu-frankfurt-1
+          TF_VAR_oci_compartment_id: ocid1.compartment.oc1..example
+          TF_VAR_ssh_ingress_cidr: 203.0.113.0/24
         run: terraform validate
