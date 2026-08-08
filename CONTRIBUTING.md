@@ -62,6 +62,9 @@ Examples:
 
 A green static CI workflow does not constitute live infrastructure validation.
 
+Terraform changes must pass formatting, backend-disabled initialization, and validation in CI.
+Static Terraform validation does not prove that OCI resources can be provisioned successfully.
+
 ## Testing
 
 Before submitting:
