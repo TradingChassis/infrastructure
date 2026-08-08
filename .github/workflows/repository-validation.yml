@@ -89,4 +89,6 @@ jobs:
           TF_VAR_oci_region: eu-frankfurt-1
           TF_VAR_oci_compartment_id: ocid1.compartment.oc1..example
           TF_VAR_ssh_ingress_cidr: 203.0.113.0/24
+          # Synthetic public key for static validation only. Not a real identity.
+          TF_VAR_ssh_public_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ci-validate-only@example.invalid
         run: terraform validate
