@@ -5,7 +5,7 @@ variable "oci_region" {
 
 variable "oci_compartment_id" {
   type        = string
-  description = "OCID of the compartment that owns the OCI network resources."
+  description = "OCID of the compartment that owns the OCI network and compute resources."
 }
 
 variable "name_prefix" {
@@ -76,4 +76,70 @@ variable "subnet_dns_label" {
     condition     = can(regex("^[a-z][a-z0-9]{0,14}$", var.subnet_dns_label))
     error_message = "subnet_dns_label must match ^[a-z][a-z0-9]{0,14}$."
   }
+}
+
+variable "compute_ocpus" {
+  type        = number
+  description = "OCPU count for the OCI ARM reference profile (VM.Standard.A1.Flex). This is a sizing input, not a free-tier guarantee."
+  default     = 4
+
+  validation {
+    condition     = var.compute_ocpus >= 1 && var.compute_ocpus <= 76
+    error_message = "compute_ocpus must be between 1 and 76 for VM.Standard.A1.Flex."
+  }
+}
+
+variable "compute_memory_gbs" {
+  type        = number
+  description = "Memory in GB for the OCI ARM reference profile (VM.Standard.A1.Flex). This is a sizing input, not a free-tier guarantee."
+  default     = 24
+
+  validation {
+    condition     = var.compute_memory_gbs >= 1 && var.compute_memory_gbs <= 472
+    error_message = "compute_memory_gbs must be between 1 and 472 for VM.Standard.A1.Flex."
+  }
+}
+
+variable "boot_volume_size_gbs" {
+  type        = number
+  description = "Boot volume size in GB for the compute instance. Counts toward combined boot and block volume capacity when assessing tenancy free-tier eligibility."
+  default     = 50
+
+  validation {
+    condition     = var.boot_volume_size_gbs >= 50 && var.boot_volume_size_gbs <= 32768
+    error_message = "boot_volume_size_gbs must be at least 50 GB."
+  }
+}
+
+variable "ssh_public_key" {
+  type        = string
+  description = "SSH public key placed in instance metadata (authorized_keys). Private SSH keys must never be stored in Terraform configuration, committed tfvars, or GitHub Actions."
+
+  validation {
+    condition     = length(trimspace(var.ssh_public_key)) > 0
+    error_message = "ssh_public_key must be a non-empty SSH public key string."
+  }
+}
+
+variable "instance_hostname_label" {
+  type        = string
+  description = "Hostname label for the primary VNIC DNS name within the subnet."
+  default     = "tcnode"
+
+  validation {
+    condition     = can(regex("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", var.instance_hostname_label))
+    error_message = "instance_hostname_label must be a valid DNS hostname label."
+  }
+}
+
+variable "compute_operating_system" {
+  type        = string
+  description = "Platform image operating system filter for the compute instance."
+  default     = "Canonical Ubuntu"
+}
+
+variable "compute_operating_system_version" {
+  type        = string
+  description = "Platform image operating system version filter (Ubuntu 24.04 LTS)."
+  default     = "24.04"
 }

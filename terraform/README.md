@@ -9,7 +9,7 @@ Terraform manages OCI cloud infrastructure for the Version 2 reference implement
 Terraform owns:
 
 - network
-- compute (not yet provisioned)
+- compute
 - storage (not yet provisioned)
 - IAM (not yet provisioned)
 - cloud-level outputs
@@ -26,9 +26,13 @@ Argo CD owns long-lived Kubernetes desired state.
 
 ## Network ownership
 
-Terraform now owns the OCI network foundation.
+Terraform owns the OCI network foundation (VCN, subnet, internet routing, compute NSG).
 
-## Current network scope
+## Compute ownership
+
+Terraform owns the OCI Ampere ARM reference compute instance.
+
+## Current managed scope
 
 ```text
 VCN
@@ -37,29 +41,39 @@ internet routing
 network security group
 SSH ingress policy
 outbound policy
+Ampere A1 Flex compute instance
+public IPv4 for SSH access
 ```
 
-The public subnet enables direct SSH reachability for the single-node reference implementation.
-Public subnet does not mean unrestricted ingress.
-
-Instance access policy is owned by the compute Network Security Group.
-The subnet uses an intentionally empty security list so the VCN default security list is not treated as the central policy.
-
-## Not yet managed
+## Reference compute profile
 
 ```text
-compute
-block storage
-IAM
-Vault
-host firewall
-MicroK8s
-Argo CD
+Shape: VM.Standard.A1.Flex (OCI Ampere A1)
+OS image: Canonical Ubuntu 24.04 LTS (ARM64 / aarch64 via platform image lookup)
+Default sizing: 4 OCPUs, 24 GB memory, 50 GB boot volume
 ```
 
-Application NodePorts present in Version 1 manifests (`30007`, `32120`, `30090`, `30500`) are intentionally not opened in this network scope.
-Application exposure remains a later access-policy decision.
-Access is expected to continue via SSH local port forwarding until that decision is made.
+CPU, memory, and boot volume size are Terraform inputs.
+These defaults describe the V2 OCI ARM reference profile for a single-node MicroK8s host.
+They are **not** a guarantee of Always Free or Free Tier eligibility.
+
+Current OCI Free Tier / Always Free eligibility must be verified against the target tenancy and current Oracle terms before live apply.
+Official Oracle documentation currently presents differing A1 free-allowance figures across pages (for example Always Free resource notes versus Ampere getting-started notes). Operators must confirm the allowance that applies to their account type before provisioning.
+
+Always Free storage allotments, where applicable, count boot volumes and block volumes together. Scratch block storage is intentionally deferred and must be sized with the boot volume in a later storage scope.
+
+Idle Always Free A1 instances may be subject to Oracle reclamation conditions documented in current Free Tier terms.
+
+## Image selection trade-off
+
+The configuration selects the latest compatible Ubuntu 24.04 platform image for `VM.Standard.A1.Flex` (sorted by creation time descending).
+This favors current security updates over immutable image pinning.
+Because platform images rotate, a later plan may select a newer image OCID and propose instance replacement unless the operator pins or otherwise controls image changes.
+
+## Availability Domain strategy
+
+The first availability domain returned for the compartment is used for this single-node reference instance.
+OCI documents that availability-domain list order can change; this deterministic first-element choice is acceptable for a non-HA reference host and is not a multi-AD design.
 
 ## Security boundary
 
@@ -67,10 +81,21 @@ Access is expected to continue via SSH local port forwarding until that decision
 OCI network security and the future host firewall are separate defense layers.
 ```
 
-Broad outbound access is an explicit bootstrap/runtime requirement, not an implicit default.
-SSH ingress is restricted by the `ssh_ingress_cidr` input and must not default to the entire Internet.
+SSH ingress remains restricted by `ssh_ingress_cidr` on the compute NSG.
+Application NodePorts are not exposed by Terraform.
+Private SSH keys must never be stored in Terraform configuration, tfvars committed to Git, or GitHub Actions.
 
-Credentials are supplied by the execution environment during approved live operations and are never committed to this repository.
+## Not yet managed
+
+```text
+scratch block storage
+IAM
+Vault
+host firewall
+MicroK8s
+Argo CD
+Ansible inventory generation
+```
 
 ## Validation
 
@@ -83,6 +108,24 @@ terraform -chdir=terraform validate
 ```
 
 `terraform init -backend=false` may download the pinned OCI provider from the public Terraform Registry. That step is networked but non-mutating validation only.
+Data sources such as images and availability domains are not resolved by `terraform validate`.
+
+## Execution model
+
+```text
+CI:
+fmt / init -backend=false / validate only
+
+Future approved operator workflow:
+init
+plan
+review
+apply
+```
+
+Live `plan` / `apply` is intentionally outside automated CI.
+Remote state and authentication must still be decided before collaborative live provisioning.
+Credentials are supplied by the execution environment during approved live operations and are never committed to this repository.
 
 ## State
 
@@ -90,16 +133,9 @@ The repository currently uses backend-disabled initialization for static validat
 A shared remote state backend must be selected before collaborative live provisioning.
 Local state must not be committed or treated as the team source of truth.
 
-A later decision will choose an approved remote backend (for example OCI Object Storage or another approved backend). No remote backend is configured in this foundation scope.
-
 ## Provider lock file
 
-`.terraform.lock.hcl` should be committed once it can be generated in a controlled environment (for example after a verified CI or approved local Terraform run). Fabricated lock hashes must not be committed.
-Until a verified lock file is committed, provider selection remains constrained by `versions.tf` only and carries a reproducibility residual risk.
-
-## Live execution
-
-Live `plan` / `apply` is intentionally outside automated CI.
+`.terraform.lock.hcl` should be committed once it can be generated in a controlled environment. Fabricated lock hashes must not be committed.
 
 ## Multi-cloud
 
