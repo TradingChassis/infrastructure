@@ -46,3 +46,5 @@ If applicable, describe migration impact.
 - [ ] Code follows project style guidelines
 - [ ] Self-review completed
 - [ ] Documentation updated (if needed)
+- [ ] `CHANGELOG.md` is updated under `[Unreleased]`, or the PR documents why no entry is required
+- [ ] Relevant validation was added or updated when this PR introduces a new tool or configuration domain

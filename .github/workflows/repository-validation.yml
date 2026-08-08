@@ -1,0 +1,57 @@
+# Static repository validation only.
+# Does not provision, configure, or mutate infrastructure.
+name: Repository Validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Static repository checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify runner tooling
+        run: |
+          set -euo pipefail
+          bash --version
+          python3 --version
+          shellcheck --version
+
+      - name: Check agent safety
+        run: ./tools/check-agent-safety
+
+      - name: Run agent safety unit tests
+        run: ./tests/unit/test_agent_safety.sh
+
+      - name: Run safe repository validation
+        run: ./tools/validate-safe
+
+      - name: Run ShellCheck on tracked shell files
+        run: |
+          set -euo pipefail
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < <(git ls-files -z -- '*.sh')
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No tracked *.sh files found; ShellCheck step succeeds."
+            exit 0
+          fi
+
+          echo "Running ShellCheck on ${#files[@]} tracked shell file(s):"
+          printf '  %s\n' "${files[@]}"
+          shellcheck "${files[@]}"
