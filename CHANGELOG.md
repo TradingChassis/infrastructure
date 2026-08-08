@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Local static safety self-check and validation wrappers (`tools/check-agent-safety`, `tools/validate-safe`) with unit tests
 - Agent workflow documentation entry points (`AGENTS.md`, CONTRIBUTING and README notes)
 - GitHub Actions repository validation for agent safety checks, unit tests, safe static validation, and ShellCheck
+- Added the Terraform foundation for OCI infrastructure ownership and static CI validation
 
 ### Fixed
 
