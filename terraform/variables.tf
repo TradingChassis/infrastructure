@@ -36,8 +36,13 @@ variable "subnet_cidr" {
   default     = "10.0.1.0/24"
 
   validation {
-    condition     = can(cidrnetmask(var.subnet_cidr))
-    error_message = "subnet_cidr must be a valid IPv4 CIDR block."
+    condition = (
+      can(cidrnetmask(var.subnet_cidr)) &&
+      can(cidrnetmask(var.vcn_cidr)) &&
+      cidrcontains(var.vcn_cidr, cidrhost(var.subnet_cidr, 0)) &&
+      cidrcontains(var.vcn_cidr, cidrhost(var.subnet_cidr, -1))
+    )
+    error_message = "subnet_cidr must be a valid IPv4 CIDR block fully contained within vcn_cidr."
   }
 }
 
