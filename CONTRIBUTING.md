@@ -44,10 +44,29 @@ Use clear commit messages:
 - `fix: correct SecretProviderClass parameters`
 - `docs: update bootstrap instructions`
 
+## Changelog
+
+Every logical repository change must update `CHANGELOG.md` under `[Unreleased]` unless the change is explicitly exempted during review.
+
+Do not create a new SemVer release section until an intentional release cut.
+
+## CI ownership
+
+Validation grows with the architecture. A pull request that introduces a new infrastructure tool or configuration domain must add or extend the relevant CI validation in the same logical scope when practical.
+
+Examples:
+
+- Terraform foundation → add Terraform validation in that pull request
+- Ansible foundation → add Ansible validation in that pull request
+- Kubernetes / Argo CD validation scope → add render/schema validation in that pull request
+
+A green static CI workflow does not constitute live infrastructure validation.
+
 ## Testing
 
 Before submitting:
 
 - Prefer local static validation with `./tools/validate-safe` when changing safety or shell tooling
+- Ensure GitHub Actions repository validation remains green for the pull request when CI applies
 - `kustomize build` must succeed for manifest changes
 - YAML must be valid

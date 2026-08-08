@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Secret and index protection via `.cursorignore` and expanded `.gitignore` patterns
 - Local static safety self-check and validation wrappers (`tools/check-agent-safety`, `tools/validate-safe`) with unit tests
 - Agent workflow documentation entry points (`AGENTS.md`, CONTRIBUTING and README notes)
+- GitHub Actions repository validation for agent safety checks, unit tests, safe static validation, and ShellCheck
 
 ## [0.1.0] - 2026-07-30
 
