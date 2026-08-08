@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Local static safety self-check and validation wrappers (`tools/check-agent-safety`, `tools/validate-safe`) with unit tests
 - Agent workflow documentation entry points (`AGENTS.md`, CONTRIBUTING and README notes)
 
+### Fixed
+
+- Resolved ShellCheck findings in the agent safety tooling without weakening validation behavior
+
 ## [0.1.0] - 2026-07-30
 
 First documented public baseline of the first-generation architecture (Bash bootstrap, MicroK8s, Argo CD, and GitOps-managed platform applications). “Version 1” names that architecture generation and is not a SemVer `v1.0.0` tag.
