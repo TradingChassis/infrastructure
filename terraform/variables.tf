@@ -95,8 +95,11 @@ variable "compute_memory_gbs" {
   default     = 24
 
   validation {
-    condition     = var.compute_memory_gbs >= 1 && var.compute_memory_gbs <= 472
-    error_message = "compute_memory_gbs must be between 1 and 472 for VM.Standard.A1.Flex."
+    condition = (
+      var.compute_memory_gbs >= var.compute_ocpus &&
+      var.compute_memory_gbs <= min(472, var.compute_ocpus * 64)
+    )
+    error_message = "compute_memory_gbs must be at least the OCPU count and at most 64 GB per OCPU (capped at 472 GB) for VM.Standard.A1.Flex."
   }
 }
 
