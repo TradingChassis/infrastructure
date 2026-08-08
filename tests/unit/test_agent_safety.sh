@@ -642,6 +642,8 @@ PY
 
   echo
   echo "Summary: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"
+  # Explicit cleanup call so ShellCheck sees a direct reference; trap covers early exits.
+  cleanup
   if [[ "$FAIL_COUNT" -gt 0 ]]; then
     exit 1
   fi

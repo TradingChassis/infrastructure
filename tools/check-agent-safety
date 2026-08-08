@@ -18,11 +18,6 @@ fail() {
   FAIL_COUNT=$((FAIL_COUNT + 1))
 }
 
-skip() {
-  printf 'SKIP: %s\n' "$1"
-  SKIP_COUNT=$((SKIP_COUNT + 1))
-}
-
 usage() {
   cat <<'EOF'
 Usage: check-agent-safety [--root DIR]
@@ -91,10 +86,6 @@ PY
     return 1
   fi
   return 0
-}
-
-json_text() {
-  cat "$1"
 }
 
 check_required_files() {
@@ -673,7 +664,13 @@ check_wrappers_safe() {
     "${ROOT}/tools/validate-safe"
   )
   # Match likely invocations, not deny-list mentions or documentation strings.
-  local invocation_re='(^|[[:space:];|&`(])(curl|wget)[[:space:]]+(https?://|ftp://)|(^|[[:space:];|&`(])(terraform|tofu)[[:space:]]+(init|plan|apply|destroy|import|state|force-unlock)|(^|[[:space:];|&`(])(oci|ansible|ansible-playbook|ansible-pull|ansible-galaxy|kubectl|helm|kustomize|microk8s|argocd)[[:space:]]|(^|[[:space:];|&`(])(apt-get|apt|dnf|yum|rpm|systemctl|mkfs|iptables|nft|ufw)[[:space:]]|(^|[[:space:];|&`(])(pip|npm|gem)[[:space:]]+install'
+  # Build the separator class without embedding a backtick inside a single-quoted
+  # string (avoids ShellCheck SC2016 false positives around the literal regex).
+  local sep_class invocation_re
+  sep_class='[[:space:];|&'
+  sep_class+=$'`'
+  sep_class+='(]'
+  invocation_re="(^|${sep_class})(curl|wget)[[:space:]]+(https?://|ftp://)|(^|${sep_class})(terraform|tofu)[[:space:]]+(init|plan|apply|destroy|import|state|force-unlock)|(^|${sep_class})(oci|ansible|ansible-playbook|ansible-pull|ansible-galaxy|kubectl|helm|kustomize|microk8s|argocd)[[:space:]]|(^|${sep_class})(apt-get|apt|dnf|yum|rpm|systemctl|mkfs|iptables|nft|ufw)[[:space:]]|(^|${sep_class})(pip|npm|gem)[[:space:]]+install"
   local bad=0
   local wrapper
   for wrapper in "${wrappers[@]}"; do
