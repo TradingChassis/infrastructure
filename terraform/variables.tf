@@ -91,15 +91,17 @@ variable "compute_ocpus" {
 
 variable "compute_memory_gbs" {
   type        = number
-  description = "Memory in GB for the OCI ARM reference profile (VM.Standard.A1.Flex). This is a sizing input, not a free-tier guarantee."
+  description = "Memory in GB for the OCI ARM reference profile (VM.Standard.A1.Flex). Per current OCI flexible-shape docs, minimum is max(1, OCPU count) and maximum is min(472, 64 * OCPUs). This is a sizing input, not a free-tier guarantee."
   default     = 24
 
   validation {
+    # VM.Standard.A1.Flex flexible-shape limits from OCI Compute Shapes documentation:
+    # minimum memory = max(1 GB, OCPU count); maximum = 64 GB per OCPU up to 472 GB.
     condition = (
-      var.compute_memory_gbs >= var.compute_ocpus &&
+      var.compute_memory_gbs >= max(1, var.compute_ocpus) &&
       var.compute_memory_gbs <= min(472, var.compute_ocpus * 64)
     )
-    error_message = "compute_memory_gbs must be at least the OCPU count and at most 64 GB per OCPU (capped at 472 GB) for VM.Standard.A1.Flex."
+    error_message = "compute_memory_gbs must satisfy VM.Standard.A1.Flex limits: at least max(1, compute_ocpus) GB and at most min(472, 64 * compute_ocpus) GB."
   }
 }
 
