@@ -11,7 +11,7 @@ Terraform owns:
 - network
 - compute
 - storage (cloud volume and attachment)
-- IAM (not yet provisioned)
+- IAM (instance principal Dynamic Group and least-privilege Vault secret-bundle policy)
 - cloud-level outputs
 
 Terraform does **not** own:
@@ -20,6 +20,7 @@ Terraform does **not** own:
 - MicroK8s
 - Argo CD bootstrap
 - long-lived Kubernetes resources
+- Vault lifecycle or secret values
 
 Ansible will own host configuration and bootstrap.
 Argo CD owns long-lived Kubernetes desired state.
@@ -85,6 +86,48 @@ In-transit encryption for the paravirtualized attachment is enabled. Platform en
 The V1 host scratch mount and Kubernetes hostpath PVCs were not explicitly bound to the same storage path.
 V2 will close that gap later in the Ansible and Argo CD storage contracts. This Terraform scope only provisions the cloud-side volume and attachment.
 
+## Instance principal access
+
+Terraform now owns:
+
+```text
+Dynamic Group membership for the reference compute instance
+IAM permission for OCI Vault secret-bundle reads
+```
+
+The Dynamic Group matches only the Terraform-managed reference compute instance (`instance.id`).
+The IAM policy is created in the tenancy and grants:
+
+```text
+read secret-bundles
+in compartment id <oci_vault_compartment_id>
+```
+
+### Least privilege
+
+```text
+The reference instance can read secret bundles only in the configured secret compartment.
+It does not receive Vault, key, secret-management, or broad tenancy permissions.
+```
+
+V1 resolves secrets by name inside SecretProviderClass manifests. Secret OCIDs are not present in this repository, so compartment-scoped `read secret-bundles` is the minimal practical policy for this migration stage.
+Further restriction to individual `target.secret.id` values remains a later hardening option once secret OCIDs are managed as explicit inputs.
+
+### External Vault
+
+```text
+The Vault and secret values remain externally managed at this migration stage.
+```
+
+`oci_vault_id` is an infrastructure reference for later CSI / Argo CD configuration, not a secret value.
+
+### Later ownership
+
+```text
+Terraform → OCI identity and access
+Ansible/Argo CD later → CSI/provider/bootstrap and declarative Kubernetes secret consumption
+```
+
 ## Current managed scope
 
 ```text
@@ -98,7 +141,34 @@ Ampere A1 Flex compute instance
 public IPv4 for SSH access
 scratch Block Volume
 scratch volume attachment
+instance principal Dynamic Group
+least-privilege Vault secret-bundle IAM policy
 ```
+
+## Terraform cloud-layer status
+
+After this IAM scope, the planned cloud-side Terraform migration layer is substantially complete:
+
+```text
+network
+compute
+scratch block storage
+instance principal IAM
+```
+
+This is **not** a claim that Terraform is production-ready or live-validated.
+
+Still open before collaborative live apply:
+
+```text
+.terraform.lock.hcl (if still absent)
+remote state
+approved OCI authentication
+plan/review/apply workflow
+live provisioning validation
+```
+
+The next planned implementation area after this cloud-side layer is Ansible foundation, not an unrelated Terraform feature expansion.
 
 ## Reference compute profile
 
@@ -140,8 +210,10 @@ Private SSH keys must never be stored in Terraform configuration, tfvars committ
 
 ```text
 host filesystem and mount state
-IAM
-Vault
+Vault lifecycle and secret values
+Secrets Store CSI Driver
+OCI CSI provider
+SecretProviderClass / Kubernetes Secrets
 host firewall
 MicroK8s
 Argo CD
