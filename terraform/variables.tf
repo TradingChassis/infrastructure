@@ -159,3 +159,18 @@ variable "scratch_volume_size_gbs" {
     error_message = "scratch_volume_size_gbs must be between 50 GB and 32768 GB."
   }
 }
+
+variable "oci_tenancy_id" {
+  type        = string
+  description = "OCID of the OCI tenancy (root compartment). Required for tenancy-scoped IAM resources such as Dynamic Groups and this instance-principal policy."
+}
+
+variable "oci_vault_id" {
+  type        = string
+  description = "OCID of the externally managed OCI Vault used by the platform secret integration. The Vault itself is not provisioned by Terraform in this migration stage."
+}
+
+variable "oci_vault_compartment_id" {
+  type        = string
+  description = "OCID of the compartment that contains the Vault secrets whose bundles the reference instance may read. Kept separate from oci_compartment_id because V1 does not prove Vault and compute share one compartment."
+}

@@ -47,3 +47,18 @@ output "scratch_volume_attachment_type" {
   description = "Attachment type used for the scratch volume (paravirtualized)."
   value       = oci_core_volume_attachment.scratch.attachment_type
 }
+
+output "vault_id" {
+  description = "OCID of the externally managed OCI Vault used by the platform secret integration."
+  value       = var.oci_vault_id
+}
+
+output "instance_principal_dynamic_group_id" {
+  description = "OCID of the Dynamic Group that matches only the Terraform-managed reference compute instance."
+  value       = oci_identity_dynamic_group.instance_principal.id
+}
+
+output "instance_principal_policy_id" {
+  description = "OCID of the IAM policy that grants least-privilege secret-bundle read access."
+  value       = oci_identity_policy.vault_secret_bundles.id
+}

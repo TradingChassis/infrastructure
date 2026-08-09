@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added Terraform-managed OCI network infrastructure for the V2 reference implementation
 - Added Terraform-managed OCI Ampere ARM compute provisioning for the V2 reference implementation
 - Added Terraform-managed OCI scratch block storage and compute attachment for the V2 reference implementation
+- Added Terraform-managed OCI instance principal access for least-privilege Vault secret retrieval
 
 ### Fixed
 
