@@ -1,0 +1,5 @@
+---
+- name: Configure TradingChassis host
+  hosts: tradingchassis
+  gather_facts: false
+  tasks: []

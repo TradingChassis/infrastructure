@@ -95,3 +95,45 @@ jobs:
           # Synthetic public key for static validation only. Not a real identity.
           TF_VAR_ssh_public_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ci-validate-only@example.invalid
         run: terraform validate
+
+  ansible:
+    name: Ansible validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Ansible validation tooling
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            "ansible-core==2.21.2" \
+            "ansible-lint==26.6.0"
+
+      - name: Show Ansible tooling versions
+        run: |
+          set -euo pipefail
+          ansible --version
+          ansible-lint --version
+
+      - name: Run ansible-lint
+        run: ansible-lint ansible/
+
+      - name: Ansible playbook syntax check
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+        run: |
+          set -euo pipefail
+          ansible-playbook \
+            --syntax-check \
+            -i ansible/inventory/example.yml \
+            ansible/playbooks/site.yml

@@ -1,0 +1,10 @@
+---
+# Non-live example inventory for static validation only.
+# Do not use this file as production inventory.
+# 192.0.2.10 is a documentation address from RFC 5737 TEST-NET-1.
+all:
+  children:
+    tradingchassis:
+      hosts:
+        reference-node:
+          ansible_host: 192.0.2.10
