@@ -10,7 +10,7 @@ Terraform owns:
 
 - network
 - compute
-- storage (not yet provisioned)
+- storage (cloud volume and attachment)
 - IAM (not yet provisioned)
 - cloud-level outputs
 
@@ -32,6 +32,59 @@ Terraform owns the OCI network foundation (VCN, subnet, internet routing, comput
 
 Terraform owns the OCI Ampere ARM reference compute instance.
 
+## Scratch storage
+
+Logical storage role: `scratch`.
+
+OCI implementation: a dedicated Block Volume attached to the reference compute instance.
+
+```text
+Reference layout:
+boot volume:    50 GB
+scratch volume: 150 GB
+combined:       200 GB
+```
+
+This sizing reflects the OCI reference profile and is not a guarantee of current Free Tier eligibility or zero cost.
+Current OCI Free Tier / Always Free eligibility must be verified against the target tenancy and current Oracle terms before live apply.
+Where Always Free storage allotments apply, boot volumes and block volumes count together toward the combined allowance (commonly documented as 200 GB total). Always Free Block Volume resources are home-region constrained per current Oracle Free Tier documentation.
+
+### Ownership
+
+```text
+Terraform → volume and attachment
+Ansible → filesystem and mount
+Argo CD → Kubernetes storage contract
+```
+
+Terraform guarantees:
+
+- a scratch block volume exists
+- it is attached to the reference compute instance
+- resource and attachment identifiers are exposed
+
+Ansible will later guarantee:
+
+- the expected attached volume is resolved safely on the host
+- destructive formatting is guarded explicitly
+- the filesystem is mounted persistently at the platform scratch path
+
+### Device identification
+
+Host device names are not treated as a stable infrastructure contract.
+Do not rely on paths such as `/dev/oracleoci/oraclevds`, `/dev/sdb`, or `/dev/vdb` as Terraform outputs or architecture contracts.
+
+Attachment type: `paravirtualized`.
+This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference host and avoids Terraform-managed iSCSI login configuration. Ansible may still need to confirm the attached volume identity before formatting or mounting.
+
+Performance: `vpus_per_gb = 0` (Lower Cost) for a predictable, cost-conscious reference profile.
+In-transit encryption for the paravirtualized attachment is enabled. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
+
+### Known V1 storage gap
+
+The V1 host scratch mount and Kubernetes hostpath PVCs were not explicitly bound to the same storage path.
+V2 will close that gap later in the Ansible and Argo CD storage contracts. This Terraform scope only provisions the cloud-side volume and attachment.
+
 ## Current managed scope
 
 ```text
@@ -43,6 +96,8 @@ SSH ingress policy
 outbound policy
 Ampere A1 Flex compute instance
 public IPv4 for SSH access
+scratch Block Volume
+scratch volume attachment
 ```
 
 ## Reference compute profile
@@ -57,11 +112,6 @@ CPU, memory, and boot volume size are Terraform inputs.
 These defaults describe the V2 OCI ARM reference profile for a single-node MicroK8s host.
 They are **not** a guarantee of Always Free or Free Tier eligibility.
 
-Current OCI Free Tier / Always Free eligibility must be verified against the target tenancy and current Oracle terms before live apply.
-Official Oracle documentation currently presents differing A1 free-allowance figures across pages (for example Always Free resource notes versus Ampere getting-started notes). Operators must confirm the allowance that applies to their account type before provisioning.
-
-Always Free storage allotments, where applicable, count boot volumes and block volumes together. Scratch block storage is intentionally deferred and must be sized with the boot volume in a later storage scope.
-
 Idle Always Free A1 instances may be subject to Oracle reclamation conditions documented in current Free Tier terms.
 
 ## Image selection trade-off
@@ -73,6 +123,7 @@ Because platform images rotate, a later plan may select a newer image OCID and p
 ## Availability Domain strategy
 
 The first availability domain returned for the compartment is used for this single-node reference instance.
+The scratch Block Volume uses the compute instance availability domain so volume and instance remain attachment-compatible.
 OCI documents that availability-domain list order can change; this deterministic first-element choice is acceptable for a non-HA reference host and is not a multi-AD design.
 
 ## Security boundary
@@ -88,12 +139,13 @@ Private SSH keys must never be stored in Terraform configuration, tfvars committ
 ## Not yet managed
 
 ```text
-scratch block storage
+host filesystem and mount state
 IAM
 Vault
 host firewall
 MicroK8s
 Argo CD
+Kubernetes PV/PVC/StorageClass
 Ansible inventory generation
 ```
 
@@ -136,6 +188,7 @@ Local state must not be committed or treated as the team source of truth.
 ## Provider lock file
 
 `.terraform.lock.hcl` should be committed once it can be generated in a controlled environment. Fabricated lock hashes must not be committed.
+Until a verified lock file is committed, provider selection remains constrained by `versions.tf` only and carries a reproducibility residual risk.
 
 ## Multi-cloud
 

@@ -5,7 +5,7 @@ variable "oci_region" {
 
 variable "oci_compartment_id" {
   type        = string
-  description = "OCID of the compartment that owns the OCI network and compute resources."
+  description = "OCID of the compartment that owns the OCI network, compute, and storage resources."
 }
 
 variable "name_prefix" {
@@ -147,4 +147,15 @@ variable "compute_operating_system_version" {
   type        = string
   description = "Platform image operating system version filter (Ubuntu 24.04 LTS)."
   default     = "24.04"
+}
+
+variable "scratch_volume_size_gbs" {
+  type        = number
+  description = "Size in GB of the dedicated scratch Block Volume. Reference default 150 GB pairs with the 50 GB boot volume (200 GB combined). This sizing reflects the OCI reference profile and is not a guarantee of current Free Tier eligibility or zero cost."
+  default     = 150
+
+  validation {
+    condition     = var.scratch_volume_size_gbs >= 50 && var.scratch_volume_size_gbs <= 32768
+    error_message = "scratch_volume_size_gbs must be between 50 GB and 32768 GB."
+  }
 }
