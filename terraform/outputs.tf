@@ -32,3 +32,18 @@ output "instance_availability_domain" {
   description = "Availability domain where the reference compute instance is placed."
   value       = oci_core_instance.node.availability_domain
 }
+
+output "scratch_volume_id" {
+  description = "OCID of the dedicated scratch Block Volume."
+  value       = oci_core_volume.scratch.id
+}
+
+output "scratch_volume_attachment_id" {
+  description = "OCID of the scratch volume attachment to the reference compute instance."
+  value       = oci_core_volume_attachment.scratch.id
+}
+
+output "scratch_volume_attachment_type" {
+  description = "Attachment type used for the scratch volume (paravirtualized)."
+  value       = oci_core_volume_attachment.scratch.attachment_type
+}
