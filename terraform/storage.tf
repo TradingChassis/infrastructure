@@ -19,14 +19,16 @@ resource "oci_core_volume" "scratch" {
 }
 
 resource "oci_core_volume_attachment" "scratch" {
+  # Paravirtualized is the simplest supported attachment for the Ubuntu ARM
+  # A1 Flex reference host and avoids Terraform-managed iSCSI login.
   attachment_type = "paravirtualized"
   instance_id     = oci_core_instance.node.id
   volume_id       = oci_core_volume.scratch.id
   display_name    = "${var.name_prefix}-scratch-attachment"
 
   # Single-instance read/write scratch attachment for the reference host.
-  is_read_only  = false
-  is_shareable  = false
+  is_read_only = false
+  is_shareable = false
 
   # In-transit encryption for paravirtualized attachments; platform encryption
   # at rest remains the OCI default without introducing a Vault/KMS resource.
