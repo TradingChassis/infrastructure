@@ -65,6 +65,9 @@ A green static CI workflow does not constitute live infrastructure validation.
 Terraform changes must pass formatting, backend-disabled initialization, and validation in CI.
 Static Terraform validation does not prove that OCI resources can be provisioned successfully.
 
+Ansible changes must pass ansible-lint and playbook syntax validation in CI.
+Static Ansible validation does not constitute successful host convergence.
+
 ## Testing
 
 Before submitting:
