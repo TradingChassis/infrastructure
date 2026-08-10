@@ -102,37 +102,30 @@
   become: true
   changed_when: false
 
-- name: Collect MicroK8s addon status
+- name: Check required MicroK8s addon status
   ansible.builtin.command:
     argv:
       - microk8s
       - status
-      - --format
-      - yaml
+      - --addon
+      - "{{ item }}"
   become: true
-  register: microk8s_status_yaml
+  loop: "{{ microk8s_addons }}"
+  register: microk8s_addon_checks
   changed_when: false
   failed_when: >-
-    microk8s_status_yaml.rc != 0
-    or (microk8s_status_yaml.stdout | trim | length) == 0
-
-- name: Parse MicroK8s status YAML
-  ansible.builtin.set_fact:
-    microk8s_status: "{{ microk8s_status_yaml.stdout | from_yaml }}"
-
-- name: Derive enabled MicroK8s addon names
-  ansible.builtin.set_fact:
-    microk8s_enabled_addon_names: "{{ microk8s_status.addons.enabled | map(attribute='name') | list }}"
+    microk8s_addon_checks.rc != 0
+    or (microk8s_addon_checks.stdout | trim) not in ['enabled', 'disabled']
 
 - name: Enable missing required MicroK8s addons
   ansible.builtin.command:
     argv:
       - microk8s
       - enable
-      - "{{ item }}"
+      - "{{ item.item }}"
   become: true
-  loop: "{{ microk8s_addons }}"
-  when: item not in microk8s_enabled_addon_names
+  loop: "{{ microk8s_addon_checks.results }}"
+  when: (item.stdout | trim) == 'disabled'
   changed_when: true
 
 - name: Wait for MicroK8s readiness after addon convergence

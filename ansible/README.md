@@ -137,7 +137,7 @@ helm
 Canonical currently documents `helm` as installing Helm 3.
 `helm3` remains a transition alias and is not used by this role.
 
-Addon convergence inspects `microk8s status --format yaml` and enables only missing required addons.
+Addon convergence checks each required addon with `microk8s status --addon` and enables only addons reported as `disabled`.
 
 ## Firewall redesign
 
