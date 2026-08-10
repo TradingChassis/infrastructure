@@ -1,4 +1,4 @@
-# Ansible Foundation
+# Ansible
 
 ## Purpose
 
@@ -29,8 +29,8 @@ Argo CD owns long-lived Kubernetes desired state.
 ## Current scope
 
 ```text
-Foundation only.
-No host configuration is implemented yet.
+Host baseline contract validation is implemented.
+No scratch storage, MicroK8s, or host firewall enforcement is implemented yet.
 ```
 
 Project layout:
@@ -42,8 +42,48 @@ ansible/
 │   └── example.yml
 ├── playbooks/
 │   └── site.yml
-├── roles/          # reserved for later role scopes; not populated yet
+├── roles/
+│   └── host_baseline/
 └── README.md
+```
+
+## Host baseline
+
+The `host_baseline` role:
+
+* validates the supported Ubuntu reference host contract
+* validates the ARM64 reference architecture
+* does not configure MicroK8s yet
+* does not configure scratch storage yet
+* does not reproduce the V1 blanket iptables reset
+
+Supported contract (provider-neutral):
+
+```text
+distribution: Ubuntu
+major version: 24
+architecture: aarch64 or arm64
+```
+
+Cloud provider details such as OCI shape, VCN, NSG, and Block Volume APIs remain Terraform responsibilities.
+
+### Python and snap prerequisites
+
+Ubuntu 24.04 server cloud images commonly provide `python3`, which Ansible needs on the target.
+V1 also requires `snap` for MicroK8s installation.
+Neither package installation nor snap enablement is performed by this role.
+Presence of `python3` and `snap`/`snapd` remains a live bootstrap prerequisite to verify on the reference host before later MicroK8s scopes.
+
+## Firewall decision
+
+```text
+The V1 blanket iptables reset is intentionally not reproduced.
+The host firewall will be defined from verified MicroK8s networking requirements.
+```
+
+```text
+Firewall policy is deferred until the MicroK8s networking requirements
+are implemented and verified. The V1 blanket flush is not a V2 requirement.
 ```
 
 ## Inventory safety
@@ -78,7 +118,7 @@ runtime kubectl patches → declarative GitOps state
 Static validation only:
 
 ```bash
-ansible-lint ansible/
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-lint ansible/
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook --syntax-check \
   -i ansible/inventory/example.yml \
@@ -91,4 +131,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
 Live Ansible execution is intentionally not defined by this foundation scope.
 ```
 
-Static ansible-lint and syntax checks do not constitute successful host convergence.
+## Evidence
+
+```text
+Static CI validation does not prove successful host convergence.
+```

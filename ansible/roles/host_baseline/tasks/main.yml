@@ -1,0 +1,32 @@
+---
+- name: Assert supported operating system distribution
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == host_baseline_supported_distribution
+    fail_msg: >-
+      Unsupported distribution '{{ ansible_distribution }}'.
+      Expected '{{ host_baseline_supported_distribution }}'.
+    success_msg: >-
+      Distribution '{{ ansible_distribution }}' matches the supported host contract.
+
+- name: Assert supported operating system major version
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution_major_version == host_baseline_supported_distribution_major_version
+    fail_msg: >-
+      Unsupported distribution major version '{{ ansible_distribution_major_version }}'.
+      Expected '{{ host_baseline_supported_distribution_major_version }}'
+      for '{{ host_baseline_supported_distribution }}'.
+    success_msg: >-
+      Distribution major version '{{ ansible_distribution_major_version }}'
+      matches the supported host contract.
+
+- name: Assert supported CPU architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture in host_baseline_supported_architectures
+    fail_msg: >-
+      Unsupported architecture '{{ ansible_architecture }}'.
+      Expected one of {{ host_baseline_supported_architectures }}.
+    success_msg: >-
+      Architecture '{{ ansible_architecture }}' matches the supported host contract.
