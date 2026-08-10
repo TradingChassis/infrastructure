@@ -1,7 +1,8 @@
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: postgres
+  name: root
   namespace: argocd
 spec:
   project: default
@@ -9,11 +10,11 @@ spec:
   source:
     repoURL: https://github.com/TradingChassis/infrastructure
     targetRevision: main
-    path: apps/postgres
+    path: argocd
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: postgres
+    namespace: argocd
 
   syncPolicy:
     automated:

@@ -1,0 +1,87 @@
+---
+- name: Ensure Kubernetes Python client is installed for Ansible modules
+  ansible.builtin.apt:
+    name: python3-kubernetes
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Ensure Argo CD namespace exists
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ argocd_bootstrap_namespace }}"
+    state: present
+    kubeconfig: "{{ argocd_bootstrap_kubeconfig }}"
+  become: true
+
+- name: Install Argo CD Helm release
+  kubernetes.core.helm:
+    name: "{{ argocd_bootstrap_release_name }}"
+    chart_ref: "{{ argocd_bootstrap_chart_name }}"
+    chart_repo_url: "{{ argocd_bootstrap_chart_repo_url }}"
+    chart_version: "{{ argocd_bootstrap_chart_version }}"
+    release_namespace: "{{ argocd_bootstrap_namespace }}"
+    create_namespace: true
+    binary_path: "{{ argocd_bootstrap_helm_binary }}"
+    kubeconfig: "{{ argocd_bootstrap_kubeconfig }}"
+    wait: true
+    wait_timeout: "{{ argocd_bootstrap_wait_timeout | int }}"
+    values:
+      global:
+        image:
+          tag: "{{ argocd_bootstrap_app_version }}"
+      configs:
+        cm:
+          kustomize.buildOptions: "--enable-helm"
+  become: true
+
+- name: Wait for Argo CD server deployment
+  kubernetes.core.k8s:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ argocd_bootstrap_release_name }}-server"
+    namespace: "{{ argocd_bootstrap_namespace }}"
+    kubeconfig: "{{ argocd_bootstrap_kubeconfig }}"
+    wait: true
+    wait_timeout: "{{ argocd_bootstrap_wait_timeout | int }}"
+    wait_condition:
+      type: Available
+      status: "True"
+  become: true
+
+- name: Wait for Argo CD repo-server deployment
+  kubernetes.core.k8s:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ argocd_bootstrap_release_name }}-repo-server"
+    namespace: "{{ argocd_bootstrap_namespace }}"
+    kubeconfig: "{{ argocd_bootstrap_kubeconfig }}"
+    wait: true
+    wait_timeout: "{{ argocd_bootstrap_wait_timeout | int }}"
+    wait_condition:
+      type: Available
+      status: "True"
+  become: true
+
+- name: Wait for Argo CD application-controller
+  kubernetes.core.k8s:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: "{{ argocd_bootstrap_release_name }}-application-controller"
+    namespace: "{{ argocd_bootstrap_namespace }}"
+    kubeconfig: "{{ argocd_bootstrap_kubeconfig }}"
+    wait: true
+    wait_timeout: "{{ argocd_bootstrap_wait_timeout | int }}"
+  become: true
+
+- name: Apply GitOps root Application
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ argocd_bootstrap_kubeconfig }}"
+    definition: "{{ lookup('ansible.builtin.file', argocd_bootstrap_root_application_file) | from_yaml }}"
+  become: true
+  vars:
+    argocd_bootstrap_root_application_file: >-
+      {{ playbook_dir | dirname | dirname }}/argocd/root-app.yaml

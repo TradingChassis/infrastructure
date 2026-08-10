@@ -4,3 +4,5 @@ collections:
     version: "2.2.2"
   - name: community.general
     version: "13.2.0"
+  - name: kubernetes.core
+    version: "6.5.0"

@@ -1,0 +1,23 @@
+---
+# Argo CD namespace for the bootstrap installation and root Application.
+argocd_bootstrap_namespace: argocd
+
+# Helm chart pin from https://argoproj.github.io/argo-helm
+# Chart 8.2.7 ships appVersion v3.0.12; the image tag below selects the latest
+# Argo CD 3.0.x patch that still lists Kubernetes 1.29 in its tested matrix.
+argocd_bootstrap_chart_repo_url: https://argoproj.github.io/argo-helm
+argocd_bootstrap_chart_name: argo-cd
+argocd_bootstrap_chart_version: "8.2.7"
+argocd_bootstrap_app_version: v3.0.23
+argocd_bootstrap_release_name: argocd
+
+# MicroK8s Helm addon binary and in-cluster kubeconfig on the reference host.
+argocd_bootstrap_helm_binary: /snap/bin/microk8s.helm
+argocd_bootstrap_kubeconfig: /var/snap/microk8s/current/credentials/client.config
+
+argocd_bootstrap_root_application_name: root
+argocd_bootstrap_repo_url: https://github.com/TradingChassis/infrastructure
+argocd_bootstrap_target_revision: main
+argocd_bootstrap_root_path: argocd
+
+argocd_bootstrap_wait_timeout: 600
