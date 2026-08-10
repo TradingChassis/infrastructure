@@ -118,7 +118,7 @@ runtime kubectl patches → declarative GitOps state
 Static validation only:
 
 ```bash
-ansible-lint ansible/
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-lint ansible/
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook --syntax-check \
   -i ansible/inventory/example.yml \
