@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added an Ansible host-baseline role that validates the supported V2 host contract without reproducing unsafe V1 firewall behavior.
 - Added guarded Ansible scratch filesystem and UUID-based persistent mounting for the Terraform-managed OCI scratch volume, including the attachment device handoff output.
 - Added idempotent MicroK8s host configuration with the V1-required addons and replaced the V1 blanket firewall reset with an explicit UFW host policy.
+- Added idempotent Ansible bootstrap for Argo CD and the GitOps root application without reproducing V1 CRD deletion or runtime patching.
 
 ### Fixed
 

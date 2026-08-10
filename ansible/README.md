@@ -32,6 +32,7 @@ Argo CD owns long-lived Kubernetes desired state.
 Host baseline contract validation is implemented.
 Scratch filesystem validation, guarded formatting, and UUID-based mounting are implemented.
 MicroK8s installation, required addons, readiness, and an explicit UFW host firewall policy are implemented.
+Argo CD bootstrap and the GitOps root Application handoff are implemented.
 ```
 
 Project layout:
@@ -47,7 +48,8 @@ ansible/
 ├── roles/
 │   ├── host_baseline/
 │   ├── scratch_storage/
-│   └── microk8s/
+│   ├── microk8s/
+│   └── argocd_bootstrap/
 └── README.md
 ```
 
@@ -57,6 +59,7 @@ Playbook order:
 host_baseline
 scratch_storage
 microk8s
+argocd_bootstrap
 ```
 
 ## Host baseline
@@ -180,13 +183,62 @@ The host firewall allows TCP/22 for defense in depth without duplicating operato
 
 UFW is never reset and existing unmanaged rules are not blanket-deleted.
 
+## Argo CD bootstrap
+
+```text
+Ansible owns only initial Argo CD bootstrap.
+Argo CD owns long-lived Kubernetes desired state after bootstrap.
+```
+
+```text
+The V1 CRD deletion and runtime repo-server patch are intentionally not reproduced.
+```
+
+The `argocd_bootstrap` role:
+
+* ensures the `argocd` namespace
+* installs Argo CD via the pinned community Helm chart `argo-cd` `8.2.7`
+* pins Argo CD application image tag `v3.0.23`
+* configures `kustomize.buildOptions: --enable-helm` declaratively in Helm values
+* waits for server, repo-server, and application-controller readiness
+* applies the GitOps root Application from `argocd/root-app.yaml`
+
+Compatibility evidence:
+
+```text
+Argo CD 3.0 tested Kubernetes versions include v1.29
+(source: argoproj/argo-cd v3.0.23 docs/operator-manual/tested-kubernetes-versions.md).
+Argo CD 3.3+ tested matrices no longer list Kubernetes 1.29, so V1's v3.3.0 pin is not retained.
+```
+
+Root Application contract:
+
+```text
+Ansible → Argo CD → root Application → child Applications under argocd/
+```
+
+Child Application manifests remain Git-owned under `argocd/` and are selected by `argocd/kustomization.yaml`.
+Their controller namespace is `argocd` so the Argo CD instance can reconcile them.
+
 ## Deferred
 
 ```text
 Kubernetes scratch StorageClass binding to /mnt/scratch
 Secrets Store CSI / OCI provider
-Argo CD bootstrap
-Prometheus Operator CRD ownership / monitoring app
+Prometheus Operator CRD ownership / monitoring app ownership cleanup
+runtime VAULT_ID / OCI_REGION Application patch cleanup
+```
+
+Next CSI scope gates:
+
+```text
+The OCI Secrets Store CSI provider must be verified for linux/arm64
+before deployment to the Ampere A1 reference node.
+```
+
+```text
+Secrets Store CSI Driver and OCI provider versions must be selected
+for compatibility with the current MicroK8s 1.29 release line.
 ```
 
 The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains open until the Argo CD storage scope.
@@ -236,6 +288,7 @@ Pinned collections:
 ```text
 ansible.posix 2.2.2
 community.general 13.2.0
+kubernetes.core 6.5.0
 ```
 
 ## Live execution
