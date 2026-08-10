@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added Terraform-managed OCI instance principal access for least-privilege Vault secret retrieval
 - Added the Ansible foundation and CI validation for V2 host configuration and bootstrap development
 - Added an Ansible host-baseline role that validates the supported V2 host contract without reproducing unsafe V1 firewall behavior.
+- Added guarded Ansible scratch filesystem and UUID-based persistent mounting for the Terraform-managed OCI scratch volume, including the attachment device handoff output.
 
 ### Fixed
 
