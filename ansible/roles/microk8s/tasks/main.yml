@@ -1,0 +1,145 @@
+---
+- name: Ensure snapd is installed
+  ansible.builtin.apt:
+    name: snapd
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Ensure UFW package is installed
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Ensure snapd service is enabled and started
+  ansible.builtin.service:
+    name: snapd
+    state: started
+    enabled: true
+  become: true
+
+- name: Set UFW default incoming policy to deny
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+  become: true
+
+- name: Set UFW default outgoing policy to allow
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+  become: true
+
+- name: Set UFW default routed policy to allow for MicroK8s CNI
+  community.general.ufw:
+    direction: routed
+    policy: allow
+  become: true
+
+- name: Allow SSH on the host firewall
+  community.general.ufw:
+    rule: allow
+    port: "{{ microk8s_firewall_ssh_port }}"
+    proto: tcp
+    comment: TradingChassis SSH host access
+  become: true
+
+- name: Allow inbound traffic on the Calico VXLAN interface
+  community.general.ufw:
+    rule: allow
+    interface: vxlan.calico
+    direction: in
+    comment: MicroK8s Calico VXLAN inbound
+  become: true
+
+- name: Allow outbound traffic on the Calico VXLAN interface
+  community.general.ufw:
+    rule: allow
+    interface: vxlan.calico
+    direction: out
+    comment: MicroK8s Calico VXLAN outbound
+  become: true
+
+- name: Allow inbound traffic on Calico virtual ethernet interfaces
+  community.general.ufw:
+    rule: allow
+    interface: cali+
+    direction: in
+    comment: MicroK8s Calico veth inbound
+  become: true
+
+- name: Allow outbound traffic on Calico virtual ethernet interfaces
+  community.general.ufw:
+    rule: allow
+    interface: cali+
+    direction: out
+    comment: MicroK8s Calico veth outbound
+  become: true
+
+- name: Enable UFW with the explicit MicroK8s-compatible host policy
+  community.general.ufw:
+    state: enabled
+  become: true
+
+- name: Install MicroK8s from the pinned snap channel
+  community.general.snap:
+    name: microk8s
+    classic: true
+    channel: "{{ microk8s_channel }}"
+    state: present
+  become: true
+
+- name: Wait for MicroK8s to become ready
+  ansible.builtin.command:
+    argv:
+      - microk8s
+      - status
+      - --wait-ready
+  become: true
+  changed_when: false
+
+- name: Collect MicroK8s addon status
+  ansible.builtin.command:
+    argv:
+      - microk8s
+      - status
+      - --format
+      - yaml
+  become: true
+  register: microk8s_status_yaml
+  changed_when: false
+  failed_when: >-
+    microk8s_status_yaml.rc != 0
+    or (microk8s_status_yaml.stdout | trim | length) == 0
+
+- name: Parse MicroK8s status YAML
+  ansible.builtin.set_fact:
+    microk8s_status: "{{ microk8s_status_yaml.stdout | from_yaml }}"
+
+- name: Derive enabled MicroK8s addon names
+  ansible.builtin.set_fact:
+    microk8s_enabled_addon_names: "{{ microk8s_status.addons.enabled | map(attribute='name') | list }}"
+
+- name: Enable missing required MicroK8s addons
+  ansible.builtin.command:
+    argv:
+      - microk8s
+      - enable
+      - "{{ item }}"
+  become: true
+  loop: "{{ microk8s_addons }}"
+  when: item not in microk8s_enabled_addon_names
+  changed_when: true
+
+- name: Wait for MicroK8s readiness after addon convergence
+  ansible.builtin.command:
+    argv:
+      - microk8s
+      - status
+      - --wait-ready
+  become: true
+  changed_when: false

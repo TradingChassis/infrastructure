@@ -31,7 +31,7 @@ Argo CD owns long-lived Kubernetes desired state.
 ```text
 Host baseline contract validation is implemented.
 Scratch filesystem validation, guarded formatting, and UUID-based mounting are implemented.
-No MicroK8s or host firewall enforcement is implemented yet.
+MicroK8s installation, required addons, readiness, and an explicit UFW host firewall policy are implemented.
 ```
 
 Project layout:
@@ -46,8 +46,17 @@ ansible/
 │   └── site.yml
 ├── roles/
 │   ├── host_baseline/
-│   └── scratch_storage/
+│   ├── scratch_storage/
+│   └── microk8s/
 └── README.md
+```
+
+Playbook order:
+
+```text
+host_baseline
+scratch_storage
+microk8s
 ```
 
 ## Host baseline
@@ -56,7 +65,7 @@ The `host_baseline` role:
 
 * validates the supported Ubuntu reference host contract
 * validates the ARM64 reference architecture
-* does not configure MicroK8s yet
+* does not configure MicroK8s
 * does not reproduce the V1 blanket iptables reset
 
 Supported contract (provider-neutral):
@@ -68,13 +77,6 @@ architecture: aarch64 or arm64
 ```
 
 Cloud provider details such as OCI shape, VCN, NSG, and Block Volume APIs remain Terraform responsibilities.
-
-### Python and snap prerequisites
-
-Ubuntu 24.04 server cloud images commonly provide `python3`, which Ansible needs on the target.
-V1 also requires `snap` for MicroK8s installation.
-Neither package installation nor snap enablement is performed by this role.
-Presence of `python3` and `snap`/`snapd` remains a live bootstrap prerequisite to verify on the reference host before later MicroK8s scopes.
 
 ## Scratch storage ownership
 
@@ -113,29 +115,81 @@ scratch_storage_allow_format defaults to false.
 An existing filesystem of an unexpected type is never overwritten automatically.
 ```
 
-Additional fail-closed checks:
+## MicroK8s
 
-* missing or non-block scratch device
-* scratch candidate equals the root filesystem or its parent disk
-* scratch candidate mounted at an unexpected path
-* unexpected source already mounted at `/mnt/scratch`
+The `microk8s` role:
 
-V1 also created `/mnt/scratch/data` with UID/GID `1000`.
-That application-oriented ownership is not confirmed as a durable platform contract and is deferred.
+* ensures `snapd` and `ufw` packages are present
+* installs MicroK8s from the pinned snap channel `1.29/stable`
+* waits for readiness with `microk8s status --wait-ready`
+* enables only the verified V1-required addons when missing
+* applies an explicit UFW host firewall policy before relying on MicroK8s networking
 
-The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains outside this role and is deferred to Argo CD.
-
-## Firewall decision
+Required addons:
 
 ```text
-The V1 blanket iptables reset is intentionally not reproduced.
-The host firewall will be defined from verified MicroK8s networking requirements.
+dns
+hostpath-storage
+metrics-server
+helm
+```
+
+Canonical currently documents `helm` as installing Helm 3.
+`helm3` remains a transition alias and is not used by this role.
+
+Addon convergence inspects `microk8s status --format yaml` and enables only missing required addons.
+
+## Firewall redesign
+
+```text
+V1 flushed the host firewall and set permissive policies.
+V2 does not reproduce this behavior.
 ```
 
 ```text
-Firewall policy is deferred until the MicroK8s networking requirements
-are implemented and verified. The V1 blanket flush is not a V2 requirement.
+Cloud ingress policy and host firewall policy remain separate layers.
 ```
+
+Technology choice: **UFW**, using Canonical MicroK8s troubleshooting guidance for Calico on Ubuntu.
+
+Implemented host policy:
+
+```text
+default incoming: deny
+default outgoing: allow
+default routed: allow
+allow TCP/22 (SSH)
+allow in/out on vxlan.calico
+allow in/out on cali+
+UFW enabled
+```
+
+Not opened on the host firewall:
+
+```text
+Kubernetes API (16443/tcp)
+kubelet
+cluster-agent
+dqlite
+Calico VXLAN UDP to the Internet
+NodePort range 30000-32767
+```
+
+SSH remote source restriction remains the OCI NSG `ssh_ingress_cidr` responsibility.
+The host firewall allows TCP/22 for defense in depth without duplicating operator CIDR policy.
+
+UFW is never reset and existing unmanaged rules are not blanket-deleted.
+
+## Deferred
+
+```text
+Kubernetes scratch StorageClass binding to /mnt/scratch
+Secrets Store CSI / OCI provider
+Argo CD bootstrap
+Prometheus Operator CRD ownership / monitoring app
+```
+
+The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains open until the Argo CD storage scope.
 
 ## Inventory safety
 
@@ -159,7 +213,7 @@ Bash behavior is migrated by intent, not line-by-line.
 Examples:
 
 ```text
-iptables flush → explicit firewall redesign
+iptables flush → explicit UFW policy from verified MicroK8s requirements
 hardcoded block device → Terraform attachment identity + guarded validation
 runtime kubectl patches → declarative GitOps state
 ```
