@@ -5,3 +5,4 @@
   roles:
     - role: host_baseline
     - role: scratch_storage
+    - role: microk8s
