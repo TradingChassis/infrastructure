@@ -99,14 +99,14 @@ The `scratch_storage` role manages the host path:
 
 Persistent mount uses filesystem UUID.
 
-`scratch_device_path` must come from the Terraform scratch attachment output during approved live execution.
+`scratch_storage_device_path` must come from the Terraform scratch attachment output during approved live execution.
 V1 hardcoded a Linux device path.
 V2 consumes the Terraform attachment identity and validates the target before any destructive operation.
 
 ### Safety
 
 ```text
-scratch_allow_format defaults to false.
+scratch_storage_allow_format defaults to false.
 ```
 
 ```text
