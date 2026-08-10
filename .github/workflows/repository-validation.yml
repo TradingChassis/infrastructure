@@ -125,6 +125,11 @@ jobs:
           ansible --version
           ansible-lint --version
 
+      - name: Install Ansible collections
+        run: |
+          set -euo pipefail
+          ansible-galaxy collection install -r ansible/requirements.yml
+
       - name: Run ansible-lint
         env:
           ANSIBLE_CONFIG: ansible/ansible.cfg

@@ -1,0 +1,14 @@
+---
+# Required at live execution from the Terraform scratch attachment output.
+# Do not default to a hardcoded OCI or Linux device path.
+scratch_storage_device_path: ""
+
+scratch_storage_mount_path: /mnt/scratch
+scratch_storage_filesystem_type: ext4
+
+# Formatting is opt-in. Keep false unless the empty Terraform-managed scratch
+# volume has been explicitly verified for first-time filesystem creation.
+scratch_storage_allow_format: false
+
+# Oracle recommends _netdev and nofail for persistently attached block volumes.
+scratch_storage_mount_options: defaults,_netdev,nofail

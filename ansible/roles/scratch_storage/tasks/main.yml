@@ -1,0 +1,297 @@
+---
+- name: Assert scratch device path is provided
+  ansible.builtin.assert:
+    that:
+      - scratch_storage_device_path is string
+      - scratch_storage_device_path | length > 0
+    fail_msg: >-
+      scratch_storage_device_path must be set from the Terraform scratch
+      attachment output (scratch_volume_device) during approved live execution.
+      No hardcoded device path fallback is allowed.
+    success_msg: Scratch device path input is present.
+
+- name: Stat scratch device path
+  ansible.builtin.stat:
+    path: "{{ scratch_storage_device_path }}"
+    follow: true
+  register: scratch_storage_device_stat
+
+- name: Assert scratch path exists and is a block device
+  ansible.builtin.assert:
+    that:
+      - scratch_storage_device_stat.stat.exists
+      - scratch_storage_device_stat.stat.isblk
+    fail_msg: >-
+      Scratch path '{{ scratch_storage_device_path }}' must exist and resolve to
+      a block device before filesystem or mount operations continue.
+    success_msg: Scratch path resolves to an existing block device.
+
+- name: Resolve scratch candidate device path
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "{{ scratch_storage_device_path }}"
+  register: scratch_storage_device_resolved
+  changed_when: false
+  failed_when: >-
+    scratch_storage_device_resolved.rc != 0
+    or (scratch_storage_device_resolved.stdout | trim | length) == 0
+
+- name: Discover root filesystem source
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - -n
+      - -o
+      - SOURCE
+      - /
+  register: scratch_storage_root_fs_source
+  changed_when: false
+  failed_when: >-
+    scratch_storage_root_fs_source.rc != 0
+    or (scratch_storage_root_fs_source.stdout | trim | length) == 0
+
+- name: Resolve root filesystem source path
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "{{ scratch_storage_root_fs_source.stdout | trim }}"
+  register: scratch_storage_root_fs_resolved
+  changed_when: false
+  failed_when: >-
+    scratch_storage_root_fs_resolved.rc != 0
+    or (scratch_storage_root_fs_resolved.stdout | trim | length) == 0
+
+- name: Discover parent disk name for root filesystem source
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -no
+      - PKNAME
+      - "{{ scratch_storage_root_fs_resolved.stdout | trim }}"
+  register: scratch_storage_root_pkname
+  changed_when: false
+  failed_when: scratch_storage_root_pkname.rc != 0
+
+- name: Discover parent disk name for scratch candidate
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -no
+      - PKNAME
+      - "{{ scratch_storage_device_resolved.stdout | trim }}"
+  register: scratch_storage_candidate_pkname
+  changed_when: false
+  failed_when: scratch_storage_candidate_pkname.rc != 0
+
+- name: Derive root and candidate disk paths
+  ansible.builtin.set_fact:
+    scratch_storage_root_disk_path: >-
+      {{
+        ('/dev/' ~ (scratch_storage_root_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | first))
+        if ((scratch_storage_root_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | length) > 0)
+        else (scratch_storage_root_fs_resolved.stdout | trim)
+      }}
+    scratch_storage_candidate_disk_path: >-
+      {{
+        ('/dev/' ~ (scratch_storage_candidate_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | first))
+        if ((scratch_storage_candidate_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | length) > 0)
+        else (scratch_storage_device_resolved.stdout | trim)
+      }}
+
+- name: Resolve root disk path
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "{{ scratch_storage_root_disk_path }}"
+  register: scratch_storage_root_disk_resolved
+  changed_when: false
+  failed_when: >-
+    scratch_storage_root_disk_resolved.rc != 0
+    or (scratch_storage_root_disk_resolved.stdout | trim | length) == 0
+
+- name: Resolve scratch candidate disk path
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "{{ scratch_storage_candidate_disk_path }}"
+  register: scratch_storage_candidate_disk_resolved
+  changed_when: false
+  failed_when: >-
+    scratch_storage_candidate_disk_resolved.rc != 0
+    or (scratch_storage_candidate_disk_resolved.stdout | trim | length) == 0
+
+- name: Assert scratch candidate is not the root or boot device
+  ansible.builtin.assert:
+    that:
+      - (scratch_storage_device_resolved.stdout | trim) != (scratch_storage_root_fs_resolved.stdout | trim)
+      - (scratch_storage_device_resolved.stdout | trim) != (scratch_storage_root_disk_resolved.stdout | trim)
+      - (scratch_storage_candidate_disk_resolved.stdout | trim) != (scratch_storage_root_disk_resolved.stdout | trim)
+      - (scratch_storage_candidate_disk_resolved.stdout | trim) != (scratch_storage_root_fs_resolved.stdout | trim)
+    fail_msg: >-
+      Scratch candidate '{{ scratch_storage_device_resolved.stdout | trim }}' collides
+      with the root filesystem source '{{ scratch_storage_root_fs_resolved.stdout | trim }}'
+      or root disk '{{ scratch_storage_root_disk_resolved.stdout | trim }}'.
+      Formatting and mounting are refused.
+    success_msg: Scratch candidate is distinct from the root and boot device.
+
+- name: Discover mount target for scratch candidate device
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - -n
+      - -o
+      - TARGET
+      - --source
+      - "{{ scratch_storage_device_resolved.stdout | trim }}"
+  register: scratch_storage_candidate_mount_target
+  changed_when: false
+  failed_when: scratch_storage_candidate_mount_target.rc not in [0, 1]
+
+- name: Assert scratch candidate is not mounted elsewhere
+  ansible.builtin.assert:
+    that:
+      - scratch_storage_candidate_mount_target.rc == 1
+        or (scratch_storage_candidate_mount_target.stdout | trim) == scratch_storage_mount_path
+    fail_msg: >-
+      Scratch candidate '{{ scratch_storage_device_resolved.stdout | trim }}' is already
+      mounted at '{{ scratch_storage_candidate_mount_target.stdout | trim }}', which is
+      not '{{ scratch_storage_mount_path }}'. Automatic remounting is refused.
+    success_msg: Scratch candidate is not mounted at an unexpected path.
+
+- name: Discover source currently mounted at scratch mount path
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - -n
+      - -o
+      - SOURCE
+      - "{{ scratch_storage_mount_path }}"
+  register: scratch_storage_mount_path_source
+  changed_when: false
+  failed_when: scratch_storage_mount_path_source.rc not in [0, 1]
+
+- name: Resolve source currently mounted at scratch mount path
+  when: scratch_storage_mount_path_source.rc == 0
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "{{ scratch_storage_mount_path_source.stdout | trim }}"
+  register: scratch_storage_mount_path_source_resolved
+  changed_when: false
+  failed_when: >-
+    scratch_storage_mount_path_source_resolved.rc != 0
+    or (scratch_storage_mount_path_source_resolved.stdout | trim | length) == 0
+
+- name: Assert scratch mount path is free or already uses the candidate device
+  when: scratch_storage_mount_path_source.rc == 0
+  ansible.builtin.assert:
+    that:
+      - (scratch_storage_mount_path_source_resolved.stdout | trim) == (scratch_storage_device_resolved.stdout | trim)
+    fail_msg: >-
+      Mount path '{{ scratch_storage_mount_path }}' is already mounted from
+      '{{ scratch_storage_mount_path_source_resolved.stdout | trim }}', which differs
+      from scratch candidate '{{ scratch_storage_device_resolved.stdout | trim }}'.
+      Automatic replacement is refused.
+    success_msg: Scratch mount path already uses the expected candidate device.
+
+- name: Detect existing filesystem type on scratch candidate
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - -s
+      - TYPE
+      - -o
+      - value
+      - "{{ scratch_storage_device_resolved.stdout | trim }}"
+  register: scratch_storage_existing_fstype
+  become: true
+  changed_when: false
+  failed_when: scratch_storage_existing_fstype.rc not in [0, 2]
+
+- name: Assert unexpected existing filesystem is not overwritten
+  when:
+    - scratch_storage_existing_fstype.rc == 0
+    - (scratch_storage_existing_fstype.stdout | trim | length) > 0
+  ansible.builtin.assert:
+    that:
+      - (scratch_storage_existing_fstype.stdout | trim) == scratch_storage_filesystem_type
+    fail_msg: >-
+      Scratch candidate '{{ scratch_storage_device_resolved.stdout | trim }}' already has
+      filesystem type '{{ scratch_storage_existing_fstype.stdout | trim }}', which differs
+      from expected '{{ scratch_storage_filesystem_type }}'. Automatic conversion is refused.
+    success_msg: Existing scratch filesystem type matches the expected contract.
+
+- name: Assert empty scratch volume formatting is explicitly authorized
+  when: >-
+    scratch_storage_existing_fstype.rc == 2
+    or (scratch_storage_existing_fstype.stdout | trim | length) == 0
+  ansible.builtin.assert:
+    that:
+      - scratch_storage_allow_format | bool
+    fail_msg: >-
+      The scratch volume has no filesystem. Set scratch_storage_allow_format=true
+      only after verifying that this is the intended Terraform-managed scratch volume.
+    success_msg: Empty scratch volume formatting is explicitly authorized.
+
+- name: Create scratch filesystem when authorized and absent
+  when: >-
+    scratch_storage_allow_format | bool
+    and (
+      scratch_storage_existing_fstype.rc == 2
+      or (scratch_storage_existing_fstype.stdout | trim | length) == 0
+    )
+  community.general.filesystem:
+    fstype: "{{ scratch_storage_filesystem_type }}"
+    dev: "{{ scratch_storage_device_resolved.stdout | trim }}"
+    state: present
+    force: false
+  become: true
+
+- name: Read scratch filesystem UUID
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - -s
+      - UUID
+      - -o
+      - value
+      - "{{ scratch_storage_device_resolved.stdout | trim }}"
+  register: scratch_storage_filesystem_uuid
+  become: true
+  changed_when: false
+  failed_when: >-
+    scratch_storage_filesystem_uuid.rc != 0
+    or (scratch_storage_filesystem_uuid.stdout | trim | length) == 0
+
+- name: Assert scratch filesystem UUID is present
+  ansible.builtin.assert:
+    that:
+      - (scratch_storage_filesystem_uuid.stdout | trim | length) > 0
+    fail_msg: >-
+      Unable to determine a filesystem UUID for
+      '{{ scratch_storage_device_resolved.stdout | trim }}'. Persistent mounting is refused.
+    success_msg: Scratch filesystem UUID is available for persistent mounting.
+
+- name: Ensure scratch mount point directory exists
+  ansible.builtin.file:
+    path: "{{ scratch_storage_mount_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Persist and mount scratch filesystem by UUID
+  ansible.posix.mount:
+    path: "{{ scratch_storage_mount_path }}"
+    src: "UUID={{ scratch_storage_filesystem_uuid.stdout | trim }}"
+    fstype: "{{ scratch_storage_filesystem_type }}"
+    opts: "{{ scratch_storage_mount_options }}"
+    state: mounted
+  become: true

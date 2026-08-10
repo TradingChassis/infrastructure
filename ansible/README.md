@@ -6,12 +6,12 @@ Ansible manages host configuration and bootstrap for the V2 reference platform.
 
 ## Ownership
 
-Ansible will later own:
+Ansible owns or will own:
 
 ```text
 host baseline
-explicit host firewall
 scratch filesystem and mount
+explicit host firewall
 MicroK8s installation and host configuration
 Argo CD bootstrap
 ```
@@ -30,7 +30,8 @@ Argo CD owns long-lived Kubernetes desired state.
 
 ```text
 Host baseline contract validation is implemented.
-No scratch storage, MicroK8s, or host firewall enforcement is implemented yet.
+Scratch filesystem validation, guarded formatting, and UUID-based mounting are implemented.
+No MicroK8s or host firewall enforcement is implemented yet.
 ```
 
 Project layout:
@@ -38,12 +39,14 @@ Project layout:
 ```text
 ansible/
 ├── ansible.cfg
+├── requirements.yml
 ├── inventory/
 │   └── example.yml
 ├── playbooks/
 │   └── site.yml
 ├── roles/
-│   └── host_baseline/
+│   ├── host_baseline/
+│   └── scratch_storage/
 └── README.md
 ```
 
@@ -54,7 +57,6 @@ The `host_baseline` role:
 * validates the supported Ubuntu reference host contract
 * validates the ARM64 reference architecture
 * does not configure MicroK8s yet
-* does not configure scratch storage yet
 * does not reproduce the V1 blanket iptables reset
 
 Supported contract (provider-neutral):
@@ -74,6 +76,55 @@ V1 also requires `snap` for MicroK8s installation.
 Neither package installation nor snap enablement is performed by this role.
 Presence of `python3` and `snap`/`snapd` remains a live bootstrap prerequisite to verify on the reference host before later MicroK8s scopes.
 
+## Scratch storage ownership
+
+```text
+Terraform:
+OCI block volume and attachment identity
+
+Ansible:
+device validation
+filesystem lifecycle guard
+persistent UUID mount
+
+Argo CD later:
+Kubernetes storage contract
+```
+
+The `scratch_storage` role manages the host path:
+
+```text
+/mnt/scratch
+```
+
+Persistent mount uses filesystem UUID.
+
+`scratch_storage_device_path` must come from the Terraform scratch attachment output during approved live execution.
+V1 hardcoded a Linux device path.
+V2 consumes the Terraform attachment identity and validates the target before any destructive operation.
+
+### Safety
+
+```text
+scratch_storage_allow_format defaults to false.
+```
+
+```text
+An existing filesystem of an unexpected type is never overwritten automatically.
+```
+
+Additional fail-closed checks:
+
+* missing or non-block scratch device
+* scratch candidate equals the root filesystem or its parent disk
+* scratch candidate mounted at an unexpected path
+* unexpected source already mounted at `/mnt/scratch`
+
+V1 also created `/mnt/scratch/data` with UID/GID `1000`.
+That application-oriented ownership is not confirmed as a durable platform contract and is deferred.
+
+The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains outside this role and is deferred to Argo CD.
+
 ## Firewall decision
 
 ```text
@@ -91,9 +142,9 @@ are implemented and verified. The V1 blanket flush is not a V2 requirement.
 `inventory/example.yml` is a non-live structural example.
 It uses an RFC 5737 documentation address and must never be used as production inventory.
 
-Terraform provides infrastructure outputs such as instance and scratch attachment identifiers.
+Terraform provides infrastructure outputs such as instance and scratch attachment identifiers, including `scratch_volume_device`.
 A later scope will define the approved Terraform-to-Ansible inventory handoff.
-This foundation does not generate inventory from Terraform and does not define dynamic inventory.
+This repository does not generate inventory from Terraform and does not define dynamic inventory.
 
 ## V1 migration strategy
 
@@ -109,7 +160,7 @@ Examples:
 
 ```text
 iptables flush → explicit firewall redesign
-hardcoded block device → safe storage discovery
+hardcoded block device → Terraform attachment identity + guarded validation
 runtime kubectl patches → declarative GitOps state
 ```
 
@@ -118,11 +169,19 @@ runtime kubectl patches → declarative GitOps state
 Static validation only:
 
 ```bash
+ansible-galaxy collection install -r ansible/requirements.yml
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-lint ansible/
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook --syntax-check \
   -i ansible/inventory/example.yml \
   ansible/playbooks/site.yml
+```
+
+Pinned collections:
+
+```text
+ansible.posix 2.2.2
+community.general 13.2.0
 ```
 
 ## Live execution

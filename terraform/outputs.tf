@@ -48,6 +48,11 @@ output "scratch_volume_attachment_type" {
   value       = oci_core_volume_attachment.scratch.attachment_type
 }
 
+output "scratch_volume_device" {
+  description = "OCI-assigned device path for the attached scratch volume."
+  value       = oci_core_volume_attachment.scratch.device
+}
+
 output "vault_id" {
   description = "OCID of the externally managed OCI Vault used by the platform secret integration."
   value       = var.oci_vault_id

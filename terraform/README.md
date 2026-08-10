@@ -63,20 +63,24 @@ Terraform guarantees:
 - a scratch block volume exists
 - it is attached to the reference compute instance
 - resource and attachment identifiers are exposed
+- the OCI-assigned attachment device path is exposed for Ansible
 
-Ansible will later guarantee:
+Ansible guarantees:
 
-- the expected attached volume is resolved safely on the host
+- the expected attached volume is validated on the host before destructive work
 - destructive formatting is guarded explicitly
 - the filesystem is mounted persistently at the platform scratch path
 
 ### Device identification
 
-Host device names are not treated as a stable infrastructure contract.
-Do not rely on paths such as `/dev/oracleoci/oraclevds`, `/dev/sdb`, or `/dev/vdb` as Terraform outputs or architecture contracts.
+Hardcoded host device assumptions such as `/dev/oracleoci/oraclevds`, `/dev/sdb`, or `/dev/vdb` are not treated as a stable architecture contract.
+
+The scratch attachment exposes its OCI-assigned device path for the later Ansible storage contract.
+That value comes from the attachment resource attribute after apply and must still be validated by Ansible before formatting or mounting.
+Persistent host mounting uses the filesystem UUID rather than the transient device path.
 
 Attachment type: `paravirtualized`.
-This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference host and avoids Terraform-managed iSCSI login configuration. Ansible may still need to confirm the attached volume identity before formatting or mounting.
+This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference host and avoids Terraform-managed iSCSI login configuration.
 
 Performance: `vpus_per_gb = 0` (Lower Cost) for a predictable, cost-conscious reference profile.
 In-transit encryption for the paravirtualized attachment is enabled. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
