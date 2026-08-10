@@ -1,0 +1,9 @@
+---
+# Supported V2 reference host contract (provider-neutral).
+# Cloud shape and image selection remain Terraform responsibilities.
+host_baseline_supported_distribution: Ubuntu
+host_baseline_supported_distribution_major_version: "24"
+# Linux ARM64 facts commonly report aarch64; arm64 is accepted for compatibility.
+host_baseline_supported_architectures:
+  - aarch64
+  - arm64

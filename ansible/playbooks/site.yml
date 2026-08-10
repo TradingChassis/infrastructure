@@ -1,5 +1,6 @@
 ---
 - name: Configure TradingChassis host
   hosts: tradingchassis
-  gather_facts: false
-  tasks: []
+  gather_facts: true
+  roles:
+    - role: host_baseline
