@@ -572,7 +572,7 @@ No scripts/inject-runtime-values.sh execution is required for steady state.
 ## Scratch Kubernetes binding (implemented / awaiting live validation)
 
 ```text
-Terraform provisions the OCI scratch block volume (default 150 GB)
+Terraform provisions the OCI scratch block volume (default size_in_gbs=150; OCI block-volume GB = 1024 MiB / GiB-equivalent)
 → Ansible mounts it at /mnt/scratch and creates /mnt/scratch/dev and /mnt/scratch/prod
 → Argo Application scratch-storage owns StorageClass tradingchassis-scratch and static PVs
 → scratch-dev / scratch-prod PVCs bind deterministically via volumeName + claimRef
@@ -584,7 +584,9 @@ Design notes (statically validated; not live-proven):
 hostPath static PVs (not local PersistentVolumes): single-node MicroK8s, no hostname affinity
 dev path:  /mnt/scratch/dev
 prod path: /mnt/scratch/prod
-capacity:  70Gi + 70Gi accounting requests with headroom on the 150 GB volume
+capacity:  70Gi + 70Gi Kubernetes accounting (= 140Gi aggregate)
+backing:   Terraform OCI size_in_gbs=150 (OCI block-volume GB = 1024 MiB / GiB-equivalent)
+headroom:  nominal ~10 Gi before filesystem overhead; PV capacity is NOT a quota
 reclaim:   Retain (Kubernetes PV deletion must not imply cloud volume deletion)
 quota:     PV capacity is NOT a filesystem quota on the shared ext4 volume
 fail-closed hostPath type Directory: missing subdirs after a failed remount refuse the volume

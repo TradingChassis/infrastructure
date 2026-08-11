@@ -10,7 +10,9 @@ metadata:
     tradingchassis.io/scratch-env: dev
 spec:
   # Accounting capacity only. Does not create a filesystem quota on the shared
-  # ext4 volume. Symmetric 70Gi + 70Gi leaves headroom on the 150 GB OCI volume.
+  # ext4 volume. Symmetric 70Gi + 70Gi (= 140Gi) leaves nominal headroom against
+  # the default OCI size_in_gbs=150 scratch volume (OCI block-volume GB uses
+  # 1024 MiB increments / GiB-equivalent capacity).
   capacity:
     storage: 70Gi
   accessModes:

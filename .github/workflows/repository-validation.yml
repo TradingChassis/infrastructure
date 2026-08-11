@@ -472,10 +472,17 @@ jobs:
                   sys.exit(1)
               total_gi += int(str(cap)[:-2])
 
-          # Terraform default scratch volume is 150 GB. Keep Kubernetes accounting
-          # requests within that envelope with headroom (no filesystem quota claimed).
+          # Capacity contract (accounting only; not a filesystem quota):
+          # OCI Block Volume size_in_gbs uses OCI's GB convention for block-volume
+          # sizing (1 GB = 1024 MiB increments / GiB-equivalent). Default is 150.
+          # Kubernetes advertises 70Gi + 70Gi = 140Gi aggregate PV capacity, leaving
+          # nominal headroom before filesystem overhead/reserved blocks.
           if total_gi > 140:
-              print(f"FAIL: PV capacities sum to {total_gi}Gi; must leave headroom under 150 GB volume")
+              print(
+                  f"FAIL: PV capacities sum to {total_gi}Gi; "
+                  "aggregate accounting must stay <= 140Gi against the default "
+                  "OCI size_in_gbs=150 (GiB-equivalent) scratch volume"
+              )
               sys.exit(1)
 
           for label, docs, ns, volume_name, path in (
@@ -531,6 +538,8 @@ jobs:
 
           print("PASS: scratch storage binding contract is consistent.")
           PY
+
+      - name: Extract OCI secrets Helm values from Application
         run: |
           set -euo pipefail
           python3 <<'PY'

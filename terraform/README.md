@@ -41,10 +41,14 @@ OCI implementation: a dedicated Block Volume attached to the reference compute i
 
 ```text
 Reference layout:
-boot volume:    50 GB
-scratch volume: 150 GB
+boot volume:    50 GB (OCI size_in_gbs; block-volume GB = 1024 MiB / GiB-equivalent)
+scratch volume: 150 GB (same OCI size_in_gbs convention)
 combined:       200 GB
 ```
+
+Kubernetes scratch accounting (Argo-managed static PVs) uses `70Gi + 70Gi = 140Gi`
+against the default 150 OCI-GB scratch volume, leaving nominal headroom before
+filesystem overhead. PV capacity is not a filesystem quota.
 
 This sizing reflects the OCI reference profile and is not a guarantee of current Free Tier eligibility or zero cost.
 Current OCI Free Tier / Always Free eligibility must be verified against the target tenancy and current Oracle terms before live apply.
