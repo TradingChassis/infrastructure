@@ -145,6 +145,207 @@ jobs:
             -i ansible/inventory/example.yml \
             ansible/playbooks/site.yml
 
+          # Synthetic CI-only values. Not real tenancy data and not usable live.
+          ansible-playbook \
+            --syntax-check \
+            -i ansible/inventory/example.yml \
+            -e private_runtime_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e private_runtime_oci_region=eu-test-1 \
+            ansible/playbooks/private-runtime-config.yml
+
+      - name: Validate private runtime configuration contracts
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          import yaml
+
+          root = Path(".")
+          defaults_path = root / "ansible/roles/private_runtime_config/defaults/main.yml"
+          template_path = (
+              root
+              / "ansible/roles/private_runtime_config/templates/secret-provider-class.yaml.j2"
+          )
+          mlflow_v2_patch = (
+              root / "apps/mlflow/overlays/v2/aws-default-region-patch.yaml"
+          )
+          v1_spc_paths = {
+              "postgres-secret-bundle": root
+              / "apps/postgres/overlays/v1/secrets.yaml",
+              "mlflow-secret-bundle": root / "apps/mlflow/overlays/v1/secrets.yaml",
+              "monitoring-secret-bundle": root
+              / "apps/monitoring/overlays/v1/secrets.yaml",
+          }
+
+          defaults = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
+          spcs = defaults.get("private_runtime_config_secret_provider_classes") or []
+          if len(spcs) != 3:
+              print(f"FAIL: expected exactly 3 SPC contracts, found {len(spcs)}")
+              sys.exit(1)
+
+          by_name = {spc["name"]: spc for spc in spcs}
+          expected_names = set(v1_spc_paths)
+          if set(by_name) != expected_names:
+              print(f"FAIL: SPC names {sorted(by_name)} != {sorted(expected_names)}")
+              sys.exit(1)
+
+          template = template_path.read_text(encoding="utf-8")
+          if "authType: instance" not in template:
+              print("FAIL: SPC template must preserve authType: instance")
+              sys.exit(1)
+          if 'vaultId: "{{ private_runtime_vault_id }}"' not in template:
+              print("FAIL: SPC template must render vaultId from private_runtime_vault_id")
+              sys.exit(1)
+          if "${VAULT_ID}" in template:
+              print("FAIL: SPC template must not keep the V1 ${VAULT_ID} placeholder")
+              sys.exit(1)
+
+          def normalize_secret_objects(objects):
+              normalized = []
+              for obj in objects:
+                  data = [
+                      {
+                          "objectName": str(entry["objectName"]),
+                          "key": str(entry["key"]),
+                      }
+                      for entry in obj.get("data", [])
+                  ]
+                  normalized.append(
+                      {
+                          "secretName": str(obj["secretName"]),
+                          "type": str(obj.get("type", "Opaque")),
+                          "data": data,
+                      }
+                  )
+              return normalized
+
+          def normalize_secrets_list(raw_secrets):
+              if isinstance(raw_secrets, str):
+                  parsed = yaml.safe_load(raw_secrets) or []
+              else:
+                  parsed = raw_secrets or []
+              return [
+                  {
+                      "name": str(item["name"]),
+                      "fileName": str(item["fileName"]),
+                  }
+                  for item in parsed
+              ]
+
+          for name, path in v1_spc_paths.items():
+              doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+              role_spc = by_name[name]
+              if doc.get("kind") != "SecretProviderClass":
+                  print(f"FAIL: {path} is not a SecretProviderClass")
+                  sys.exit(1)
+              if doc["metadata"]["name"] != name:
+                  print(f"FAIL: {path} metadata.name mismatch")
+                  sys.exit(1)
+              if doc["metadata"]["namespace"] != role_spc["namespace"]:
+                  print(
+                      f"FAIL: {name} namespace drift: "
+                      f"V1={doc['metadata']['namespace']} role={role_spc['namespace']}"
+                  )
+                  sys.exit(1)
+              if doc["spec"].get("provider") != "oci":
+                  print(f"FAIL: {name} provider must remain oci")
+                  sys.exit(1)
+              if doc["spec"]["parameters"].get("authType") != "instance":
+                  print(f"FAIL: {name} authType must remain instance")
+                  sys.exit(1)
+              if doc["spec"]["parameters"].get("vaultId") != "${{ '${VAULT_ID}' }}":
+                  print(
+                      f"FAIL: active V1 {name} must keep vaultId placeholder "
+                      f"${{ '${VAULT_ID}' }}"
+                  )
+                  sys.exit(1)
+
+              v1_secrets = normalize_secrets_list(doc["spec"]["parameters"].get("secrets"))
+              role_secrets = normalize_secrets_list(role_spc.get("secrets"))
+              if v1_secrets != role_secrets:
+                  print(f"FAIL: {name} secrets mapping drift between V1 and role defaults")
+                  print(f"  V1={v1_secrets}")
+                  print(f"  role={role_secrets}")
+                  sys.exit(1)
+
+              v1_objects = normalize_secret_objects(doc["spec"].get("secretObjects") or [])
+              role_objects = normalize_secret_objects(role_spc.get("secret_objects") or [])
+              if v1_objects != role_objects:
+                  print(f"FAIL: {name} secretObjects drift between V1 and role defaults")
+                  print(f"  V1={v1_objects}")
+                  print(f"  role={role_objects}")
+                  sys.exit(1)
+
+              print(f"PASS: {name} matches V1 functional SPC contract (vaultId source excluded).")
+
+          if defaults.get("private_runtime_config_secret_name") != "tradingchassis-runtime-config":
+              print("FAIL: runtime Secret name must be tradingchassis-runtime-config")
+              sys.exit(1)
+          if defaults.get("private_runtime_config_secret_namespace") != "mlflow":
+              print("FAIL: runtime Secret namespace must be mlflow")
+              sys.exit(1)
+          if defaults.get("private_runtime_config_secret_key") != "OCI_REGION":
+              print("FAIL: runtime Secret key must be OCI_REGION")
+              sys.exit(1)
+
+          patch = yaml.safe_load(mlflow_v2_patch.read_text(encoding="utf-8"))
+          if patch.get("metadata", {}).get("namespace") != "mlflow":
+              print("FAIL: MLflow V2 patch namespace must be mlflow")
+              sys.exit(1)
+          containers = (
+              patch.get("spec", {})
+              .get("template", {})
+              .get("spec", {})
+              .get("containers", [])
+          )
+          mlflow_containers = [c for c in containers if c.get("name") == "mlflow"]
+          if len(mlflow_containers) != 1:
+              print("FAIL: MLflow V2 patch must target the mlflow container")
+              sys.exit(1)
+          region_env = [
+              e
+              for e in (mlflow_containers[0].get("env") or [])
+              if e.get("name") == "AWS_DEFAULT_REGION"
+          ]
+          if len(region_env) != 1:
+              print("FAIL: MLflow V2 patch must define AWS_DEFAULT_REGION once")
+              sys.exit(1)
+          ref = region_env[0].get("valueFrom", {}).get("secretKeyRef", {})
+          if ref.get("name") != defaults["private_runtime_config_secret_name"]:
+              print(
+                  "FAIL: MLflow V2 secretKeyRef.name drift vs Ansible runtime Secret name"
+              )
+              sys.exit(1)
+          if ref.get("key") != defaults["private_runtime_config_secret_key"]:
+              print(
+                  "FAIL: MLflow V2 secretKeyRef.key drift vs Ansible runtime Secret key"
+              )
+              sys.exit(1)
+
+          site = (root / "ansible/playbooks/site.yml").read_text(encoding="utf-8")
+          if "private_runtime_config" in site:
+              print("FAIL: site.yml must not activate private_runtime_config yet")
+              sys.exit(1)
+
+          for shim in (
+              "apps/postgres/kustomization.yaml",
+              "apps/mlflow/kustomization.yaml",
+              "apps/monitoring/kustomization.yaml",
+          ):
+              text = (root / shim).read_text(encoding="utf-8")
+              if "overlays/v1" not in text:
+                  print(f"FAIL: {shim} must remain on overlays/v1")
+                  sys.exit(1)
+              if re.search(r"overlays/v2", text):
+                  print(f"FAIL: {shim} must not activate overlays/v2")
+                  sys.exit(1)
+
+          print("PASS: private runtime configuration contracts are consistent.")
+          PY
+
   gitops:
     name: GitOps validation
     runs-on: ubuntu-24.04

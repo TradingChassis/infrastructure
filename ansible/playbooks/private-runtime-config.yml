@@ -1,0 +1,20 @@
+---
+# Explicit opt-in playbook for private deployment configuration.
+# Not part of ansible/playbooks/site.yml and not executed by default.
+#
+# Operator handoff (private values stay outside Git):
+#   VAULT_ID   → private_runtime_vault_id
+#   OCI_REGION → private_runtime_oci_region
+#
+# Intended later cutover order (not activated by this playbook):
+#   1. Argo CD bootstrap + root Application reconcile namespaces/workloads
+#   2. oci-secrets Application installs CSI Driver + OCI provider (SPC CRD)
+#   3. Run this playbook to materialize Secret + SecretProviderClass objects
+#   4. Explicitly switch apps/*/kustomization.yaml from overlays/v1 to overlays/v2
+#
+# Active GitOps paths remain overlays/v1 until that later cutover is authorized.
+- name: Materialize private runtime configuration
+  hosts: tradingchassis
+  gather_facts: false
+  roles:
+    - role: private_runtime_config

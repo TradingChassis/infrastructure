@@ -23,15 +23,17 @@ have valid patch targets.
 
 The prepared V2 overlays intentionally omit SecretProviderClass resources.
 Private deployment configuration (`VAULT_ID`, `OCI_REGION`) stays outside the
-public repository and will be materialized by Ansible during a later explicit
-cutover. No live cutover has occurred.
+public repository. Ansible can materialize those objects through the explicit
+opt-in playbook `ansible/playbooks/private-runtime-config.yml` (role
+`private_runtime_config`). That playbook is **not** part of `site.yml` and is
+**not** executed automatically. No live cutover has occurred; active GitOps
+paths still resolve to `overlays/v1`, and V1 runtime injection remains usable.
 
 MLflow V2 prepares `AWS_DEFAULT_REGION` via
-`secretKeyRef` to `tradingchassis-runtime-config` / `OCI_REGION`. That
-Kubernetes Secret is not created in this repository scope. Because Secret
-references are namespace-scoped and the MLflow Deployment runs in `mlflow`,
-later Ansible private deployment configuration must create
-`tradingchassis-runtime-config` in the `mlflow` namespace.
+`secretKeyRef` to `tradingchassis-runtime-config` / `OCI_REGION`. Because Secret
+references are namespace-scoped and the MLflow Deployment runs in `mlflow`, the
+private runtime-configuration role creates `tradingchassis-runtime-config` in
+the `mlflow` namespace when that opt-in playbook is run.
 
 ## OCI Secrets Platform
 
@@ -41,8 +43,9 @@ Ownership map:
 Terraform:  instance-principal IAM (dynamic group, policy, vault reference)
 Argo CD:    Secrets Store CSI Driver + OCI Secrets Store CSI Provider
             application workloads (active V1 overlays today)
-Later:      Ansible private deployment config (runtime Secret + SPC instances)
-            activate V2 overlays (no Git-owned SecretProviderClass)
+Ansible:    explicit private runtime config playbook (Secret + SPC instances)
+            prepared only; not in site.yml; not auto-executed
+Later:      activate V2 overlays (no Git-owned SecretProviderClass)
 ```
 
 ### Compatibility baseline
@@ -107,7 +110,7 @@ expanding this platform-ownership change.
 
 ### Deferred
 
-- Ansible private deployment-config role (Secret + SecretProviderClass materialization)
 - Explicit live cutover from overlays/v1 to overlays/v2
+- Activation of `private_runtime_config` inside the canonical Ansible converge
 - Runtime VAULT_ID / OCI_REGION script retirement (scripts/08-runtime.sh)
 - Bootstrap sync ordering for CSI consumers

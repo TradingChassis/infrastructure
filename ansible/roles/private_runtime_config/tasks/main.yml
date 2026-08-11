@@ -1,0 +1,185 @@
+---
+# Fail closed before any Kubernetes mutation when private inputs are invalid.
+- name: Assert private OCI Vault ID is present
+  ansible.builtin.assert:
+    that:
+      - private_runtime_vault_id is string
+      - (private_runtime_vault_id | trim | length) > 0
+    fail_msg: >-
+      private_runtime_vault_id must be set from the operator-provided VAULT_ID
+      before private runtime configuration can be materialized.
+    success_msg: Private OCI Vault ID input is present.
+  no_log: true
+
+- name: Assert private OCI Vault ID is not a placeholder
+  ansible.builtin.assert:
+    that:
+      - >-
+        private_runtime_config_forbidden_input_substrings
+        | select('in', (private_runtime_vault_id | lower))
+        | list
+        | length
+        == 0
+    fail_msg: >-
+      private_runtime_vault_id looks like a placeholder value.
+      Provide a real OCI Vault OCID outside Git.
+    success_msg: Private OCI Vault ID is not a documented placeholder.
+  no_log: true
+
+- name: Assert private OCI Vault ID has a vault OCID shape
+  ansible.builtin.assert:
+    that:
+      - >-
+        private_runtime_vault_id is match(
+          '^ocid1\\.vault\\.oc1\\.[a-z0-9-]+\\.[a-z0-9]+$'
+        )
+      - "'vaultsecret' not in (private_runtime_vault_id | lower)"
+      - private_runtime_vault_id is not match('^ocid1\\.vaultsecret\\.')
+    fail_msg: >-
+      private_runtime_vault_id must be an OCI Vault OCID
+      (ocid1.vault.oc1.<region>.<unique>) and must not be a secret OCID.
+    success_msg: Private OCI Vault ID matches the expected vault OCID shape.
+  no_log: true
+
+- name: Assert private OCI region is present
+  ansible.builtin.assert:
+    that:
+      - private_runtime_oci_region is string
+      - (private_runtime_oci_region | trim | length) > 0
+    fail_msg: >-
+      private_runtime_oci_region must be set from the operator-provided OCI_REGION
+      before private runtime configuration can be materialized.
+    success_msg: Private OCI region input is present.
+  no_log: true
+
+- name: Assert private OCI region is not a placeholder
+  ansible.builtin.assert:
+    that:
+      - >-
+        private_runtime_config_forbidden_input_substrings
+        | select('in', (private_runtime_oci_region | lower))
+        | list
+        | length
+        == 0
+    fail_msg: >-
+      private_runtime_oci_region looks like a placeholder value.
+      Provide a real OCI region identifier outside Git.
+    success_msg: Private OCI region is not a documented placeholder.
+  no_log: true
+
+- name: Assert private OCI region has a plausible identifier shape
+  ansible.builtin.assert:
+    that:
+      - private_runtime_oci_region is match('^[a-z]{2}-[a-z0-9]+-[0-9]+$')
+    fail_msg: >-
+      private_runtime_oci_region must look like an OCI region identifier
+      (for example eu-frankfurt-1).
+    success_msg: Private OCI region matches the expected identifier shape.
+  no_log: true
+
+- name: Assert SecretProviderClass contract list has exactly three entries
+  ansible.builtin.assert:
+    that:
+      - private_runtime_config_secret_provider_classes | length == 3
+      - >-
+        (
+          private_runtime_config_secret_provider_classes
+          | map(attribute='name')
+          | list
+          | sort
+        )
+        ==
+        [
+          'mlflow-secret-bundle',
+          'monitoring-secret-bundle',
+          'postgres-secret-bundle'
+        ]
+    fail_msg: >-
+      private_runtime_config_secret_provider_classes must define exactly the
+      postgres, mlflow, and monitoring SecretProviderClass contracts.
+    success_msg: SecretProviderClass contract list matches the expected three names.
+
+- name: Ensure Kubernetes Python client is installed for Ansible modules
+  ansible.builtin.apt:
+    name: python3-kubernetes
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Read SecretProviderClass CustomResourceDefinition
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ private_runtime_config_spc_crd_name }}"
+    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+  become: true
+  register: private_runtime_config_spc_crd
+  failed_when: false
+
+- name: Assert SecretProviderClass CRD is already installed
+  ansible.builtin.assert:
+    that:
+      - private_runtime_config_spc_crd.resources | length == 1
+    fail_msg: >-
+      CustomResourceDefinition '{{ private_runtime_config_spc_crd_name }}' is
+      missing. Reconcile the Argo CD oci-secrets Application before running this
+      playbook. This role never installs the CSI Driver or OCI provider.
+    success_msg: SecretProviderClass CRD is present.
+
+- name: Read required application namespaces
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+  become: true
+  loop: "{{ private_runtime_config_required_namespaces }}"
+  register: private_runtime_config_namespaces
+  failed_when: false
+
+- name: Assert required application namespaces already exist
+  ansible.builtin.assert:
+    that:
+      - item.resources | length == 1
+    fail_msg: >-
+      Namespace '{{ item.item }}' is missing. Let Argo CD create application
+      namespaces (CreateNamespace) before materializing private runtime
+      configuration. This role does not own Namespace objects.
+    success_msg: >-
+      Namespace '{{ item.item }}' is present for private runtime configuration.
+  loop: "{{ private_runtime_config_namespaces.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Materialize MLflow runtime configuration Secret
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ private_runtime_config_secret_name }}"
+        namespace: "{{ private_runtime_config_secret_namespace }}"
+      type: "{{ private_runtime_config_secret_type }}"
+      stringData: "{{ { private_runtime_config_secret_key: private_runtime_oci_region } }}"
+  become: true
+  no_log: true
+
+- name: Materialize SecretProviderClass resources
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+    definition: >-
+      {{
+        lookup(
+          'ansible.builtin.template',
+          'secret-provider-class.yaml.j2'
+        ) | from_yaml
+      }}
+  become: true
+  no_log: true
+  loop: "{{ private_runtime_config_secret_provider_classes }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.name }}"

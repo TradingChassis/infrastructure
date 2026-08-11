@@ -1,0 +1,103 @@
+---
+# Private deployment inputs. Map from operator-provided values outside Git:
+#   VAULT_ID   → private_runtime_vault_id
+#   OCI_REGION → private_runtime_oci_region
+# Never commit real values. Defaults stay empty so missing input fails closed.
+private_runtime_vault_id: ""
+private_runtime_oci_region: ""
+
+# MicroK8s in-cluster kubeconfig used by kubernetes.core modules (same contract as
+# argocd_bootstrap).
+private_runtime_config_kubeconfig: /var/snap/microk8s/current/credentials/client.config
+
+# Prepared MLflow V2 contract (apps/mlflow/overlays/v2/aws-default-region-patch.yaml).
+private_runtime_config_secret_name: tradingchassis-runtime-config
+private_runtime_config_secret_namespace: mlflow
+private_runtime_config_secret_key: OCI_REGION
+private_runtime_config_secret_type: Opaque
+
+# Secrets Store CSI CRD required before SecretProviderClass objects can exist.
+# This role never installs the CSI Driver or OCI provider (Argo CD owns those).
+private_runtime_config_spc_crd_name: secretproviderclasses.secrets-store.csi.x-k8s.io
+
+# Application namespaces are created by Argo CD (CreateNamespace). This role
+# does not own Namespace objects and fails closed if they are absent.
+private_runtime_config_required_namespaces:
+  - postgres
+  - mlflow
+  - monitoring
+
+# Reject obvious placeholders and non-vault OCIDs before any mutation.
+private_runtime_config_forbidden_input_substrings:
+  - "xxxxx"
+  - "example"
+  - "changeme"
+  - "change-me"
+  - "placeholder"
+  - "your-vault"
+  - "replace-me"
+  - "not-a-secret"
+
+# Functional SecretProviderClass contracts mirrored from
+# apps/*/overlays/v1/secrets.yaml. Only vaultId sourcing differs for V2:
+# Ansible renders a literal private_runtime_vault_id instead of ${VAULT_ID}.
+private_runtime_config_secret_provider_classes:
+  - name: postgres-secret-bundle
+    namespace: postgres
+    secrets:
+      - name: postgresdb-naming
+        fileName: postgresdb-naming
+      - name: postgres-user
+        fileName: postgres-user
+      - name: postgres-password
+        fileName: postgres-password
+      - name: mlflowdb-naming
+        fileName: mlflowdb-naming
+      - name: mlflow-user
+        fileName: mlflow-user
+      - name: mlflow-password
+        fileName: mlflow-password
+    secret_objects:
+      - secretName: postgres-secret
+        type: Opaque
+        data:
+          - objectName: postgresdb-naming
+            key: POSTGRES_DB
+          - objectName: postgres-user
+            key: POSTGRES_USER
+          - objectName: postgres-password
+            key: POSTGRES_PASSWORD
+          - objectName: mlflowdb-naming
+            key: MLFLOW_DB
+          - objectName: mlflow-user
+            key: MLFLOW_USER
+          - objectName: mlflow-password
+            key: MLFLOW_PASSWORD
+
+  - name: mlflow-secret-bundle
+    namespace: mlflow
+    secrets:
+      - name: mlflow-db-uri
+        fileName: mlflow-db-uri
+    secret_objects:
+      - secretName: mlflow-secret
+        type: Opaque
+        data:
+          - objectName: mlflow-db-uri
+            key: MLFLOW_DB_URI
+
+  - name: monitoring-secret-bundle
+    namespace: monitoring
+    secrets:
+      - name: grafana-login-user
+        fileName: grafana-login-user
+      - name: grafana-login-password
+        fileName: grafana-login-password
+    secret_objects:
+      - secretName: monitoring-secret
+        type: Opaque
+        data:
+          - objectName: grafana-login-user
+            key: GF_USER
+          - objectName: grafana-login-password
+            key: GF_PASSWORD
