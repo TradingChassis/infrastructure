@@ -208,8 +208,8 @@ rollback:            restore recorded automation
 
 ```text
 Argo automation:     off
-Git desired SPC:     yes, with temporary Prune=false (later cutover prep)
-live SPC:            Prune=false reconciled
+Git desired SPC:     yes, with temporary Prune=false (Git-prepared)
+live SPC:            Prune=false reconciled (requires live validation)
 Argo tracking:       present
 Ansible authority:   no
 rollback:            remove Prune=false / restore V1; restore automation
@@ -359,11 +359,14 @@ mlflow-secret-bundle
 monitoring-secret-bundle
 ```
 
-Architecture preference: place `Prune=false` on the three V1 SPC manifests in a
-**later, dedicated cutover-preparation Git change**, sync while still on
-`overlays/v1`, and verify the annotation is live before ownership transfer.
+The active V1 SPC manifests now carry the temporary `Prune=false` handoff
+protection in Git (**confirmed from repository**). That is Git preparation only:
+`Prune=false` present in Git is **not** the same as `Prune=false` verified live.
 
-This documentation file does **not** add that annotation to active manifests.
+Do **not** execute `private-runtime-config` until Argo freeze is active, the
+annotation is confirmed live on all three SPCs, and all other live prerequisites
+pass. This preparation alone does not authorize the playbook or start the
+ownership handoff.
 
 Gate:
 
