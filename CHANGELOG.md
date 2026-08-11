@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added idempotent MicroK8s host configuration with the V1-required addons and replaced the V1 blanket firewall reset with an explicit UFW host policy.
 - Added idempotent Ansible bootstrap for Argo CD and the GitOps root application without reproducing V1 CRD deletion or runtime patching.
 - Added Argo CD ownership for the pinned Secrets Store CSI Driver and ARM64-compatible OCI Vault provider.
+- Prepared separate V1-compatible and inactive V2 application overlays for the private runtime-configuration migration without changing active GitOps ownership.
 
 ### Fixed
 

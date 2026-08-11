@@ -387,3 +387,161 @@ jobs:
               raise SystemExit(1)
           print("PASS: Manifest includes linux/amd64 and linux/arm64.")
           PY
+
+      - name: Validate active V1 application overlays
+        run: |
+          set -euo pipefail
+          # Enable Helm for monitoring (kube-prometheus-stack via Kustomize).
+          export KUSTOMIZE_ENABLE_HELM=true
+
+          python3 <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+          import yaml
+
+          # kube-prometheus-stack CRDs emit bare "=" enum values. PyYAML 1.1 maps
+          # those to tag:yaml.org,2002:value without a SafeLoader constructor.
+          yaml.SafeLoader.add_constructor(
+              "tag:yaml.org,2002:value",
+              lambda loader, node: loader.construct_scalar(node),
+          )
+
+          expected = {
+              "apps/postgres": "postgres-secret-bundle",
+              "apps/mlflow": "mlflow-secret-bundle",
+              "apps/monitoring": "monitoring-secret-bundle",
+          }
+
+          def load_docs(text: str):
+              return [
+                  doc for doc in yaml.safe_load_all(text)
+                  if isinstance(doc, dict)
+              ]
+
+          for path, spc_name in expected.items():
+              proc = subprocess.run(
+                  ["kustomize", "build", "--enable-helm", path],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              docs = load_docs(proc.stdout)
+              spcs = [
+                  d for d in docs
+                  if d.get("kind") == "SecretProviderClass"
+                  and d.get("metadata", {}).get("name") == spc_name
+              ]
+              if len(spcs) != 1:
+                  print(f"FAIL: {path} expected one SecretProviderClass named {spc_name}, found {len(spcs)}")
+                  sys.exit(1)
+              vault_id = (
+                  spcs[0].get("spec", {})
+                  .get("parameters", {})
+                  .get("vaultId")
+              )
+              # Escape so Actions emits the literal placeholder string for Python.
+              expected_vault_id = "${{ '${VAULT_ID}' }}"
+              if vault_id != expected_vault_id:
+                  print(f"FAIL: {path} vaultId={vault_id!r}, expected {expected_vault_id!r} placeholder for V1 runtime patch")
+                  sys.exit(1)
+              print(f"PASS: active {path} retains V1 SPC patch target {spc_name}.")
+
+          print("PASS: Active application entry points remain V1-compatible.")
+          PY
+
+      - name: Validate prepared V2 application overlays
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+          import yaml
+
+          # kube-prometheus-stack CRDs emit bare "=" enum values. PyYAML 1.1 maps
+          # those to tag:yaml.org,2002:value without a SafeLoader constructor.
+          yaml.SafeLoader.add_constructor(
+              "tag:yaml.org,2002:value",
+              lambda loader, node: loader.construct_scalar(node),
+          )
+
+          v2_paths = [
+              "apps/postgres/overlays/v2",
+              "apps/mlflow/overlays/v2",
+              "apps/monitoring/overlays/v2",
+          ]
+
+          def load_docs(text: str):
+              return [
+                  doc for doc in yaml.safe_load_all(text)
+                  if isinstance(doc, dict)
+              ]
+
+          for path in v2_paths:
+              proc = subprocess.run(
+                  ["kustomize", "build", "--enable-helm", path],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              docs = load_docs(proc.stdout)
+              spcs = [d for d in docs if d.get("kind") == "SecretProviderClass"]
+              if spcs:
+                  names = [d.get("metadata", {}).get("name") for d in spcs]
+                  print(f"FAIL: {path} must not contain SecretProviderClass; found {names}")
+                  sys.exit(1)
+              print(f"PASS: prepared {path} omits SecretProviderClass.")
+
+          mlflow = subprocess.run(
+              ["kustomize", "build", "apps/mlflow/overlays/v2"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          docs = load_docs(mlflow.stdout)
+          deployments = [
+              d for d in docs
+              if d.get("kind") == "Deployment"
+              and d.get("metadata", {}).get("name") == "mlflow"
+          ]
+          if len(deployments) != 1:
+              print(f"FAIL: expected one mlflow Deployment, found {len(deployments)}")
+              sys.exit(1)
+
+          containers = (
+              deployments[0]
+              .get("spec", {})
+              .get("template", {})
+              .get("spec", {})
+              .get("containers", [])
+          )
+          mlflow_containers = [c for c in containers if c.get("name") == "mlflow"]
+          if len(mlflow_containers) != 1:
+              print("FAIL: mlflow container missing from V2 Deployment")
+              sys.exit(1)
+
+          env = mlflow_containers[0].get("env") or []
+          region_env = [e for e in env if e.get("name") == "AWS_DEFAULT_REGION"]
+          if len(region_env) != 1:
+              print(f"FAIL: expected one AWS_DEFAULT_REGION env, found {len(region_env)}")
+              sys.exit(1)
+
+          ref = region_env[0].get("valueFrom", {}).get("secretKeyRef", {})
+          if ref.get("name") != "tradingchassis-runtime-config":
+              print(f"FAIL: unexpected Secret name {ref.get('name')!r}")
+              sys.exit(1)
+          if ref.get("key") != "OCI_REGION":
+              print(f"FAIL: unexpected Secret key {ref.get('key')!r}")
+              sys.exit(1)
+          if "value" in region_env[0]:
+              print("FAIL: AWS_DEFAULT_REGION must not embed a concrete region value")
+              sys.exit(1)
+
+          # Existing backend URI env must remain.
+          if not any(e.get("name") == "MLFLOW_BACKEND_STORE_URI" for e in env):
+              print("FAIL: MLFLOW_BACKEND_STORE_URI missing after V2 region patch")
+              sys.exit(1)
+
+          print("PASS: MLflow V2 region contract uses secretKeyRef without concrete region.")
+          PY

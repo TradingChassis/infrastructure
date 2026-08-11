@@ -6,6 +6,33 @@ Argo CD owns all long-lived Kubernetes desired state managed from this directory
 The root Application (`root-app.yaml`) is applied once by Ansible bootstrap and
 subsequently manages child Applications via the Kustomization.
 
+## Application overlay transition
+
+Workload Applications for `postgres`, `mlflow`, and `monitoring` keep their Argo
+CD paths at `apps/<app>`. Those entry points are shims that still render the
+**V1-compatible overlays**.
+
+```text
+apps/<app>/kustomization.yaml  → overlays/v1   (active)
+apps/<app>/overlays/v2         → prepared only (inactive)
+```
+
+The active V1 overlays retain SecretProviderClass placeholders with
+`vaultId: ${VAULT_ID}` so the existing V1 runtime injection scripts continue to
+have valid patch targets.
+
+The prepared V2 overlays intentionally omit SecretProviderClass resources.
+Private deployment configuration (`VAULT_ID`, `OCI_REGION`) stays outside the
+public repository and will be materialized by Ansible during a later explicit
+cutover. No live cutover has occurred.
+
+MLflow V2 prepares `AWS_DEFAULT_REGION` via
+`secretKeyRef` to `tradingchassis-runtime-config` / `OCI_REGION`. That
+Kubernetes Secret is not created in this repository scope. Because Secret
+references are namespace-scoped and the MLflow Deployment runs in `mlflow`,
+later Ansible private deployment configuration must create
+`tradingchassis-runtime-config` in the `mlflow` namespace.
+
 ## OCI Secrets Platform
 
 Ownership map:
@@ -13,7 +40,9 @@ Ownership map:
 ```text
 Terraform:  instance-principal IAM (dynamic group, policy, vault reference)
 Argo CD:    Secrets Store CSI Driver + OCI Secrets Store CSI Provider
-Later:      SecretProviderClass and application secret consumption
+            application workloads (active V1 overlays today)
+Later:      Ansible private deployment config (runtime Secret + SPC instances)
+            activate V2 overlays (no Git-owned SecretProviderClass)
 ```
 
 ### Compatibility baseline
@@ -78,6 +107,7 @@ expanding this platform-ownership change.
 
 ### Deferred
 
-- Application-specific SecretProviderClass migration
-- Runtime VAULT_ID / OCI_REGION cleanup (scripts/08-runtime.sh)
+- Ansible private deployment-config role (Secret + SecretProviderClass materialization)
+- Explicit live cutover from overlays/v1 to overlays/v2
+- Runtime VAULT_ID / OCI_REGION script retirement (scripts/08-runtime.sh)
 - Bootstrap sync ordering for CSI consumers

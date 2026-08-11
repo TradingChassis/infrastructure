@@ -1,0 +1,19 @@
+---
+# Strategic merge patch for the prepared V2 MLflow region contract.
+# Merges by container name and env name; preserves existing env entries.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlflow
+spec:
+  template:
+    spec:
+      containers:
+        - name: mlflow
+          env:
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: tradingchassis-runtime-config
+                  key: OCI_REGION
