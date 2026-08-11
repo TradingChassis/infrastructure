@@ -24,7 +24,8 @@ long-lived Kubernetes application desired state
 ```
 
 Terraform owns cloud infrastructure.
-Argo CD owns long-lived Kubernetes desired state.
+Argo CD owns long-lived Kubernetes desired state, including the Secrets Store CSI
+Driver and OCI Vault provider.
 
 ## Current scope
 

@@ -11,3 +11,4 @@ resources:
   - argo-app.yaml
   - scratch-app-dev.yaml
   - scratch-app-prod.yaml
+  - oci-secrets-app.yaml

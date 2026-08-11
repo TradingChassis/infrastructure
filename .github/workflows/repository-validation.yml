@@ -144,3 +144,53 @@ jobs:
             --syntax-check \
             -i ansible/inventory/example.yml \
             ansible/playbooks/site.yml
+
+  gitops:
+    name: GitOps validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@2ba527d4d55ab5a266d6b78f609ad79a35655912 # v2.1.0
+
+      - name: Validate Argo CD Kustomization
+        run: |
+          set -euo pipefail
+          kustomize build argocd/ > /tmp/argocd-rendered.yaml
+          echo "Kustomize build succeeded."
+          # Verify expected Application resources are present
+          grep -q 'name: oci-secrets' /tmp/argocd-rendered.yaml
+          echo "OCI secrets Application present."
+
+      - name: Verify OCI secrets provider image pinning
+        run: |
+          set -euo pipefail
+          APP_FILE="argocd/oci-secrets-app.yaml"
+          # Must contain the immutable git-SHA image tag
+          grep -q '1f9ef4b6e123c2914edf842d77483d7ee174bf0a' "$APP_FILE"
+          echo "PASS: Provider image pinned by immutable git SHA tag."
+          # Must not contain mutable references
+          if grep -qE 'tag:\s*(latest|main)' "$APP_FILE"; then
+            echo "FAIL: Mutable image tag detected."
+            exit 1
+          fi
+          echo "PASS: No mutable image tags."
+
+      - name: Verify MicroK8s kubelet root directory
+        run: |
+          set -euo pipefail
+          grep -q '/var/snap/microk8s/common/var/lib/kubelet' argocd/oci-secrets-app.yaml
+          echo "PASS: MicroK8s kubelet root directory configured."
+
+      - name: Verify CSI driver dependency version
+        run: |
+          set -euo pipefail
+          # The Application targets Oracle chart v0.5.0 which vendors CSI driver 1.3.3
+          grep -q 'targetRevision: v0.5.0' argocd/oci-secrets-app.yaml
+          echo "PASS: Chart pinned to v0.5.0 (CSI driver 1.3.3 dependency)."
