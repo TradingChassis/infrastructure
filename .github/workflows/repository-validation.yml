@@ -149,8 +149,8 @@ jobs:
           ansible-playbook \
             --syntax-check \
             -i ansible/inventory/example.yml \
-            -e private_runtime_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-            -e private_runtime_oci_region=eu-test-1 \
+            -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e private_runtime_config_oci_region=eu-test-1 \
             ansible/playbooks/private-runtime-config.yml
 
       - name: Validate private runtime configuration contracts
@@ -196,8 +196,8 @@ jobs:
           if "authType: instance" not in template:
               print("FAIL: SPC template must preserve authType: instance")
               sys.exit(1)
-          if 'vaultId: "{{ private_runtime_vault_id }}"' not in template:
-              print("FAIL: SPC template must render vaultId from private_runtime_vault_id")
+          if 'vaultId: "{{ private_runtime_config_vault_id }}"' not in template:
+              print("FAIL: SPC template must render vaultId from private_runtime_config_vault_id")
               sys.exit(1)
           if "${VAULT_ID}" in template:
               print("FAIL: SPC template must not keep the V1 ${VAULT_ID} placeholder")

@@ -233,8 +233,8 @@ Their controller namespace is `argocd` so the Argo CD instance can reconcile the
 ## Private runtime configuration
 
 ```text
-VAULT_ID   → private_runtime_vault_id
-OCI_REGION → private_runtime_oci_region
+VAULT_ID   → private_runtime_config_vault_id
+OCI_REGION → private_runtime_config_oci_region
 ```
 
 Private values stay outside the public repository. Operators map them into Ansible
@@ -248,7 +248,7 @@ The `private_runtime_config` role:
 * requires application namespaces `postgres`, `mlflow`, and `monitoring` to exist
 * materializes Secret `tradingchassis-runtime-config` in namespace `mlflow` with key `OCI_REGION`
 * materializes exactly three SecretProviderClass resources with `authType: instance`
-* renders literal `vaultId` from `private_runtime_vault_id` (no Git placeholder)
+* renders literal `vaultId` from `private_runtime_config_vault_id` (no Git placeholder)
 * uses `kubernetes.core` with the MicroK8s kubeconfig contract (no shell kubectl)
 * sets `no_log: true` on tasks that handle private values
 
@@ -258,8 +258,8 @@ Explicit playbook only (example syntax for the dedicated cutover scope):
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook \
   -i <approved-inventory> \
-  -e private_runtime_vault_id="$VAULT_ID" \
-  -e private_runtime_oci_region="$OCI_REGION" \
+  -e private_runtime_config_vault_id="$VAULT_ID" \
+  -e private_runtime_config_oci_region="$OCI_REGION" \
   ansible/playbooks/private-runtime-config.yml
 ```
 
@@ -380,8 +380,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook --syntax-check \
   -i ansible/inventory/example.yml \
-  -e private_runtime_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  -e private_runtime_oci_region=eu-test-1 \
+  -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  -e private_runtime_config_oci_region=eu-test-1 \
   ansible/playbooks/private-runtime-config.yml
 ```
 

@@ -3,10 +3,10 @@
 - name: Assert private OCI Vault ID is present
   ansible.builtin.assert:
     that:
-      - private_runtime_vault_id is string
-      - (private_runtime_vault_id | trim | length) > 0
+      - private_runtime_config_vault_id is string
+      - (private_runtime_config_vault_id | trim | length) > 0
     fail_msg: >-
-      private_runtime_vault_id must be set from the operator-provided VAULT_ID
+      private_runtime_config_vault_id must be set from the operator-provided VAULT_ID
       before private runtime configuration can be materialized.
     success_msg: Private OCI Vault ID input is present.
   no_log: true
@@ -16,12 +16,12 @@
     that:
       - >-
         private_runtime_config_forbidden_input_substrings
-        | select('in', (private_runtime_vault_id | lower))
+        | select('in', (private_runtime_config_vault_id | lower))
         | list
         | length
         == 0
     fail_msg: >-
-      private_runtime_vault_id looks like a placeholder value.
+      private_runtime_config_vault_id looks like a placeholder value.
       Provide a real OCI Vault OCID outside Git.
     success_msg: Private OCI Vault ID is not a documented placeholder.
   no_log: true
@@ -30,13 +30,13 @@
   ansible.builtin.assert:
     that:
       - >-
-        private_runtime_vault_id is match(
+        private_runtime_config_vault_id is match(
           '^ocid1\\.vault\\.oc1\\.[a-z0-9-]+\\.[a-z0-9]+$'
         )
-      - "'vaultsecret' not in (private_runtime_vault_id | lower)"
-      - private_runtime_vault_id is not match('^ocid1\\.vaultsecret\\.')
+      - "'vaultsecret' not in (private_runtime_config_vault_id | lower)"
+      - private_runtime_config_vault_id is not match('^ocid1\\.vaultsecret\\.')
     fail_msg: >-
-      private_runtime_vault_id must be an OCI Vault OCID
+      private_runtime_config_vault_id must be an OCI Vault OCID
       (ocid1.vault.oc1.<region>.<unique>) and must not be a secret OCID.
     success_msg: Private OCI Vault ID matches the expected vault OCID shape.
   no_log: true
@@ -44,10 +44,10 @@
 - name: Assert private OCI region is present
   ansible.builtin.assert:
     that:
-      - private_runtime_oci_region is string
-      - (private_runtime_oci_region | trim | length) > 0
+      - private_runtime_config_oci_region is string
+      - (private_runtime_config_oci_region | trim | length) > 0
     fail_msg: >-
-      private_runtime_oci_region must be set from the operator-provided OCI_REGION
+      private_runtime_config_oci_region must be set from the operator-provided OCI_REGION
       before private runtime configuration can be materialized.
     success_msg: Private OCI region input is present.
   no_log: true
@@ -57,12 +57,12 @@
     that:
       - >-
         private_runtime_config_forbidden_input_substrings
-        | select('in', (private_runtime_oci_region | lower))
+        | select('in', (private_runtime_config_oci_region | lower))
         | list
         | length
         == 0
     fail_msg: >-
-      private_runtime_oci_region looks like a placeholder value.
+      private_runtime_config_oci_region looks like a placeholder value.
       Provide a real OCI region identifier outside Git.
     success_msg: Private OCI region is not a documented placeholder.
   no_log: true
@@ -70,9 +70,9 @@
 - name: Assert private OCI region has a plausible identifier shape
   ansible.builtin.assert:
     that:
-      - private_runtime_oci_region is match('^[a-z]{2}-[a-z0-9]+-[0-9]+$')
+      - private_runtime_config_oci_region is match('^[a-z]{2}-[a-z0-9]+-[0-9]+$')
     fail_msg: >-
-      private_runtime_oci_region must look like an OCI region identifier
+      private_runtime_config_oci_region must look like an OCI region identifier
       (for example eu-frankfurt-1).
     success_msg: Private OCI region matches the expected identifier shape.
   no_log: true
@@ -163,7 +163,7 @@
         name: "{{ private_runtime_config_secret_name }}"
         namespace: "{{ private_runtime_config_secret_namespace }}"
       type: "{{ private_runtime_config_secret_type }}"
-      stringData: "{{ { private_runtime_config_secret_key: private_runtime_oci_region } }}"
+      stringData: "{{ {private_runtime_config_secret_key: private_runtime_config_oci_region} }}"
   become: true
   no_log: true
 

@@ -3,8 +3,8 @@
 # This playbook is intentionally not part of site.yml.
 #
 # Operator handoff (private values stay outside Git):
-#   VAULT_ID   → private_runtime_vault_id
-#   OCI_REGION → private_runtime_oci_region
+#   VAULT_ID   → private_runtime_config_vault_id
+#   OCI_REGION → private_runtime_config_oci_region
 #
 # Do not execute it against a cluster while Argo CD is still reconciling
 # the V1 SecretProviderClass resources, except as part of the separately
