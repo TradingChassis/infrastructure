@@ -114,15 +114,15 @@ The following secret names are referenced directly by `SecretProviderClass` mani
 
 | Secret name | Used by | Purpose / expected value type | Source manifest |
 | --- | --- | --- | --- |
-| `postgresdb-naming` | PostgreSQL | PostgreSQL database name (string) | `apps/postgres/secrets.yaml` |
-| `postgres-user` | PostgreSQL | PostgreSQL username (string) | `apps/postgres/secrets.yaml` |
-| `postgres-password` | PostgreSQL | PostgreSQL password (secret string) | `apps/postgres/secrets.yaml` |
-| `mlflowdb-naming` | PostgreSQL init job | MLflow database name in PostgreSQL (string) | `apps/postgres/secrets.yaml` |
-| `mlflow-user` | PostgreSQL init job | MLflow DB user (string) | `apps/postgres/secrets.yaml` |
-| `mlflow-password` | PostgreSQL init job | MLflow DB user password (secret string) | `apps/postgres/secrets.yaml` |
-| `mlflow-db-uri` | MLflow | Full backend store URI (secret string/URI) | `apps/mlflow/secrets.yaml` |
-| `grafana-login-user` | Monitoring / Grafana | Grafana admin username (string) | `apps/monitoring/secrets.yaml` |
-| `grafana-login-password` | Monitoring / Grafana | Grafana admin password (secret string) | `apps/monitoring/secrets.yaml` |
+| `postgresdb-naming` | PostgreSQL | PostgreSQL database name (string) | `apps/postgres/overlays/v1/secrets.yaml` |
+| `postgres-user` | PostgreSQL | PostgreSQL username (string) | `apps/postgres/overlays/v1/secrets.yaml` |
+| `postgres-password` | PostgreSQL | PostgreSQL password (secret string) | `apps/postgres/overlays/v1/secrets.yaml` |
+| `mlflowdb-naming` | PostgreSQL init job | MLflow database name in PostgreSQL (string) | `apps/postgres/overlays/v1/secrets.yaml` |
+| `mlflow-user` | PostgreSQL init job | MLflow DB user (string) | `apps/postgres/overlays/v1/secrets.yaml` |
+| `mlflow-password` | PostgreSQL init job | MLflow DB user password (secret string) | `apps/postgres/overlays/v1/secrets.yaml` |
+| `mlflow-db-uri` | MLflow | Full backend store URI (secret string/URI) | `apps/mlflow/overlays/v1/secrets.yaml` |
+| `grafana-login-user` | Monitoring / Grafana | Grafana admin username (string) | `apps/monitoring/overlays/v1/secrets.yaml` |
+| `grafana-login-password` | Monitoring / Grafana | Grafana admin password (secret string) | `apps/monitoring/overlays/v1/secrets.yaml` |
 
 Do not commit secret values to Git.
 
@@ -181,10 +181,10 @@ Also verify `repoURL` matches the repository you intend to deploy in your enviro
 
 | Component | NodePort | Source |
 | --- | --- | --- |
-| Grafana | `30007` | `apps/monitoring/helm-values.yaml` |
+| Grafana | `30007` | `apps/monitoring/base/helm-values.yaml` |
 | Argo Workflows server | `32120` | `apps/argo/helm-values.yaml` |
-| Prometheus | `30090` | `apps/monitoring/helm-values.yaml` |
-| MLflow | `30500` | `apps/mlflow/service.yaml` |
+| Prometheus | `30090` | `apps/monitoring/base/helm-values.yaml` |
+| MLflow | `30500` | `apps/mlflow/base/service.yaml` |
 
 Access is typically done through SSH local port forwarding. Cloud firewall exposure is configured outside this repository, so verify your OCI NSG/Security List settings.
 

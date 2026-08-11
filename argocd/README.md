@@ -28,7 +28,10 @@ cutover. No live cutover has occurred.
 
 MLflow V2 prepares `AWS_DEFAULT_REGION` via
 `secretKeyRef` to `tradingchassis-runtime-config` / `OCI_REGION`. That
-Kubernetes Secret is not created in this repository scope.
+Kubernetes Secret is not created in this repository scope. Because Secret
+references are namespace-scoped and the MLflow Deployment runs in `mlflow`,
+later Ansible private deployment configuration must create
+`tradingchassis-runtime-config` in the `mlflow` namespace.
 
 ## OCI Secrets Platform
 
