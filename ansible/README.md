@@ -14,6 +14,7 @@ scratch filesystem and mount
 explicit host firewall
 MicroK8s installation and host configuration
 Argo CD bootstrap
+private runtime configuration materialization (explicit opt-in playbook)
 ```
 
 Ansible does **not** own:
@@ -21,11 +22,15 @@ Ansible does **not** own:
 ```text
 OCI network/compute/storage/IAM resources
 long-lived Kubernetes application desired state
+Secrets Store CSI Driver / OCI provider installation
 ```
 
 Terraform owns cloud infrastructure.
 Argo CD owns long-lived Kubernetes desired state, including the Secrets Store CSI
 Driver and OCI Vault provider.
+Ansible may materialize only private-config-dependent Kubernetes objects
+(`tradingchassis-runtime-config` and the three SecretProviderClass resources)
+through an explicit non-default playbook.
 
 ## Current scope
 
@@ -34,6 +39,7 @@ Host baseline contract validation is implemented.
 Scratch filesystem validation, guarded formatting, and UUID-based mounting are implemented.
 MicroK8s installation, required addons, readiness, and an explicit UFW host firewall policy are implemented.
 Argo CD bootstrap and the GitOps root Application handoff are implemented.
+Private runtime configuration materialization is implemented as an explicit opt-in playbook only.
 ```
 
 Project layout:
@@ -45,16 +51,18 @@ ansible/
 ├── inventory/
 │   └── example.yml
 ├── playbooks/
-│   └── site.yml
+│   ├── site.yml
+│   └── private-runtime-config.yml
 ├── roles/
 │   ├── host_baseline/
 │   ├── scratch_storage/
 │   ├── microk8s/
-│   └── argocd_bootstrap/
+│   ├── argocd_bootstrap/
+│   └── private_runtime_config/
 └── README.md
 ```
 
-Playbook order:
+Canonical `site.yml` playbook order:
 
 ```text
 host_baseline
@@ -63,6 +71,7 @@ microk8s
 argocd_bootstrap
 ```
 
+`private_runtime_config` is intentionally **not** included in `site.yml`.
 ## Host baseline
 
 The `host_baseline` role:
@@ -221,29 +230,115 @@ Ansible → Argo CD → root Application → child Applications under argocd/
 Child Application manifests remain Git-owned under `argocd/` and are selected by `argocd/kustomization.yaml`.
 Their controller namespace is `argocd` so the Argo CD instance can reconcile them.
 
+## Private runtime configuration
+
+```text
+VAULT_ID   → private_runtime_config_vault_id
+OCI_REGION → private_runtime_config_oci_region
+```
+
+Private values stay outside the public repository. Operators map them into Ansible
+variables for an explicit playbook run. The role does not read `.env`, tfvars,
+kubeconfigs from the workspace, or discover secrets automatically.
+
+The `private_runtime_config` role:
+
+* fail-closed validates Vault OCID shape (`ocid1.vault...`) and OCI region shape
+* requires the SecretProviderClass CRD already installed by Argo CD `oci-secrets`
+* requires application namespaces `postgres`, `mlflow`, and `monitoring` to exist
+* materializes Secret `tradingchassis-runtime-config` in namespace `mlflow` with key `OCI_REGION`
+* materializes exactly three SecretProviderClass resources with `authType: instance`
+* renders literal `vaultId` from `private_runtime_config_vault_id` (no Git placeholder)
+* uses `kubernetes.core` with the MicroK8s kubeconfig contract (no shell kubectl)
+* sets `no_log: true` on tasks that handle private values
+
+Explicit playbook only (example syntax for the dedicated cutover scope):
+
+```bash
+ANSIBLE_CONFIG=ansible/ansible.cfg \
+  ansible-playbook \
+  -i <approved-inventory> \
+  -e private_runtime_config_vault_id="$VAULT_ID" \
+  -e private_runtime_config_oci_region="$OCI_REGION" \
+  ansible/playbooks/private-runtime-config.yml
+```
+
+Do **not** run that playbook against a cluster while Argo CD is still
+reconciling the V1 SecretProviderClass resources, except as part of the
+separately defined and controlled V2 ownership handoff. The same SPC
+identities (`postgres-secret-bundle`, `mlflow-secret-bundle`,
+`monitoring-secret-bundle`) exist in the active V1 overlays today.
+
+### Preparation (current repository state)
+
+```text
+site.yml unchanged (role not auto-run)
+active apps/*/kustomization.yaml still → overlays/v1
+Argo CD remains authoritative for the V1 SecretProviderClass resources
+prepared overlays/v2 remain inactive
+private-runtime-config playbook exists but is not executed automatically
+therefore no active dual ownership exists
+V1 scripts/08-runtime.sh and inject-runtime-values.sh remain usable
+no live cutover has occurred
+```
+
+### Future ownership handoff (deferred)
+
+```text
+The playbook and V2 overlays are preparation only.
+Exact live ownership handoff sequencing is deferred to a dedicated cutover scope.
+That procedure must transfer SecretProviderClass ownership from the V1 Argo tree
+to Ansible without leaving both reconcilers authoritative for the same objects.
+It must account for Argo prune behavior, sync timing, resource continuity,
+SPC consumer availability, and rollback. This repository scope does not define
+or validate that live sequence.
+```
+
+Ownership invariant:
+
+```text
+At no steady-state point may Argo CD and Ansible both be authoritative
+for the same SecretProviderClass resources.
+```
+
+### Post-cutover steady state (target, not active)
+
+```text
+active apps/*/kustomization.yaml → overlays/v2 (no Git-owned SPCs)
+Ansible owns the three SecretProviderClass resources and the runtime Secret
+Argo owns workloads, CSI Driver, and OCI provider
+V1 runtime Application patching is no longer required
+```
+
+Idempotency design (statically designed; live second-converge validation deferred):
+
+```text
+first run creates Secret and three SPCs
+identical second run is designed for changed=0
+changed OCI_REGION updates the runtime Secret
+changed VAULT_ID updates the three SecretProviderClass resources
+```
+
+Update behavior notes:
+
+```text
+OCI_REGION Secret updates do not rewrite environment variables inside already
+running MLflow pods. A controlled rollout/reconciliation is required later.
+VAULT_ID SecretProviderClass updates change desired CSI configuration; automatic
+volume remount/reload behavior is not claimed without live evidence.
+```
+
 ## Deferred
 
 ```text
 Kubernetes scratch StorageClass binding to /mnt/scratch
-Secrets Store CSI / OCI provider
 Prometheus Operator CRD ownership / monitoring app ownership cleanup
-runtime VAULT_ID / OCI_REGION Application patch cleanup
-```
-
-Next CSI scope gates:
-
-```text
-The OCI Secrets Store CSI provider must be verified for linux/arm64
-before deployment to the Ampere A1 reference node.
-```
-
-```text
-Secrets Store CSI Driver and OCI provider versions must be selected
-for compatibility with the current MicroK8s 1.29 release line.
+canonical site.yml activation of private_runtime_config
+explicit V1→V2 overlay cutover
+runtime VAULT_ID / OCI_REGION Application patch script retirement
 ```
 
 The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains open until the Argo CD storage scope.
-
 ## Inventory safety
 
 `inventory/example.yml` is a non-live structural example.
@@ -282,6 +377,12 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook --syntax-check \
   -i ansible/inventory/example.yml \
   ansible/playbooks/site.yml
+ANSIBLE_CONFIG=ansible/ansible.cfg \
+  ansible-playbook --syntax-check \
+  -i ansible/inventory/example.yml \
+  -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  -e private_runtime_config_oci_region=eu-test-1 \
+  ansible/playbooks/private-runtime-config.yml
 ```
 
 Pinned collections:

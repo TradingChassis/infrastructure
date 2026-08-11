@@ -1,0 +1,26 @@
+---
+# Explicit opt-in playbook for private deployment configuration.
+# This playbook is intentionally not part of site.yml.
+#
+# Operator handoff (private values stay outside Git):
+#   VAULT_ID   → private_runtime_config_vault_id
+#   OCI_REGION → private_runtime_config_oci_region
+#
+# Do not execute it against a cluster while Argo CD is still reconciling
+# the V1 SecretProviderClass resources, except as part of the separately
+# defined and controlled V2 ownership cutover.
+#
+# Prepared state only:
+# - Active GitOps paths remain overlays/v1 (Argo owns the V1 SPC resources).
+# - This playbook exists but is not executed automatically.
+# - Therefore no active dual ownership exists until someone runs it.
+#
+# Ownership invariant for any future cutover:
+# At no steady-state point may Argo CD and Ansible both be authoritative
+# for the same SecretProviderClass resources. The live handoff sequence
+# (including Argo prune/sync timing, continuity, and rollback) is deferred.
+- name: Materialize private runtime configuration
+  hosts: tradingchassis
+  gather_facts: false
+  roles:
+    - role: private_runtime_config
