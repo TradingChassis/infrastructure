@@ -24,13 +24,14 @@ Later:      SecretProviderClass and application secret consumption
 | CSI Driver            | 1.3.3 (vendored dependency in Oracle chart)                        |
 | OCI Provider chart    | Oracle v0.5.0 compatibility line                                   |
 | Provider image        | TradingChassis multi-arch build (linux/amd64, linux/arm64)         |
-| Image pin             | Immutable git-SHA tag resolving to verified multi-arch manifest     |
+| Deployed image pin    | Source git-SHA tag (repository:tag rendered by Oracle chart)       |
+| Supply-chain digest   | sha256:a04180e28fe6a6b55b1dea934baae174ee1e02ddbb6142157ab706dec0ca180b |
 
 ### ARM64
 
 The TradingChassis provider image is used because the reference node is ARM64
-(OCI Ampere A1). The pinned image manifest includes `linux/arm64`. Upstream
-Oracle v0.5.0 does not publish a multi-architecture container artifact.
+(OCI Ampere A1). The recorded multi-arch manifest includes `linux/arm64`.
+Upstream Oracle v0.5.0 does not publish a multi-architecture container artifact.
 
 ### Fork provenance
 
@@ -51,12 +52,32 @@ path explicitly.
 
 ### Image pinning strategy
 
-The Oracle Helm chart template renders images as `repository:tag`. It does not
-support first-class digest pinning. The provider image is pinned using the
-immutable git-SHA tag (`1f9ef4b...`) which resolves to the verified multi-arch
-manifest digest `sha256:a04180e28fe6a6b55b1dea934baae174ee1e02ddbb6142157ab706dec0ca180b`.
+The Oracle Helm chart `v0.5.0` exposes `provider.image.repository` and
+`provider.image.tag` and renders `repository:tag`. It does not provide a
+first-class digest field, so the workload is deployed with:
+
+```text
+ghcr.io/tradingchassis/oci-secrets-store-csi-driver-provider:1f9ef4b6e123c2914edf842d77483d7ee174bf0a
+```
+
+That source git-SHA tag is the runtime deployment identity. Registry tags are
+not cryptographically immutable. CI independently verifies that this exact tag
+resolves to the recorded multi-architecture manifest digest
+`sha256:a04180e28fe6a6b55b1dea934baae174ee1e02ddbb6142157ab706dec0ca180b`
+with platforms `linux/amd64` and `linux/arm64`. Kubernetes is not deploying
+`image@sha256:...` for this chart.
+
+### Bootstrap ordering risk
+
+On a fresh cluster the root Application may sync workload Applications that
+consume Secrets Store CSI in parallel with `oci-secrets`. Pods can fail until
+the CSI Driver and OCI provider become Ready. This is a partially confirmed
+operational bootstrap risk and is deferred until the SecretProviderClass /
+application-consumer migration, where ordering can be addressed without
+expanding this platform-ownership change.
 
 ### Deferred
 
 - Application-specific SecretProviderClass migration
 - Runtime VAULT_ID / OCI_REGION cleanup (scripts/08-runtime.sh)
+- Bootstrap sync ordering for CSI consumers
