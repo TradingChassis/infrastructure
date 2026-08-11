@@ -646,6 +646,19 @@ jobs:
               if vault_id != expected_vault_id:
                   print(f"FAIL: {path} vaultId={vault_id!r}, expected {expected_vault_id!r} placeholder for V1 runtime patch")
                   sys.exit(1)
+              sync_options = (
+                  spcs[0]
+                  .get("metadata", {})
+                  .get("annotations", {})
+                  .get("argocd.argoproj.io/sync-options")
+              )
+              if sync_options != "Prune=false":
+                  print(
+                      f"FAIL: {path} SPC {spc_name} must carry "
+                      f"argocd.argoproj.io/sync-options=Prune=false "
+                      f"(got {sync_options!r})"
+                  )
+                  sys.exit(1)
               print(f"PASS: active {path} retains V1 SPC patch target {spc_name}.")
 
           print("PASS: Active application entry points remain V1-compatible.")

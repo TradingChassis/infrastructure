@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Prepared separate V1-compatible and inactive V2 application overlays for the private runtime-configuration migration without changing active GitOps ownership.
 - Added an explicit Ansible private runtime-configuration playbook that materializes the deployment configuration Secret and SecretProviderClass resources without activating the V2 application overlays.
 - Documented the controlled V1-to-V2 runtime SecretProviderClass ownership handoff and rollback procedure.
+- Added temporary Argo CD prune protection to the three active V1 SecretProviderClass resources in preparation for the controlled runtime ownership handoff.
 
 ### Fixed
 
