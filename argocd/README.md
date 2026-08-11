@@ -40,8 +40,15 @@ Do **not** execute the private runtime-configuration playbook while Argo CD is
 still reconciling those V1 SecretProviderClass resources, except as part of the
 separately defined and controlled ownership handoff. At no steady-state point
 may Argo CD and Ansible both be authoritative for the same SecretProviderClass
-resources. Exact live cutover sequencing remains deferred; see the canonical
-runbook:
+resources.
+
+Primary V2 fresh deployment path:
+
+```text
+docs/V2_CLEAN_ROOM_DEPLOYMENT.md
+```
+
+Historical in-place cutover sequencing (fallback only):
 
 ```text
 docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md

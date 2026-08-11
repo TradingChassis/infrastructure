@@ -1,35 +1,53 @@
 # TradingChassis Infrastructure GitOps Kubernetes Stack (MicroK8s + Argo CD)
 
-Single-node infrastructure baseline for quantitative research and backtesting on an existing OCI Ubuntu VM.
+Single-node infrastructure for quantitative research and backtesting on OCI.
 
-This repository combines imperative host bootstrap scripts with Argo CD GitOps for selected Kubernetes workloads. It does not provision OCI infrastructure and is not presented as a highly available production platform.
+## Architecture generations
 
-## Version 1 Baseline
+| Generation | Role today | Path |
+| --- | --- | --- |
+| **Version 2** | **Current target** — Terraform → Ansible → Argo CD clean-room deploy | [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) |
+| **Version 1** | Historical / fallback — Bash bootstrap on an existing VM | `scripts/`, [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md) |
 
-“Version 1” refers to the first-generation architecture documented in this repository:
+V2 ownership:
 
 ```text
-Existing OCI infrastructure
-→ Bash host and cluster bootstrap
-→ MicroK8s
-→ Argo CD
-→ Kubernetes platform applications
+Terraform  → OCI network, compute, scratch volume, instance-principal IAM
+Ansible    → host baseline, scratch filesystem, MicroK8s, Argo CD bootstrap,
+             optional private runtime materialization
+Argo CD    → long-lived Kubernetes desired state (apps + oci-secrets)
+GitHub Actions → static validation only
 ```
 
-The project uses pre-1.0 semantic versioning while the infrastructure model is being stabilized. This release documents the Bash-, MicroK8s-, and Argo-CD-based baseline. Terraform and Ansible are not part of this release.
+**Start here for a fresh environment:** [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
-For ownership boundaries, known limitations, unresolved questions, and the planned Version 2 architecture direction, see [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
+That runbook is the canonical operator contract. It is **not** yet fully
+executable end-to-end (remaining Phase-A scopes include V2 overlay activation,
+scratch Kubernetes binding, and OCI secrets ordering hardening). It is **not**
+live-validated merely because CI passes.
+
+The historical in-place SecretProviderClass handoff document
+([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))
+is a fallback procedure, not the primary V2 path.
 
 ## What This Repository Provides
 
-- Bootstrap automation for MicroK8s, Argo CD, CSI secrets integration, and baseline workloads
+- Terraform-managed OCI reference infrastructure (network, compute, scratch storage, IAM)
+- Ansible-managed host bootstrap (baseline, scratch mount, MicroK8s, Argo CD)
 - GitOps-driven application reconciliation from manifests in this repository
 - OCI Vault-backed secret delivery through Secrets Store CSI + OCI provider
 - Predefined workloads: PostgreSQL, MLflow, monitoring stack, Argo Workflows, and scratch PVC overlays
+- Legacy V1 Bash bootstrap scripts retained as historical fallback until V2 clean-room proof
 
 ## Architecture Overview
 
-### Host bootstrap layer (`scripts/`)
+### Version 2 path (target)
+
+See [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) for the
+deterministic operator sequence (Terraform outputs → Ansible inventory →
+`site.yml` → Argo → private runtime → acceptance).
+
+### Version 1 host bootstrap layer (`scripts/`) — historical / fallback
 
 `scripts/bootstrap-cluster.sh` runs these stages in order:
 
@@ -132,12 +150,22 @@ All `SecretProviderClass` resources in this repository use `authType: instance`.
 
 This repository does not include OCI IAM policy text. You must configure OCI IAM policies so the instance principal can read the required vault secrets.
 
-## Bootstrap / Installation
+## V1 historical / fallback bootstrap
 
-> Bootstrap is intended for a fresh VM.
+For **new V2 deployments**, use the canonical clean-room runbook:
+
+```text
+docs/V2_CLEAN_ROOM_DEPLOYMENT.md
+```
+
+The script-based bootstrap below is retained only as the **historical V1 / fallback**
+path until V2 clean-room validation is complete. It is not the primary setup path
+and is not claimed live-validated as the V2 workflow.
+
+> V1 bootstrap is intended for a fresh VM under the legacy model.
 > Re-running on an existing cluster is not supported by this repository flow.
 
-Run:
+Run (V1 fallback only):
 
 ```bash
 chmod +x scripts/*
@@ -190,7 +218,11 @@ Access is typically done through SSH local port forwarding. Cloud firewall expos
 
 ### Argo CD UI access (debugging)
 
-This repository installs Argo CD during bootstrap and manages `Application` objects in namespace `default`.
+**V2 (Ansible bootstrap):** Argo CD and Application CRs live in namespace `argocd`
+(`ansible/roles/argocd_bootstrap`, `argocd/*.yaml`).
+
+**V1 (historical Bash bootstrap):** Application objects were commonly managed in
+namespace `default` (`scripts/inject-runtime-values.sh` defaults `ARGO_NS=default`).
 
 Check where `argocd-server` service exists:
 
@@ -198,7 +230,13 @@ Check where `argocd-server` service exists:
 sudo microk8s kubectl get svc -A | rg argocd-server
 ```
 
-If it is in `default`, port-forward locally:
+V2 port-forward example:
+
+```bash
+sudo microk8s kubectl -n argocd port-forward svc/argocd-server 8080:443
+```
+
+Historical V1 example if the server is still in `default`:
 
 ```bash
 sudo microk8s kubectl -n default port-forward svc/argocd-server 8080:443
@@ -298,9 +336,10 @@ For vulnerability reporting and security policy, see `SECURITY.md`.
 - Managed Kubernetes providers
 - Public service exposure configuration
 - Application business logic and trade execution systems
-- OCI resource provisioning (VM, network, volumes, IAM, Vault lifecycle)
+- Vault lifecycle and Vault secret **values** (referenced by Terraform / consumed via CSI; not provisioned as secret contents here)
 
 Additional Version 1 limitations and evidence gaps are listed in [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
+V2 clean-room status and remaining blockers are listed in [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 ## AI-Assisted Development
 
@@ -308,6 +347,9 @@ This repository includes Cursor and agent guardrails for AI-assisted work. Start
 
 ## Additional Documentation
 
+- [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) — **canonical V2 clean-room operator runbook**
+- [`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md) — historical in-place SPC handoff (fallback only)
+- `terraform/README.md` / `ansible/README.md` / `argocd/README.md` — layer ownership
 - `VERSION_1_BASELINE.md` for Version 1 ownership, limitations, and Version 2 direction
 - `AGENTS.md` for the cross-agent safety entry point
 - `CONTRIBUTING.md` for contribution workflow
