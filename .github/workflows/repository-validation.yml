@@ -433,8 +433,10 @@ jobs:
                   .get("parameters", {})
                   .get("vaultId")
               )
-              if vault_id != "${VAULT_ID}":
-                  print(f"FAIL: {path} vaultId={vault_id!r}, expected '${{VAULT_ID}}' placeholder for V1 runtime patch")
+              # Escape so Actions emits the literal placeholder string for Python.
+              expected_vault_id = "${{ '${VAULT_ID}' }}"
+              if vault_id != expected_vault_id:
+                  print(f"FAIL: {path} vaultId={vault_id!r}, expected {expected_vault_id!r} placeholder for V1 runtime patch")
                   sys.exit(1)
               print(f"PASS: active {path} retains V1 SPC patch target {spc_name}.")
 
