@@ -400,6 +400,13 @@ jobs:
           import sys
           import yaml
 
+          # kube-prometheus-stack CRDs emit bare "=" enum values. PyYAML 1.1 maps
+          # those to tag:yaml.org,2002:value without a SafeLoader constructor.
+          yaml.SafeLoader.add_constructor(
+              "tag:yaml.org,2002:value",
+              lambda loader, node: loader.construct_scalar(node),
+          )
+
           expected = {
               "apps/postgres": "postgres-secret-bundle",
               "apps/mlflow": "mlflow-secret-bundle",
@@ -451,6 +458,13 @@ jobs:
           import subprocess
           import sys
           import yaml
+
+          # kube-prometheus-stack CRDs emit bare "=" enum values. PyYAML 1.1 maps
+          # those to tag:yaml.org,2002:value without a SafeLoader constructor.
+          yaml.SafeLoader.add_constructor(
+              "tag:yaml.org,2002:value",
+              lambda loader, node: loader.construct_scalar(node),
+          )
 
           v2_paths = [
               "apps/postgres/overlays/v2",
