@@ -22,9 +22,9 @@ GitHub Actions → static validation only
 **Start here for a fresh environment:** [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 That runbook is the canonical operator contract. It is **not** yet fully
-executable end-to-end (remaining Phase-A scopes include V2 overlay activation,
-scratch Kubernetes binding, and OCI secrets ordering hardening). It is **not**
-live-validated merely because CI passes.
+executable end-to-end (remaining Phase-A scopes include V2 overlay activation
+and OCI secrets ordering hardening; scratch Kubernetes binding is implemented in
+Git and awaits live validation). It is **not** live-validated merely because CI passes.
 
 The historical in-place SecretProviderClass handoff document
 ([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))
@@ -202,8 +202,10 @@ Also verify `repoURL` matches the repository you intend to deploy in your enviro
 | `mlflow` | `apps/mlflow` | `mlflow` | MLflow tracking server |
 | `monitoring` | `apps/monitoring` | `monitoring` | kube-prometheus-stack + pushgateway |
 | `argo` | `apps/argo` | `argo` | Argo Workflows |
+| `scratch-storage` | `apps/scratch/platform` | `kube-system` (cluster-scoped) | Scratch StorageClass + static PVs for `/mnt/scratch` |
 | `scratch-dev` | `apps/scratch/dev` | `dev` | Scratch PVC overlay for dev namespace |
 | `scratch-prod` | `apps/scratch/prod` | `prod` | Scratch PVC overlay for prod namespace |
+| `oci-secrets` | Oracle chart / Argo Helm values | `kube-system` | Secrets Store CSI Driver + OCI provider |
 
 ### NodePort services configured in manifests
 
@@ -246,18 +248,23 @@ Open <https://localhost:8080> while the port-forward is active.
 
 ## Scratch Storage Model
 
-### What the repository currently does
+### V2 contract (Git; awaiting live validation)
 
-- `scripts/03-storage.sh` mounts OCI block storage at `/mnt/scratch` and creates `/mnt/scratch/data`
-- `apps/scratch/dev/pvc.yaml` and `apps/scratch/prod/pvc.yaml` create `scratch-pvc` claims in namespaces `dev` and `prod`
-- Both scratch PVCs use `storageClassName: microk8s-hostpath` with `142.5Gi` requests
-- This repository does not define a `PersistentVolume` object for scratch; only PVCs are defined
+```text
+Terraform → OCI scratch block volume (default 150 GB) + attachment
+Ansible   → mount at /mnt/scratch; create /mnt/scratch/dev and /mnt/scratch/prod
+Argo CD   → StorageClass tradingchassis-scratch + static hostPath PVs + namespace PVCs
+```
 
-### Important distinction
+- Application `scratch-storage` owns cluster-scoped `StorageClass`/`PersistentVolume` objects under `apps/scratch/platform`
+- Applications `scratch-dev` / `scratch-prod` own namespaced `scratch-pvc` claims only
+- PVCs use `storageClassName: tradingchassis-scratch` with deterministic `volumeName` binding
+- Requests are `70Gi` + `70Gi` accounting capacity with headroom on the shared filesystem (not a quota)
+- PostgreSQL remains on `microk8s-hostpath` and is intentionally out of this contract
 
-The repository mounts `/mnt/scratch` on the host, but scratch PVC manifests use the MicroK8s hostpath storage class and do not explicitly reference `/mnt/scratch`.
+### V1 historical note
 
-Maintainer confirmation recommended: verify whether this is the intended storage architecture for scratch workloads in your environment.
+Legacy Bash `scripts/03-storage.sh` mounted `/mnt/scratch` while scratch PVCs used `microk8s-hostpath`. That gap is closed in the V2 Git manifests above and still requires live clean-room validation.
 
 ## Post-Install Verification
 

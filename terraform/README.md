@@ -85,10 +85,11 @@ This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference h
 Performance: `vpus_per_gb = 0` (Lower Cost) for a predictable, cost-conscious reference profile.
 In-transit encryption for the paravirtualized attachment is enabled. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
 
-### Known V1 storage gap
+### Known V1 storage gap (closed in V2 Git manifests)
 
 The V1 host scratch mount and Kubernetes hostpath PVCs were not explicitly bound to the same storage path.
-V2 will close that gap later in the Ansible and Argo CD storage contracts. This Terraform scope only provisions the cloud-side volume and attachment.
+V2 binds scratch PVCs to `/mnt/scratch/dev` and `/mnt/scratch/prod` via Argo-managed static hostPath PersistentVolumes (`apps/scratch/platform`). Live clean-room validation of that binding remains open.
+This Terraform scope only provisions the cloud-side volume and attachment.
 
 ## Instance principal access
 

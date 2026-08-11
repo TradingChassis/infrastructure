@@ -6,6 +6,13 @@ scratch_storage_device_path: ""
 scratch_storage_mount_path: /mnt/scratch
 scratch_storage_filesystem_type: ext4
 
+# Workload subdirectories on the mounted OCI scratch filesystem.
+# Kubernetes static hostPath PVs require these paths to exist (type: Directory).
+# Created only after /mnt/scratch is confirmed as an active mountpoint.
+scratch_storage_workload_subdirs:
+  - dev
+  - prod
+
 # Formatting is opt-in. Keep false unless the empty Terraform-managed scratch
 # volume has been explicitly verified for first-time filesystem creation.
 scratch_storage_allow_format: false

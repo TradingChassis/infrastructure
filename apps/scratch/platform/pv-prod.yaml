@@ -1,0 +1,29 @@
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: scratch-prod-pv
+  labels:
+    app.kubernetes.io/name: scratch-prod-pv
+    app.kubernetes.io/part-of: tradingchassis
+    app.kubernetes.io/component: scratch-storage
+    tradingchassis.io/scratch-env: prod
+spec:
+  # Accounting capacity only. Does not create a filesystem quota on the shared
+  # ext4 volume. Symmetric 70Gi + 70Gi leaves headroom on the 150 GB OCI volume.
+  capacity:
+    storage: 70Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: tradingchassis-scratch
+  volumeMode: Filesystem
+  claimRef:
+    namespace: prod
+    name: scratch-pvc
+  hostPath:
+    # Dedicated subdirectory on the Ansible-mounted OCI scratch filesystem.
+    # type Directory (not DirectoryOrCreate): fail closed if Ansible has not
+    # prepared the path on the mounted volume (for example after a failed remount).
+    path: /mnt/scratch/prod
+    type: Directory

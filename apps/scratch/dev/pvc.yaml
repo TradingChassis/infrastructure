@@ -1,3 +1,4 @@
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -6,7 +7,11 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  volumeMode: Filesystem
   resources:
     requests:
-      storage: 142.5Gi
-  storageClassName: microk8s-hostpath
+      # Symmetric share of the single OCI-backed /mnt/scratch filesystem.
+      # Capacity is Kubernetes accounting metadata, not a filesystem quota.
+      storage: 70Gi
+  storageClassName: tradingchassis-scratch
+  volumeName: scratch-dev-pv

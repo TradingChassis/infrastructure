@@ -385,8 +385,152 @@ jobs:
           echo "Kustomize build succeeded."
           grep -q 'name: oci-secrets' /tmp/argocd-rendered.yaml
           echo "OCI secrets Application present."
+          grep -q 'name: scratch-storage' /tmp/argocd-rendered.yaml
+          echo "Scratch storage Application present."
 
-      - name: Extract OCI secrets Helm values from Application
+      - name: Validate scratch storage binding contract
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+          import yaml
+
+          def load_docs(text: str):
+              return [d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+
+          def build(path: str):
+              proc = subprocess.run(
+                  ["kustomize", "build", path],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              return load_docs(proc.stdout)
+
+          platform = build("apps/scratch/platform")
+          dev = build("apps/scratch/dev")
+          prod = build("apps/scratch/prod")
+          postgres = build("apps/postgres")
+
+          scs = [d for d in platform if d.get("kind") == "StorageClass"]
+          pvs = [d for d in platform if d.get("kind") == "PersistentVolume"]
+          if len(scs) != 1 or scs[0]["metadata"]["name"] != "tradingchassis-scratch":
+              print(f"FAIL: expected one StorageClass tradingchassis-scratch, found {scs!r}")
+              sys.exit(1)
+          if scs[0].get("provisioner") != "kubernetes.io/no-provisioner":
+              print("FAIL: StorageClass must use kubernetes.io/no-provisioner")
+              sys.exit(1)
+          if scs[0].get("reclaimPolicy") != "Retain":
+              print("FAIL: StorageClass reclaimPolicy must be Retain")
+              sys.exit(1)
+
+          if len(pvs) != 2:
+              print(f"FAIL: expected two PersistentVolumes, found {len(pvs)}")
+              sys.exit(1)
+
+          by_name = {d["metadata"]["name"]: d for d in pvs}
+          expected = {
+              "scratch-dev-pv": {
+                  "ns": "dev",
+                  "path": "/mnt/scratch/dev",
+                  "claim": "scratch-pvc",
+              },
+              "scratch-prod-pv": {
+                  "ns": "prod",
+                  "path": "/mnt/scratch/prod",
+                  "claim": "scratch-pvc",
+              },
+          }
+          total_gi = 0
+          for name, exp in expected.items():
+              pv = by_name.get(name)
+              if pv is None:
+                  print(f"FAIL: missing PersistentVolume {name}")
+                  sys.exit(1)
+              if pv["spec"].get("storageClassName") != "tradingchassis-scratch":
+                  print(f"FAIL: {name} storageClassName mismatch")
+                  sys.exit(1)
+              if pv["spec"].get("persistentVolumeReclaimPolicy") != "Retain":
+                  print(f"FAIL: {name} reclaimPolicy must be Retain")
+                  sys.exit(1)
+              host_path = pv["spec"].get("hostPath", {})
+              if host_path.get("path") != exp["path"]:
+                  print(f"FAIL: {name} path={host_path.get('path')!r}, expected {exp['path']!r}")
+                  sys.exit(1)
+              if host_path.get("type") != "Directory":
+                  print(f"FAIL: {name} hostPath.type must be Directory (fail-closed)")
+                  sys.exit(1)
+              claim = pv["spec"].get("claimRef", {})
+              if claim.get("namespace") != exp["ns"] or claim.get("name") != exp["claim"]:
+                  print(f"FAIL: {name} claimRef mismatch: {claim!r}")
+                  sys.exit(1)
+              cap = pv["spec"]["capacity"]["storage"]
+              if not str(cap).endswith("Gi"):
+                  print(f"FAIL: {name} capacity must use Gi units, got {cap!r}")
+                  sys.exit(1)
+              total_gi += int(str(cap)[:-2])
+
+          # Terraform default scratch volume is 150 GB. Keep Kubernetes accounting
+          # requests within that envelope with headroom (no filesystem quota claimed).
+          if total_gi > 140:
+              print(f"FAIL: PV capacities sum to {total_gi}Gi; must leave headroom under 150 GB volume")
+              sys.exit(1)
+
+          for label, docs, ns, volume_name, path in (
+              ("dev", dev, "dev", "scratch-dev-pv", "/mnt/scratch/dev"),
+              ("prod", prod, "prod", "scratch-prod-pv", "/mnt/scratch/prod"),
+          ):
+              pvcs = [d for d in docs if d.get("kind") == "PersistentVolumeClaim"]
+              if len(pvcs) != 1:
+                  print(f"FAIL: apps/scratch/{label} expected one PVC, found {len(pvcs)}")
+                  sys.exit(1)
+              pvc = pvcs[0]
+              if pvc["metadata"].get("name") != "scratch-pvc":
+                  print(f"FAIL: apps/scratch/{label} PVC name drift")
+                  sys.exit(1)
+              if pvc["metadata"].get("namespace") != ns:
+                  print(f"FAIL: apps/scratch/{label} PVC namespace drift")
+                  sys.exit(1)
+              if pvc["spec"].get("storageClassName") != "tradingchassis-scratch":
+                  print(f"FAIL: apps/scratch/{label} must use tradingchassis-scratch")
+                  sys.exit(1)
+              if pvc["spec"].get("volumeName") != volume_name:
+                  print(f"FAIL: apps/scratch/{label} volumeName must be {volume_name}")
+                  sys.exit(1)
+              if pvc["spec"]["resources"]["requests"]["storage"] != by_name[volume_name]["spec"]["capacity"]["storage"]:
+                  print(f"FAIL: apps/scratch/{label} PVC request must match PV capacity")
+                  sys.exit(1)
+              if "microk8s-hostpath" in yaml.safe_dump(pvc):
+                  print(f"FAIL: apps/scratch/{label} still references microk8s-hostpath")
+                  sys.exit(1)
+              # Ensure app trees do not own cluster-scoped storage objects.
+              if any(d.get("kind") in {"StorageClass", "PersistentVolume"} for d in docs):
+                  print(f"FAIL: apps/scratch/{label} must not own cluster-scoped storage objects")
+                  sys.exit(1)
+              print(f"PASS: scratch-{label} PVC binds {volume_name} -> {path}")
+
+          # Platform app is the sole owner of cluster-scoped scratch objects.
+          if any(d.get("kind") == "PersistentVolumeClaim" for d in platform):
+              print("FAIL: platform must not own namespaced PVCs")
+              sys.exit(1)
+
+          # PostgreSQL remains on microk8s-hostpath and must not be migrated here.
+          pg_pvcs = [
+              d for d in postgres
+              if d.get("kind") == "PersistentVolumeClaim"
+              and d.get("metadata", {}).get("name") == "postgres-pvc"
+          ]
+          if len(pg_pvcs) != 1:
+              print(f"FAIL: expected one postgres-pvc, found {len(pg_pvcs)}")
+              sys.exit(1)
+          if pg_pvcs[0]["spec"].get("storageClassName") != "microk8s-hostpath":
+              print("FAIL: postgres-pvc storageClassName must remain microk8s-hostpath")
+              sys.exit(1)
+
+          print("PASS: scratch storage binding contract is consistent.")
+          PY
         run: |
           set -euo pipefail
           python3 <<'PY'

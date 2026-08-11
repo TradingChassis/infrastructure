@@ -64,6 +64,23 @@ private runtime-configuration role is prepared to create
 `tradingchassis-runtime-config` in the `mlflow` namespace during the controlled
 handoff (not during routine V1 operation).
 
+## Scratch storage platform
+
+```text
+Application scratch-storage → apps/scratch/platform
+  StorageClass tradingchassis-scratch
+  PersistentVolume scratch-dev-pv  → hostPath /mnt/scratch/dev
+  PersistentVolume scratch-prod-pv → hostPath /mnt/scratch/prod
+
+Application scratch-dev  → apps/scratch/dev  (PVC scratch-pvc)
+Application scratch-prod → apps/scratch/prod (PVC scratch-pvc)
+```
+
+Static hostPath PVs are used for the single-node MicroK8s reference host.
+`persistentVolumeReclaimPolicy: Retain` keeps Kubernetes object deletion from
+implying destruction of the OCI-backed host filesystem contents.
+This binding is implemented in Git and awaits live clean-room validation.
+
 ## OCI Secrets Platform
 
 Ownership map:
