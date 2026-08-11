@@ -284,14 +284,20 @@ no live cutover has occurred
 
 ### Future ownership handoff (deferred)
 
+Canonical procedure (design only; not executed by merging documentation):
+
+```text
+docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md
+```
+
 ```text
 The playbook and V2 overlays are preparation only.
-Exact live ownership handoff sequencing is deferred to a dedicated cutover scope.
-That procedure must transfer SecretProviderClass ownership from the V1 Argo tree
-to Ansible without leaving both reconcilers authoritative for the same objects.
-It must account for Argo prune behavior, sync timing, resource continuity,
-SPC consumer availability, and rollback. This repository scope does not define
-or validate that live sequence.
+Exact live ownership handoff sequencing remains deferred to that runbook and a
+dedicated live cutover scope. The procedure must transfer SecretProviderClass
+ownership from the V1 Argo tree to Ansible without leaving both reconcilers
+authoritative for the same objects. It must account for Argo prune behavior,
+sync timing, resource continuity, SPC consumer availability, and rollback.
+This repository scope does not define live execution success.
 ```
 
 Ownership invariant:
@@ -334,7 +340,7 @@ volume remount/reload behavior is not claimed without live evidence.
 Kubernetes scratch StorageClass binding to /mnt/scratch
 Prometheus Operator CRD ownership / monitoring app ownership cleanup
 canonical site.yml activation of private_runtime_config
-explicit V1→V2 overlay cutover
+explicit V1→V2 overlay cutover (see docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md)
 runtime VAULT_ID / OCI_REGION Application patch script retirement
 ```
 

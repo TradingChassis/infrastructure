@@ -40,7 +40,12 @@ Do **not** execute the private runtime-configuration playbook while Argo CD is
 still reconciling those V1 SecretProviderClass resources, except as part of the
 separately defined and controlled ownership handoff. At no steady-state point
 may Argo CD and Ansible both be authoritative for the same SecretProviderClass
-resources. Exact live cutover sequencing remains deferred.
+resources. Exact live cutover sequencing remains deferred; see the canonical
+runbook:
+
+```text
+docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md
+```
 
 No live cutover has occurred; active GitOps paths still resolve to
 `overlays/v1`, and V1 runtime injection remains usable.
@@ -127,7 +132,8 @@ expanding this platform-ownership change.
 
 ### Deferred
 
-- Explicit live cutover from overlays/v1 to overlays/v2
+- Explicit live cutover from overlays/v1 to overlays/v2 (see
+  `docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`)
 - Activation of `private_runtime_config` inside the canonical Ansible converge
 - Runtime VAULT_ID / OCI_REGION script retirement (scripts/08-runtime.sh)
 - Bootstrap sync ordering for CSI consumers
