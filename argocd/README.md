@@ -23,17 +23,34 @@ have valid patch targets.
 
 The prepared V2 overlays intentionally omit SecretProviderClass resources.
 Private deployment configuration (`VAULT_ID`, `OCI_REGION`) stays outside the
-public repository. Ansible can materialize those objects through the explicit
-opt-in playbook `ansible/playbooks/private-runtime-config.yml` (role
-`private_runtime_config`). That playbook is **not** part of `site.yml` and is
-**not** executed automatically. No live cutover has occurred; active GitOps
-paths still resolve to `overlays/v1`, and V1 runtime injection remains usable.
+public repository. An explicit opt-in Ansible playbook
+(`ansible/playbooks/private-runtime-config.yml`, role `private_runtime_config`)
+is prepared to materialize those objects later. That playbook is **not** part
+of `site.yml` and is **not** executed automatically.
+
+Prepared-state semantics:
+
+```text
+Argo CD actively owns the V1 SecretProviderClass resources today.
+The Ansible playbook exists but is not run by default.
+Therefore no active dual ownership exists.
+```
+
+Do **not** execute the private runtime-configuration playbook while Argo CD is
+still reconciling those V1 SecretProviderClass resources, except as part of the
+separately defined and controlled ownership handoff. At no steady-state point
+may Argo CD and Ansible both be authoritative for the same SecretProviderClass
+resources. Exact live cutover sequencing remains deferred.
+
+No live cutover has occurred; active GitOps paths still resolve to
+`overlays/v1`, and V1 runtime injection remains usable.
 
 MLflow V2 prepares `AWS_DEFAULT_REGION` via
 `secretKeyRef` to `tradingchassis-runtime-config` / `OCI_REGION`. Because Secret
 references are namespace-scoped and the MLflow Deployment runs in `mlflow`, the
-private runtime-configuration role creates `tradingchassis-runtime-config` in
-the `mlflow` namespace when that opt-in playbook is run.
+private runtime-configuration role is prepared to create
+`tradingchassis-runtime-config` in the `mlflow` namespace during the controlled
+handoff (not during routine V1 operation).
 
 ## OCI Secrets Platform
 

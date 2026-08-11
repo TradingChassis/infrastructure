@@ -252,7 +252,7 @@ The `private_runtime_config` role:
 * uses `kubernetes.core` with the MicroK8s kubeconfig contract (no shell kubectl)
 * sets `no_log: true` on tasks that handle private values
 
-Explicit playbook only:
+Explicit playbook only (example syntax for the dedicated cutover scope):
 
 ```bash
 ANSIBLE_CONFIG=ansible/ansible.cfg \
@@ -263,23 +263,51 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible/playbooks/private-runtime-config.yml
 ```
 
-Activation state after this scope:
+Do **not** run that playbook against a cluster while Argo CD is still
+reconciling the V1 SecretProviderClass resources, except as part of the
+separately defined and controlled V2 ownership handoff. The same SPC
+identities (`postgres-secret-bundle`, `mlflow-secret-bundle`,
+`monitoring-secret-bundle`) exist in the active V1 overlays today.
+
+### Preparation (current repository state)
 
 ```text
 site.yml unchanged (role not auto-run)
 active apps/*/kustomization.yaml still → overlays/v1
+Argo CD remains authoritative for the V1 SecretProviderClass resources
 prepared overlays/v2 remain inactive
+private-runtime-config playbook exists but is not executed automatically
+therefore no active dual ownership exists
 V1 scripts/08-runtime.sh and inject-runtime-values.sh remain usable
 no live cutover has occurred
 ```
 
-Intended later cutover order (not executed by this repository scope):
+### Future ownership handoff (deferred)
 
 ```text
-Argo CD bootstrap / root reconcile creates app namespaces
-→ oci-secrets Application installs CSI Driver + OCI provider (SPC CRD)
-→ private-runtime-config playbook materializes Secret + SPCs
-→ explicit switch of apps/*/kustomization.yaml from overlays/v1 to overlays/v2
+The playbook and V2 overlays are preparation only.
+Exact live ownership handoff sequencing is deferred to a dedicated cutover scope.
+That procedure must transfer SecretProviderClass ownership from the V1 Argo tree
+to Ansible without leaving both reconcilers authoritative for the same objects.
+It must account for Argo prune behavior, sync timing, resource continuity,
+SPC consumer availability, and rollback. This repository scope does not define
+or validate that live sequence.
+```
+
+Ownership invariant:
+
+```text
+At no steady-state point may Argo CD and Ansible both be authoritative
+for the same SecretProviderClass resources.
+```
+
+### Post-cutover steady state (target, not active)
+
+```text
+active apps/*/kustomization.yaml → overlays/v2 (no Git-owned SPCs)
+Ansible owns the three SecretProviderClass resources and the runtime Secret
+Argo owns workloads, CSI Driver, and OCI provider
+V1 runtime Application patching is no longer required
 ```
 
 Idempotency design (statically designed; live second-converge validation deferred):
