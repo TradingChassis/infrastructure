@@ -449,8 +449,8 @@ deployment configuration such as `vaultId`.
 
 ## Private runtime configuration sequence
 
-Playbook: `ansible/playbooks/private-runtime-config.yml`  
-Role: `private_runtime_config`  
+Playbook: `ansible/playbooks/private-runtime-config.yml`
+Role: `private_runtime_config`
 Not part of `site.yml`.
 
 ### Operator input mapping

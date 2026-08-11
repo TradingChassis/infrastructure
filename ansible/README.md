@@ -430,8 +430,16 @@ kubernetes.core 6.5.0
 ## Live execution
 
 ```text
-Live Ansible execution is intentionally not defined by this foundation scope.
+The V2 live operator sequence is now defined by docs/V2_CLEAN_ROOM_DEPLOYMENT.md.
 ```
+
+```text
+site.yml                 → host bootstrap stage (through Argo CD root Application)
+private-runtime-config.yml → separate later stage after OCI secrets readiness
+```
+
+The sequence is documented but has **not** yet been proven by the first clean-room
+live deployment. Static CI validation does not prove successful host convergence.
 
 ## Evidence
 

@@ -150,12 +150,22 @@ All `SecretProviderClass` resources in this repository use `authType: instance`.
 
 This repository does not include OCI IAM policy text. You must configure OCI IAM policies so the instance principal can read the required vault secrets.
 
-## Bootstrap / Installation
+## V1 historical / fallback bootstrap
 
-> Bootstrap is intended for a fresh VM.
+For **new V2 deployments**, use the canonical clean-room runbook:
+
+```text
+docs/V2_CLEAN_ROOM_DEPLOYMENT.md
+```
+
+The script-based bootstrap below is retained only as the **historical V1 / fallback**
+path until V2 clean-room validation is complete. It is not the primary setup path
+and is not claimed live-validated as the V2 workflow.
+
+> V1 bootstrap is intended for a fresh VM under the legacy model.
 > Re-running on an existing cluster is not supported by this repository flow.
 
-Run:
+Run (V1 fallback only):
 
 ```bash
 chmod +x scripts/*
