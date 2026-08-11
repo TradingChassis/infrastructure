@@ -2,10 +2,19 @@
 
 ## Purpose
 
-This runbook documents the future controlled handoff of the three
-SecretProviderClass resources from Argo CD ownership to Ansible ownership.
+This runbook documents a **historical / in-place** fallback procedure for handing
+the three SecretProviderClass resources from Argo CD ownership to Ansible
+ownership on an existing cluster.
 
-It does not authorize or perform the cutover.
+It is **not** the primary V2 clean-room deployment path.
+
+For fresh V2 environments, use the canonical runbook:
+
+```text
+docs/V2_CLEAN_ROOM_DEPLOYMENT.md
+```
+
+This document does not authorize or perform the cutover.
 
 All live operator actions below are procedure design only. They are **not**
 live-validated by this document and must not be executed until the dedicated
@@ -262,7 +271,7 @@ Capture and store offline evidence for:
 Application sync/health for postgres, mlflow, monitoring, oci-secrets
 automation / prune / selfHeal settings (record exact original values)
 SPC existence, names, namespaces
-SPC tracking metadata (labels/annotations) without dumping private fields
+SPC Argo tracking / sync-option annotation keys only (never all annotations)
 Pod Ready status in postgres/mlflow/monitoring
 CSI Driver / OCI provider health
 presence or absence of Secret/tradingchassis-runtime-config (name only)
@@ -279,18 +288,23 @@ kubectl -n argocd get applications postgres mlflow monitoring oci-secrets \
 kubectl get secretproviderclass -A \
   -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name
 
-# Tracking inspection: metadata only (never dump spec / parameters / vaultId)
+# Tracking inspection: query only explicit non-sensitive annotation keys.
+# Never dump all annotations, full SPC YAML/JSON, or spec.parameters (vaultId).
+# kubectl.kubernetes.io/last-applied-configuration may serialize private
+# deployment configuration and must not be printed.
 # Repeat for mlflow-secret-bundle and monitoring-secret-bundle.
 kubectl -n postgres get secretproviderclass postgres-secret-bundle \
   -o custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace
 kubectl -n postgres get secretproviderclass postgres-secret-bundle \
-  -o go-template='LABELS:{{"\n"}}{{range $k,$v := .metadata.labels}}{{printf "  %s=%s\n" $k $v}}{{end}}ANNOTATIONS:{{"\n"}}{{range $k,$v := .metadata.annotations}}{{printf "  %s=%s\n" $k $v}}{{end}}'
+  -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}'
+kubectl -n postgres get secretproviderclass postgres-secret-bundle \
+  -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/sync-options}{"\n"}'
 ```
 
-Inspect **all** labels and annotations on each SPC. Determine the live effective
-Argo resource-tracking method and identify the **actual** tracking metadata
-before any later removal. Do not assume a single annotation or label is
-sufficient.
+Inspect **only** the Argo tracking and sync-option keys you need. Do **not**
+dump every annotation or label map. Determine the live effective Argo
+resource-tracking method from Argo configuration and from these explicit keys
+before any later removal. Do not assume a single annotation is always present.
 
 Record the effective tracking method from live Argo configuration
 (for example `argocd-cm` `application.resourceTrackingMethod` if set).

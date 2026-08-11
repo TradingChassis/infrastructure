@@ -29,10 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added an explicit Ansible private runtime-configuration playbook that materializes the deployment configuration Secret and SecretProviderClass resources without activating the V2 application overlays.
 - Documented the controlled V1-to-V2 runtime SecretProviderClass ownership handoff and rollback procedure.
 - Added temporary Argo CD prune protection to the three active V1 SecretProviderClass resources in preparation for the controlled runtime ownership handoff.
+- Added the canonical V2 clean-room deployment runbook and explicit Terraform-to-Ansible bootstrap handoff.
 
 ### Fixed
 
 - Resolved ShellCheck findings in the agent safety tooling without weakening validation behavior
+- Hardened SPC inspection guidance to avoid exposing private deployment configuration through serialized last-applied annotations.
 
 ## [0.1.0] - 2026-07-30
 

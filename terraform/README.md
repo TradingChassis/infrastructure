@@ -210,6 +210,20 @@ SSH ingress remains restricted by `ssh_ingress_cidr` on the compute NSG.
 Application NodePorts are not exposed by Terraform.
 Private SSH keys must never be stored in Terraform configuration, tfvars committed to Git, or GitHub Actions.
 
+## Operator prerequisites (cloud layer)
+
+Before `plan` / `apply`, the operator machine needs:
+
+```text
+Terraform ~> 1.15.0
+OCI authentication supported by the Terraform OCI provider
+local private inputs for required variables (never commit tfvars)
+SSH public key material for instance metadata (ssh_public_key)
+```
+
+Canonical deployment sequence including Ansible handoff:
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
+
 ## Not yet managed
 
 ```text
@@ -222,7 +236,7 @@ host firewall
 MicroK8s
 Argo CD
 Kubernetes PV/PVC/StorageClass
-Ansible inventory generation
+Ansible inventory generation (manual handoff; see clean-room runbook)
 ```
 
 ## Validation
@@ -258,8 +272,26 @@ Credentials are supplied by the execution environment during approved live opera
 ## State
 
 The repository currently uses backend-disabled initialization for static validation only.
-A shared remote state backend must be selected before collaborative live provisioning.
-Local state must not be committed or treated as the team source of truth.
+
+For the **initial single-operator clean-room validation**, Terraform state is
+**local** unless the operator explicitly configures otherwise. Local state must
+not be committed (see `.gitignore`) and should be backed up appropriately for
+the proof environment.
+
+A shared remote state backend remains a future team-operability improvement and
+is not required by current source for the first solo clean-room proof. Remote
+state must still be selected before collaborative long-lived provisioning.
+
+## Outputs used by Ansible
+
+After apply, the operator handoff uses at least:
+
+| Output | Ansible / operator use |
+| --- | --- |
+| `instance_public_ip` | inventory `ansible_host` |
+| `scratch_volume_device` | extra var `scratch_storage_device_path` |
+
+Full clean-room sequence: [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 ## Provider lock file
 

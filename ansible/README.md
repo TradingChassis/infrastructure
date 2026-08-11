@@ -290,13 +290,18 @@ Canonical procedure (design only; not executed by merging documentation):
 docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md
 ```
 
+That cutover document is a **historical / in-place fallback** procedure.
+The primary V2 fresh-environment path is
+`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
+
 ```text
 The playbook and V2 overlays are preparation only.
-Exact live ownership handoff sequencing remains deferred to that runbook and a
-dedicated live cutover scope. The procedure must transfer SecretProviderClass
-ownership from the V1 Argo tree to Ansible without leaving both reconcilers
-authoritative for the same objects. It must account for Argo prune behavior,
-sync timing, resource continuity, SPC consumer availability, and rollback.
+Exact live ownership handoff sequencing (if an in-place cutover is ever required)
+remains deferred to that fallback runbook and a dedicated live cutover scope.
+The procedure must transfer SecretProviderClass ownership from the V1 Argo tree
+to Ansible without leaving both reconcilers authoritative for the same objects.
+It must account for Argo prune behavior, sync timing, resource continuity,
+SPC consumer availability, and rollback.
 This repository scope does not define live execution success.
 ```
 
@@ -345,14 +350,37 @@ runtime VAULT_ID / OCI_REGION Application patch script retirement
 ```
 
 The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains open until the Argo CD storage scope.
-## Inventory safety
+## Inventory and Terraform handoff
 
 `inventory/example.yml` is a non-live structural example.
 It uses an RFC 5737 documentation address and must never be used as production inventory.
 
-Terraform provides infrastructure outputs such as instance and scratch attachment identifiers, including `scratch_volume_device`.
-A later scope will define the approved Terraform-to-Ansible inventory handoff.
-This repository does not generate inventory from Terraform and does not define dynamic inventory.
+Terraform provides infrastructure outputs such as `instance_public_ip` and
+`scratch_volume_device`. This repository does **not** generate inventory from
+Terraform and does not define dynamic inventory.
+
+Approved operator contract (manual, documented):
+
+```text
+terraform output instance_public_ip   → inventory ansible_host
+operator-supplied SSH username          → inventory ansible_user
+terraform output scratch_volume_device → -e scratch_storage_device_path
+```
+
+Canonical sequence, wait gates, and acceptance checklist:
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
+
+## Bootstrap sequence (operator)
+
+1. **First:** `ansible/playbooks/site.yml` (host → scratch → MicroK8s → Argo bootstrap).
+2. **Wait:** OCI secrets platform Ready (SPC CRD, CSI Driver, OCI provider, app namespaces).
+3. **Second:** `ansible/playbooks/private-runtime-config.yml` (explicit opt-in only).
+
+`private_runtime_config` is intentionally **not** in `site.yml`.
+
+While active application shims still point at `overlays/v1`, the clean-room path
+is not fully executable end-to-end; V2 overlay activation is a separate scope.
+Do not treat V1 `scripts/inject-runtime-values.sh` as part of the desired V2 path.
 
 ## V1 migration strategy
 
