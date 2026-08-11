@@ -230,6 +230,19 @@ Ansible → Argo CD → root Application → child Applications under argocd/
 Child Application manifests remain Git-owned under `argocd/` and are selected by `argocd/kustomization.yaml`.
 Their controller namespace is `argocd` so the Argo CD instance can reconcile them.
 
+## Scratch storage (Argo)
+
+```text
+scratch-storage  → apps/scratch/platform  (StorageClass + static PVs)
+scratch-dev      → apps/scratch/dev       (PVC only)
+scratch-prod     → apps/scratch/prod      (PVC only)
+```
+
+Cluster-scoped scratch objects have exactly one owner (`scratch-storage`).
+Dev/prod Applications must not duplicate StorageClass or PersistentVolume manifests.
+Host directories `/mnt/scratch/dev` and `/mnt/scratch/prod` are created by Ansible after
+a verified `/mnt/scratch` mount. Live binding evidence remains open.
+
 ## Private runtime configuration
 
 ```text
@@ -342,14 +355,15 @@ volume remount/reload behavior is not claimed without live evidence.
 ## Deferred
 
 ```text
-Kubernetes scratch StorageClass binding to /mnt/scratch
 Prometheus Operator CRD ownership / monitoring app ownership cleanup
 canonical site.yml activation of private_runtime_config
 explicit V1→V2 overlay cutover (see docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md)
 runtime VAULT_ID / OCI_REGION Application patch script retirement
 ```
 
-The known V1 gap between the host scratch mount and Kubernetes `microk8s-hostpath` PVCs remains open until the Argo CD storage scope.
+Kubernetes scratch binding to `/mnt/scratch` is implemented under `apps/scratch/**`
+(Argo-owned StorageClass/PVs/PVCs) with Ansible creating `/mnt/scratch/dev` and
+`/mnt/scratch/prod` after a verified mount. Live clean-room validation remains open.
 ## Inventory and Terraform handoff
 
 `inventory/example.yml` is a non-live structural example.

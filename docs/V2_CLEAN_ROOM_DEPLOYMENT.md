@@ -41,12 +41,21 @@ Phase-A implementation scopes are merged and live-validated.
 Known remaining blockers at the time this runbook was written:
 
 ```text
-- Kubernetes scratch storage is not yet bound to /mnt/scratch.
 - Active postgres/mlflow/monitoring shims still select overlays/v1.
 - OCI secrets bootstrap ordering is still being hardened.
 ```
 
-Do **not** declare clean-room acceptance complete while those gaps remain.
+Scratch Kubernetes binding status:
+
+```text
+implemented / awaiting live validation
+```
+
+Repository manifests bind scratch-dev/scratch-prod to the OCI-backed `/mnt/scratch`
+filesystem via static hostPath PersistentVolumes. This is **not** live-validated.
+
+Do **not** declare clean-room acceptance complete while remaining gaps above remain,
+or while scratch binding lacks live evidence.
 Do **not** treat CI static validation as proof of a successful live rebuild.
 
 ---
@@ -60,10 +69,12 @@ Terraform
 Ansible
   owns host configuration and initial bootstrap
   plus narrowly scoped private runtime materialization
+  plus /mnt/scratch mount and scratch workload host directories
 
 Argo CD
   owns long-lived Kubernetes desired state
-  (including Secrets Store CSI Driver and OCI provider via oci-secrets)
+  (including Secrets Store CSI Driver and OCI provider via oci-secrets,
+   and scratch StorageClass/static PVs/PVCs)
 
 GitHub Actions
   owns static repository validation only
@@ -356,6 +367,7 @@ an empty Terraform-managed scratch volume (see above).
 ```text
 host baseline contract asserted (Ubuntu 24, ARM64)
 scratch filesystem validated/mounted at /mnt/scratch (when inputs correct)
+scratch workload directories /mnt/scratch/dev and /mnt/scratch/prod present on the mount
 MicroK8s installed (channel 1.29/stable) with required addons
 host UFW policy applied
 Argo CD installed in namespace argocd
@@ -391,6 +403,7 @@ Child Applications selected by `argocd/kustomization.yaml` (confirmed from repos
 | `mlflow` | `mlflow` |
 | `monitoring` | `monitoring` |
 | `argo` | `argo` |
+| `scratch-storage` | `kube-system` (cluster-scoped SC/PV) |
 | `scratch-dev` | `dev` |
 | `scratch-prod` | `prod` |
 | `oci-secrets` | `kube-system` |
@@ -433,7 +446,7 @@ kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io
 kubectl get namespace postgres mlflow monitoring
 
 # High-level Argo health (no secret values)
-kubectl -n argocd get applications root oci-secrets postgres mlflow monitoring argo scratch-dev scratch-prod \
+kubectl -n argocd get applications root oci-secrets scratch-storage postgres mlflow monitoring argo scratch-dev scratch-prod \
   -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status
 
 # CSI / provider pods in kube-system (names may vary; confirm Ready)
@@ -556,17 +569,31 @@ No scripts/inject-runtime-values.sh execution is required for steady state.
 
 ---
 
-## Scratch Kubernetes limitation (current blocker)
+## Scratch Kubernetes binding (implemented / awaiting live validation)
 
 ```text
-The current Kubernetes scratch PVC path is not yet bound to /mnt/scratch.
-Do not declare clean-room acceptance complete until the dedicated scratch-storage
-scope is merged and live-validated.
+Terraform provisions the OCI scratch block volume (default size_in_gbs=150; OCI block-volume GB = 1024 MiB / GiB-equivalent)
+→ Ansible mounts it at /mnt/scratch and creates /mnt/scratch/dev and /mnt/scratch/prod
+→ Argo Application scratch-storage owns StorageClass tradingchassis-scratch and static PVs
+→ scratch-dev / scratch-prod PVCs bind deterministically via volumeName + claimRef
 ```
 
-Host mount via Ansible and cloud volume via Terraform are implemented.
-Binding Kubernetes `microk8s-hostpath` scratch PVCs to the OCI-backed mount is a
-separate Phase-A scope.
+Design notes (statically validated; not live-proven):
+
+```text
+hostPath static PVs (not local PersistentVolumes): single-node MicroK8s, no hostname affinity
+dev path:  /mnt/scratch/dev
+prod path: /mnt/scratch/prod
+capacity:  70Gi + 70Gi Kubernetes accounting (= 140Gi aggregate)
+backing:   Terraform OCI size_in_gbs=150 (OCI block-volume GB = 1024 MiB / GiB-equivalent)
+headroom:  nominal ~10 Gi before filesystem overhead; PV capacity is NOT a quota
+reclaim:   Retain (Kubernetes PV deletion must not imply cloud volume deletion)
+quota:     PV capacity is NOT a filesystem quota on the shared ext4 volume
+fail-closed hostPath type Directory: missing subdirs after a failed remount refuse the volume
+```
+
+Do not declare clean-room acceptance complete until live validation confirms PVC binding
+and that workloads consume `/mnt/scratch/*` rather than the root filesystem.
 
 ---
 
@@ -598,11 +625,11 @@ document.
 | Terraform fmt / init `-backend=false` / validate | statically validated by CI |
 | Ansible lint / syntax-check | statically validated by CI |
 | Kustomize / Helm GitOps renders / contracts | statically validated by CI |
+| Scratch PVC binding to `/mnt/scratch` | implemented in Git; must be proven live |
 | Terraform apply | must be proven during first clean-room deployment |
 | SSH reachability / Ansible converge | must be proven live |
 | MicroK8s Ready / Argo reconciliation | must be proven live |
 | Vault retrieval / workload health | must be proven live |
-| Scratch PVC binding to `/mnt/scratch` | not yet implemented |
 
 ---
 
@@ -619,7 +646,7 @@ Mark each item only with live evidence. None of these are claimed proven by this
 | Architecture ARM64 / MicroK8s `1.29` line as intended | yes |
 | `/mnt/scratch` mounted from Terraform scratch volume | yes |
 | Argo CD Application `root` exists in namespace `argocd` | yes |
-| Child Applications exist: `oci-secrets`, `postgres`, `mlflow`, `monitoring`, `argo`, `scratch-dev`, `scratch-prod` | yes |
+| Child Applications exist: `oci-secrets`, `scratch-storage`, `postgres`, `mlflow`, `monitoring`, `argo`, `scratch-dev`, `scratch-prod` | yes |
 | `oci-secrets` Synced/Healthy | yes |
 | Secrets Store CSI Driver Ready | yes |
 | OCI provider Ready | yes |
@@ -632,7 +659,7 @@ Mark each item only with live evidence. None of these are claimed proven by this
 | MLflow Healthy | yes |
 | Monitoring Synced + Healthy | yes |
 | Argo Workflows Healthy | yes |
-| Scratch PVCs use intended OCI-backed storage at `/mnt/scratch` | yes — **blocked until scratch K8s scope** |
+| Scratch PVCs Bound to `/mnt/scratch/dev` and `/mnt/scratch/prod` | yes — **awaiting live validation** |
 | No V1 runtime injection (`inject-runtime-values.sh`) executed for this deployment | yes |
 | Second Ansible converge shows no destructive/unintended changes | yes |
 

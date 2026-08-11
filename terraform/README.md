@@ -41,10 +41,14 @@ OCI implementation: a dedicated Block Volume attached to the reference compute i
 
 ```text
 Reference layout:
-boot volume:    50 GB
-scratch volume: 150 GB
+boot volume:    50 GB (OCI size_in_gbs; block-volume GB = 1024 MiB / GiB-equivalent)
+scratch volume: 150 GB (same OCI size_in_gbs convention)
 combined:       200 GB
 ```
+
+Kubernetes scratch accounting (Argo-managed static PVs) uses `70Gi + 70Gi = 140Gi`
+against the default 150 OCI-GB scratch volume, leaving nominal headroom before
+filesystem overhead. PV capacity is not a filesystem quota.
 
 This sizing reflects the OCI reference profile and is not a guarantee of current Free Tier eligibility or zero cost.
 Current OCI Free Tier / Always Free eligibility must be verified against the target tenancy and current Oracle terms before live apply.
@@ -85,10 +89,11 @@ This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference h
 Performance: `vpus_per_gb = 0` (Lower Cost) for a predictable, cost-conscious reference profile.
 In-transit encryption for the paravirtualized attachment is enabled. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
 
-### Known V1 storage gap
+### Known V1 storage gap (closed in V2 Git manifests)
 
 The V1 host scratch mount and Kubernetes hostpath PVCs were not explicitly bound to the same storage path.
-V2 will close that gap later in the Ansible and Argo CD storage contracts. This Terraform scope only provisions the cloud-side volume and attachment.
+V2 binds scratch PVCs to `/mnt/scratch/dev` and `/mnt/scratch/prod` via Argo-managed static hostPath PersistentVolumes (`apps/scratch/platform`). Live clean-room validation of that binding remains open.
+This Terraform scope only provisions the cloud-side volume and attachment.
 
 ## Instance principal access
 

@@ -295,3 +295,27 @@
     opts: "{{ scratch_storage_mount_options }}"
     state: mounted
   become: true
+
+- name: Verify scratch mount path is an active mountpoint
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - -n
+      - -o
+      - TARGET
+      - "{{ scratch_storage_mount_path }}"
+  register: scratch_storage_mountpoint_check
+  changed_when: false
+  failed_when: >-
+    scratch_storage_mountpoint_check.rc != 0
+    or (scratch_storage_mountpoint_check.stdout | trim) != scratch_storage_mount_path
+
+- name: Ensure Kubernetes scratch workload directories exist on the mounted volume
+  ansible.builtin.file:
+    path: "{{ scratch_storage_mount_path }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  loop: "{{ scratch_storage_workload_subdirs }}"

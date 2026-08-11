@@ -1,0 +1,26 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: scratch-storage
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/TradingChassis/infrastructure
+    targetRevision: main
+    path: apps/scratch/platform
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Cluster-scoped StorageClass/PV objects ignore this namespace; it is only
+    # the Argo destination placeholder (same pattern as oci-secrets).
+    namespace: kube-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

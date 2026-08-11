@@ -9,6 +9,7 @@ resources:
   - mlflow-app.yaml
   - monitoring-app.yaml
   - argo-app.yaml
+  - scratch-app-storage.yaml
   - scratch-app-dev.yaml
   - scratch-app-prod.yaml
   - oci-secrets-app.yaml

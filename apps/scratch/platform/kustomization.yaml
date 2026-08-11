@@ -1,0 +1,11 @@
+---
+# Cluster-scoped scratch storage for the OCI-backed /mnt/scratch filesystem.
+# Owned only by Argo Application scratch-storage (apps/scratch/platform).
+# Do not duplicate these resources under apps/scratch/dev or apps/scratch/prod.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - storageclass.yaml
+  - pv-dev.yaml
+  - pv-prod.yaml
