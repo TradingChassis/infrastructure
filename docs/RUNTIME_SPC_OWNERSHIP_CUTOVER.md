@@ -279,10 +279,18 @@ kubectl -n argocd get applications postgres mlflow monitoring oci-secrets \
 kubectl get secretproviderclass -A \
   -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name
 
-# Tracking metadata keys only (inspect values carefully; do not log vaultId)
-kubectl -n postgres get secretproviderclass postgres-secret-bundle -o yaml \
-  | sed -n '1,80p'   # review metadata only; stop before dumping unrelated secrets
+# Tracking inspection: metadata only (never dump spec / parameters / vaultId)
+# Repeat for mlflow-secret-bundle and monitoring-secret-bundle.
+kubectl -n postgres get secretproviderclass postgres-secret-bundle \
+  -o custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace
+kubectl -n postgres get secretproviderclass postgres-secret-bundle \
+  -o go-template='LABELS:{{"\n"}}{{range $k,$v := .metadata.labels}}{{printf "  %s=%s\n" $k $v}}{{end}}ANNOTATIONS:{{"\n"}}{{range $k,$v := .metadata.annotations}}{{printf "  %s=%s\n" $k $v}}{{end}}'
 ```
+
+Inspect **all** labels and annotations on each SPC. Determine the live effective
+Argo resource-tracking method and identify the **actual** tracking metadata
+before any later removal. Do not assume a single annotation or label is
+sufficient.
 
 Record the effective tracking method from live Argo configuration
 (for example `argocd-cm` `application.resourceTrackingMethod` if set).
@@ -634,6 +642,7 @@ freeze postgres/mlflow/monitoring
 |---|---|---|
 | Argo freeze did not take effect | automation still active | do not run Ansible; fix freeze |
 | `Prune=false` missing on one SPC | Phase 3 gate fail | STOP; apply protection; do not switch V2 |
+| Effective Argo resource tracking method cannot be determined | Phase 3 / Phase 7 gate fail | STOP CUTOVER; do not remove tracking metadata; do not proceed to final ownership transfer; investigate live Argo tracking configuration/state; remain in last safe frozen/protected state (or roll back to that state) |
 | Ansible validation fails | Phase 4 gate fail | remain frozen on V1; fix inputs |
 | Ansible apply partially fails | not all objects present | STOP; V1 sync heal; fix; retry later |
 | SPC CRD absent | Phase 3 gate fail | restore `oci-secrets`; STOP |
@@ -656,10 +665,11 @@ Cutover may be considered complete only when all are true
 overlays/v2 active in Git for postgres/mlflow/monitoring
 Argo Synced/Healthy without owning SPCs
 three SPCs present and untracked by Argo
+Ansible sole SPC owner; second converge changed=0
+temporary Prune=false protection has been removed from all three SPCs
 tradingchassis-runtime-config present with key OCI_REGION
 authType remains instance
 workloads Ready with CSI mounts
-Ansible sole SPC owner; second converge changed=0
 V1 injection no longer required for this cluster
 automation restored and verified
 ```
