@@ -1,9 +1,8 @@
+---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Active Argo CD entry point. Keep pointing at the V1-compatible overlay until
+# the private runtime-configuration cutover is explicitly authorized.
 resources:
-  - pvc.yaml
-  - secrets.yaml
-  - deployment.yaml
-  - service.yaml
-  - job-init-mlflow.yaml
+  - overlays/v1
