@@ -22,9 +22,9 @@ GitHub Actions → static validation only
 **Start here for a fresh environment:** [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 That runbook is the canonical operator contract. It is **not** yet fully
-executable end-to-end (remaining Phase-A scopes include V2 overlay activation
-and OCI secrets ordering hardening; scratch Kubernetes binding is implemented in
-Git and awaits live validation). It is **not** live-validated merely because CI passes.
+executable end-to-end (remaining Phase-A scope includes V2 overlay activation;
+OCI secrets bootstrap ordering and scratch Kubernetes binding are implemented in
+Git and await live validation). It is **not** live-validated merely because CI passes.
 
 The historical in-place SecretProviderClass handoff document
 ([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))

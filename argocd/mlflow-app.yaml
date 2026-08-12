@@ -3,6 +3,10 @@ kind: Application
 metadata:
   name: mlflow
   namespace: argocd
+  annotations:
+    # After oci-secrets platform Application (wave -1). Ordering of Application
+    # CRs only; not a health dependency. See argocd/README.md.
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   project: default
 

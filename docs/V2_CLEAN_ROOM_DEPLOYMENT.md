@@ -13,8 +13,8 @@ Terraform
 → SSH / Ansible inventory
 → site.yml
 → Argo CD bootstrap
-→ wait for OCI secrets platform
 → private-runtime-config.yml
+   (bounded platform readiness waits, then mutation)
 → acceptance checks
 ```
 
@@ -42,7 +42,15 @@ Known remaining blockers at the time this runbook was written:
 
 ```text
 - Active postgres/mlflow/monitoring shims still select overlays/v1.
-- OCI secrets bootstrap ordering is still being hardened.
+- Terraform remote state in OCI Object Storage is not yet configured.
+- OCI Cloud Shell execution/auth/SSH handoff is not yet validated.
+- First real clean-room deployment has not yet been executed.
+```
+
+OCI secrets bootstrap ordering status:
+
+```text
+implemented / awaiting live validation
 ```
 
 Scratch Kubernetes binding status:
@@ -55,7 +63,7 @@ Repository manifests bind scratch-dev/scratch-prod to the OCI-backed `/mnt/scrat
 filesystem via static hostPath PersistentVolumes. This is **not** live-validated.
 
 Do **not** declare clean-room acceptance complete while remaining gaps above remain,
-or while scratch binding lacks live evidence.
+or while scratch binding / OCI secrets platform readiness lack live evidence.
 Do **not** treat CI static validation as proof of a successful live rebuild.
 
 ---
@@ -421,22 +429,48 @@ All child Applications currently track `targetRevision: main` for this repositor
 Argo owns the Secrets Store CSI Driver and OCI provider via Application `oci-secrets`.
 Do **not** manually install those components for the V2 path.
 
-Because bootstrap ordering is still being hardened, verify readiness **before**
-running private runtime configuration.
+### Ordering contract (implemented / awaiting live validation)
 
-### Required gates (live validation)
+```text
+Application sync-wave:
+  oci-secrets              = -1
+  postgres/mlflow/monitoring = 1
+  independent apps         = default (unset)
+
+private-runtime-config.yml:
+  bounded waits for platform prerequisites
+  then materializes runtime Secret + SPCs
+```
+
+Application sync-wave annotations order **Application CR create/sync** inside the
+root App-of-Apps reconciliation. They give `oci-secrets` a deterministic head
+start. They do **not** guarantee that `oci-secrets` is Healthy before consumer
+Applications begin reconciling.
+
+Runtime readiness for private materialization is enforced by
+`ansible/roles/private_runtime_config` with bounded, condition-based waits.
+
+### Required gates (enforced by private-runtime-config.yml)
 
 ```text
 CustomResourceDefinition secretproviderclasses.secrets-store.csi.x-k8s.io exists
+CSIDriver secrets-store.csi.k8s.io exists
+DaemonSet kube-system/oci-secrets-secrets-store-csi-driver is Ready
+DaemonSet kube-system/oci-secrets-store-csi-driver-provider is Ready
 Namespaces postgres, mlflow, and monitoring exist
-Secrets Store CSI Driver is Ready
-OCI Secrets Store CSI Provider is Ready
 ```
 
-### Example read-only checks
+Default bound: 36 attempts × 10 seconds (~6 minutes) per prerequisite.
+Do **not** insert manual `sleep` timing between `site.yml` and
+`private-runtime-config.yml`.
+
+These gates prove **platform infrastructure readiness**. They do **not** prove
+OCI Vault retrieval, CSI mounts, or synced Secret contents.
+
+### Optional read-only verification
 
 Adjust access method to your operator practice (for example `microk8s kubectl`
-on the host). These examples are verification only:
+on the host). These examples are optional verification only:
 
 ```bash
 # SPC CRD present
@@ -449,8 +483,10 @@ kubectl get namespace postgres mlflow monitoring
 kubectl -n argocd get applications root oci-secrets scratch-storage postgres mlflow monitoring argo scratch-dev scratch-prod \
   -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status
 
-# CSI / provider pods in kube-system (names may vary; confirm Ready)
-kubectl -n kube-system get pods
+# Stable platform DaemonSets (not generated Pod names)
+kubectl -n kube-system get daemonset \
+  oci-secrets-secrets-store-csi-driver \
+  oci-secrets-store-csi-driver-provider
 ```
 
 Do **not** dump SecretProviderClass `spec`, full YAML/JSON, or all annotations
@@ -626,6 +662,7 @@ document.
 | Ansible lint / syntax-check | statically validated by CI |
 | Kustomize / Helm GitOps renders / contracts | statically validated by CI |
 | Scratch PVC binding to `/mnt/scratch` | implemented in Git; must be proven live |
+| OCI secrets Application sync-wave + Ansible readiness gate | implemented in Git; must be proven live |
 | Terraform apply | must be proven during first clean-room deployment |
 | SSH reachability / Ansible converge | must be proven live |
 | MicroK8s Ready / Argo reconciliation | must be proven live |
