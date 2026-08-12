@@ -15,6 +15,10 @@
 # Terraform
 terraform.tfstate*
 *.tfvars
+*.tfplan
+
+# Operator-local OCI remote-state backend configuration (keep example tracked)
+terraform/backend.hcl
 
 # Helm
 charts/

@@ -1,0 +1,17 @@
+# Copy to backend.hcl and replace placeholders with your existing OCI Object
+# Storage state location. Do not commit backend.hcl.
+#
+# Authentication is supplied by the operator environment (for example OCI
+# Cloud Shell or an OCI config profile). Do not put credentials in this file.
+#
+# Backend configuration is distinct from Terraform deployment inputs
+# (terraform.tfvars): do not mix compartment, SSH, or Vault values here.
+#
+# Each independent environment or fork must use a unique key (and normally its
+# own prefix). Reusing the same bucket + namespace + key shares one Terraform
+# state across unrelated deployments.
+
+bucket    = "<existing-state-bucket>"
+namespace = "<object-storage-namespace>"
+region    = "<oci-region>"
+key       = "tradingchassis/production/terraform.tfstate"
