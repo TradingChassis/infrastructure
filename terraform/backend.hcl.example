@@ -3,8 +3,8 @@
 #
 # Authentication credentials must NOT appear in this file.
 # For the canonical Cloud Shell workflow, set the non-secret auth selection
-# fields below after creating a SecurityToken profile with:
-#   oci session authenticate --profile-name tradingchassis --region <oci-region>
+# fields below after creating an APIKey profile named tradingchassis in
+# $HOME/.oci/config (see docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 #
 # Backend configuration is distinct from Terraform deployment inputs
 # (terraform.tfvars): do not mix compartment, SSH, or Vault values here.
@@ -12,6 +12,8 @@
 # Each independent environment or fork must use a unique key (and normally its
 # own prefix). Reusing the same bucket + namespace + key shares one Terraform
 # state across unrelated deployments.
+#
+# Do not reuse a disposable backend-test key for production.
 
 bucket    = "<existing-state-bucket>"
 namespace = "<object-storage-namespace>"
@@ -19,6 +21,6 @@ region    = "<oci-region>"
 key       = "tradingchassis/production/terraform.tfstate"
 
 # Non-secret auth selection for the native OCI backend (Cloud Shell canonical path).
-# Do not put private keys, tokens, or OCIDs here.
-auth                = "SecurityToken"
+# Do not put private keys, tokens, fingerprints, or OCIDs here.
+auth                = "APIKey"
 config_file_profile = "tradingchassis"

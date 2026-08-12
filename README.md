@@ -22,10 +22,10 @@ GitHub Actions → static validation only
 **Start here for a fresh environment:** [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 That runbook is the canonical operator contract. Remaining Phase-A scopes are
-the first live clean-room deployment and post-proof V1 cleanup. OCI Cloud Shell
-execution readiness, Terraform remote state, active V2 overlays, OCI secrets
-ordering, and scratch Kubernetes binding are implemented/documented in Git and
-await live validation. It is **not** live-validated merely because CI passes.
+the first live clean-room deployment and post-proof V1 cleanup. Cloud Shell
+operator prerequisites are partially live validated (APIKey authentication and
+backend bootstrap). The first V2 clean-room deployment is **not yet executed**.
+It is **not** live-validated merely because CI passes.
 
 The historical in-place SecretProviderClass handoff document
 ([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))

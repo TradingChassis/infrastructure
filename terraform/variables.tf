@@ -179,7 +179,7 @@ variable "oci_auth" {
   type        = string
   default     = null
   nullable    = true
-  description = "Optional OCI provider authentication method. Use SecurityToken for the canonical Cloud Shell workflow after oci session authenticate. Leave null for default provider/API-key environment behavior (CI static validation)."
+  description = "Optional OCI provider authentication method. Use APIKey for the canonical Cloud Shell workflow with profile tradingchassis. Leave null for default provider/API-key environment behavior (CI static validation). SecurityToken and other supported modes remain portable alternatives outside that Cloud Shell path."
 
   validation {
     condition = (
@@ -204,5 +204,5 @@ variable "oci_config_file_profile" {
   type        = string
   default     = null
   nullable    = true
-  description = "Optional OCI config profile name (for example tradingchassis) used with SecurityToken or APIKey profile authentication. Leave null when unused."
+  description = "Optional OCI config profile name (for example tradingchassis) used with APIKey or other profile-based authentication. Leave null when unused."
 }
