@@ -8,6 +8,9 @@
 *.key
 *.crt
 
+# Operator-local OCI API signing material lives under $HOME/.oci (outside Git).
+# *.pem already covers typical API-key filenames such as tradingchassis_api_key.pem.
+
 # Kubernetes
 .kube/
 *.log

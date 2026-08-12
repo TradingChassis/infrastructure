@@ -32,29 +32,40 @@ see [`RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](RUNTIME_SPC_OWNERSHIP_CUTOVER.md).
 
 ```text
 Status: implementation in progress
-Evidence class: confirmed from repository (not live-validated)
+First V2 clean-room deployment: not yet executed
 ```
 
-The V2 clean-room workflow is **not fully executable end-to-end yet** until remaining
-Phase-A implementation scopes are merged and live-validated.
+Cloud Shell operator prerequisites:
 
-Known remaining blockers at the time this runbook was written:
+```text
+partially live validated / authentication and backend bootstrap live validated
+```
+
+The V2 clean-room workflow is **not** a completed live rebuild. Remaining
+operator work is the first real clean-room deployment and later post-proof V1
+cleanup.
+
+Known remaining blockers:
 
 ```text
 - First real clean-room deployment has not yet been executed.
+- Production Terraform init/plan/apply against the production state key is not live proven.
 - Post-proof V1 cleanup has not started.
 ```
 
 Terraform remote state status:
 
 ```text
-implemented / statically validated / awaiting first live OCI initialization
+implemented / native OCI backend init with APIKey live proven against an empty
+backend-test key / production state write and locking not yet live proven
 ```
 
 OCI Cloud Shell execution readiness status:
 
 ```text
-defined / statically validated / awaiting live operator proof
+APIKey/tradingchassis CLI + Terraform provider + native backend init live proven
+preinstalled Cloud Shell Terraform is not new enough (install 1.15.8 user-locally)
+SecurityToken via oci session authenticate is NOT the Cloud Shell path
 ```
 
 V2 runtime overlay status:
@@ -141,6 +152,54 @@ Any historical live V1 cluster is **reference / fallback only** for the clean-ro
 The V2 path must not depend on that cluster.
 Do **not** execute the multi-phase in-place SPC handoff as part of clean-room deployment.
 
+### Live snapshot (2026-08-12) — execution evidence, not architecture
+
+This snapshot is dated operator evidence from the first Cloud Shell
+execution-readiness exercise. It is **not** a permanent architecture
+requirement and is **not** a teardown procedure.
+
+Observed historical compute/storage:
+
+```text
+instance-vps-argocd          TERMINATED
+historical boot volume       TERMINATED
+historical scratch volume    TERMINATED
+historical VNIC attachment   DETACHED
+```
+
+Remaining observed V1-era network names (do not delete in this workflow):
+
+```text
+VCN-ManagedSecrets
+Public-Subnet-ManagedSecrets
+Internet Gateway VCN-ManagedSecrets
+VCN default route table
+VCN default security list
+```
+
+No NSG, NAT gateway, service gateway, reserved public IP, or load balancer was
+observed in that inventory.
+
+Remaining observed V1-era IAM names (no collision with V2 Terraform names
+`tradingchassis-instance-principal` / `tradingchassis-vault-secret-bundles`):
+
+```text
+dynamic group instance-temp-dynamic-group-rule
+policy instance-temp-policy
+```
+
+Persistent V2 foundation that must **not** be treated as V1 teardown:
+
+```text
+compartment ManagedSecrets
+Vault rnd-infra-setup-vault (ACTIVE)
+required Secret names (metadata only; values not recorded here)
+dedicated Terraform state bucket tradingchassis-terraform-state
+  (NoPublicAccess, Versioning Enabled; namespace is tenancy-specific)
+```
+
+Do not reuse an existing application/`data` bucket as Terraform state.
+
 ---
 
 ## Operator prerequisites
@@ -152,10 +211,10 @@ Terraform OCI authentication method, outbound network access, and SSH.
 | Requirement | Source / note |
 | --- | --- |
 | Git | clone this repository under `$HOME` (persistent in Cloud Shell) |
-| Terraform | `~> 1.15.0` (`terraform/versions.tf`); CI uses `1.15.8` |
+| Terraform | `~> 1.15.0` (`terraform/versions.tf`); install **1.15.8** under `$HOME/bin` (do not trust Cloud Shell preinstall) |
 | Ansible | install pinned collections from `ansible/requirements.yml`; CI validates with `ansible-core==2.21.2` / Python `3.12` |
 | Python 3 | required by Ansible |
-| OCI CLI | pre-authenticated in Cloud Shell for CLI only; Terraform needs a separate supported auth mode |
+| OCI CLI | Cloud Shell built-in CLI is `instance_obo_user` convenience only; Terraform uses `$HOME/.oci` APIKey profile `tradingchassis` |
 | SSH keypair | operator-local ed25519 keypair (public key → Terraform, private key → Ansible) |
 | Private deployment inputs | `backend.hcl`, `terraform.tfvars`, private-runtime extra-vars file |
 
@@ -187,19 +246,28 @@ For reproducibility, create a Python virtualenv under persistent `$HOME` and ins
 
 ```text
 Cloud Shell VM          = ephemeral
+Cloud Shell architecture = aarch64 (linux_arm64)
 $HOME                   = persistent encrypted storage
-OCI CLI                 = pre-authenticated for CLI use
+OCI CLI                 = pre-authenticated for CLI convenience only
+OCI CLI binary          = typically /home/oci/bin/oci
 OCI CLI config/token    = outside home under /etc/oci (do not modify/copy)
 OCI CLI auth            = instance_obo_user + delegation_token
 OCI CLI profile/region  = follows Console region selected when the shell starts
+Preinstalled Terraform  = may be too old (live Cloud Shell observed 1.5.7)
+Required Terraform      = ~> 1.15.0 (install 1.15.8 user-locally under $HOME/bin)
 Cloud Shell public IP   = dynamic across sessions (stable within one session)
 Public internet access  = requires Cloud Shell Public Network (or equivalent);
                           OCI Service Network alone is insufficient for GitHub,
-                          Terraform Registry, Ansible Galaxy, and public SSH
+                          HashiCorp Terraform releases / Terraform Registry,
+                          Ansible Galaxy, and public SSH
 ```
 
 Clone and store operator files under `$HOME`, never under ephemeral `/tmp`, so a
 session restart can resume.
+
+Do **not** assume the Cloud Shell preinstalled Terraform binary satisfies
+`required_version ~> 1.15.0`. Install the repository-supported version into
+`$HOME/bin` (see below).
 
 ---
 
@@ -217,7 +285,11 @@ OCI_CLI_PROFILE=<console-selected-region>
 
 plus a service-managed `delegation_token` under `/etc/oci`.
 
-This proves **OCI CLI** access. It does **not** automatically prove Terraform access.
+This proves **OCI CLI convenience** access. It is **not** the TradingChassis
+Terraform backend/provider identity.
+
+Do **not** copy, modify, or extract `/etc/oci/config` or the delegation token.
+Do **not** feed `instance_obo_user` to Terraform.
 
 ### Terraform supported auth (backend and provider)
 
@@ -247,61 +319,143 @@ Do not use `InstancePrincipal` merely because Cloud Shell runs on an OCI VM.
 That VM is service-managed and is not automatically an instance principal in the
 operator tenancy.
 
+`SecurityToken` remains a supported portable provider/backend mode in Terraform,
+but it is **not** the canonical Cloud Shell path. Live Cloud Shell testing of
+`oci session authenticate` failed with `404 NotAuthorizedOrNotFound` /
+`Calling principal is not allowed or not found` while the shell was already
+authenticated as `instance_obo_user`. Do not engineer around that failure.
+
 ### Canonical Cloud Shell Terraform auth strategy
 
 ```text
-SecurityToken via oci session authenticate
-→ same profile for backend + provider
+APIKey via $HOME/.oci/config profile tradingchassis
+→ same profile for OCI CLI Terraform-identity preflights
+→ native OCI Terraform backend
+→ OCI Terraform provider
 ```
 
-Create/refresh a short-lived session token in the operator home config
-(not `/etc/oci`):
+Operator-local files (never commit):
 
-```bash
-# PREFLIGHT / SAFE TO RUN (creates/refreshes operator SecurityToken profile)
-oci session authenticate \
-  --profile-name tradingchassis \
-  --region <oci-region>
+```text
+$HOME/.oci/config                         (mode 0600)
+$HOME/.oci/tradingchassis_api_key.pem     (mode 0600)
 ```
 
-Validate:
+Conceptual profile (placeholders only; use live operator values locally):
+
+```text
+[tradingchassis]
+user=<operator-user-ocid>
+fingerprint=<api-key-fingerprint>
+tenancy=<tenancy-ocid>
+region=<oci-region>
+key_file=<absolute-path-to-private-api-signing-key>
+```
+
+This API signing key authenticates the operator and Terraform to OCI APIs.
+It is **not** the VM SSH keypair used later for Ubuntu/`ansible_user`.
+
+### OCI CLI environment precedence
+
+Cloud Shell exports `OCI_CLI_AUTH=instance_obo_user`. Specifying only
+`--config-file` and `--profile tradingchassis` is **not** enough: the CLI still
+follows `OCI_CLI_AUTH` and looks for a delegation token.
+
+Every OCI CLI command that must prove the Terraform identity therefore uses
+explicit API-key auth:
 
 ```bash
+# PREFLIGHT / SAFE TO RUN (read-only identity check)
 oci iam region list \
   --config-file "$HOME/.oci/config" \
   --profile tradingchassis \
-  --auth security_token
+  --auth api_key
 ```
 
-Refresh before expiry (tokens are typically valid for about one hour):
-
-```bash
-oci session refresh --profile tradingchassis
-```
-
-If refresh fails after expiry, rerun `oci session authenticate` with the same
-profile name.
-
-Long Terraform applies that exceed the token lifetime will fail closed until the
-token is refreshed. Keep stages interactive and resumable; do not background the
-deploy.
-
-API-key auth remains a supported portable alternative outside Cloud Shell, but
-SecurityToken is the canonical Cloud Shell path for this repository.
+Terraform itself is configured through `backend.hcl` and `oci_auth` /
+`oci_config_file_profile`. Do **not** wrap Terraform in `env -u OCI_CLI_*`
+unless a later live defect proves those CLI variables affect the provider or
+backend. OCI CLI environment variables are not automatically the Terraform
+auth contract.
 
 Wire the non-secret auth selection into:
 
 ```text
 terraform/backend.hcl
-  auth = "SecurityToken"
+  auth = "APIKey"
   config_file_profile = "tradingchassis"
 
 terraform/terraform.tfvars
-  oci_auth = "SecurityToken"
+  oci_auth = "APIKey"
   oci_config_file_profile = "tradingchassis"
 ```
 
-Do not put private keys, security tokens, or delegation tokens into those files.
+Do not put private keys, fingerprints, tokens, or live OCIDs into those files.
+
+### API signing key bootstrap
+
+One-time operator action. Do **not** replace `/etc/oci/config`.
+
+```bash
+# PREFLIGHT / SAFE TO RUN (local key generation; upload is a Console mutation)
+mkdir -p "$HOME/.oci"
+chmod 700 "$HOME/.oci"
+
+openssl genrsa -out "$HOME/.oci/tradingchassis_api_key.pem" 2048
+# Recommended trailing marker so OCI CLI does not warn about a missing label:
+printf '\n%s\n' 'OCI_API_KEY' >> "$HOME/.oci/tradingchassis_api_key.pem"
+openssl rsa -pubout \
+  -in "$HOME/.oci/tradingchassis_api_key.pem" \
+  -out "$HOME/.oci/tradingchassis_api_key_public.pem"
+
+chmod 600 "$HOME/.oci/tradingchassis_api_key.pem"
+chmod 600 "$HOME/.oci/config" 2>/dev/null || true
+```
+
+Then in the OCI Console, open the operator user → API Keys → paste the public
+key. Record the fingerprint, user OCID, tenancy OCID, and region into
+`$HOME/.oci/config` under `[tradingchassis]`. Point `key_file` at the private
+signing key absolute path.
+
+Do not use `SUPPRESS_LABEL_WARNING=True` as the canonical workaround.
+
+Verify with the explicit `--auth api_key` command above. Do not commit the
+generated files.
+
+### User-local Terraform install (Cloud Shell)
+
+Repository constraint: `required_version ~> 1.15.0` (`terraform/versions.tf`).
+CI and the live Cloud Shell proof use **1.15.8**. Preinstalled Cloud Shell
+Terraform may be 1.5.x and cannot initialize the native OCI backend.
+
+Install user-locally. No sudo. Do not overwrite `/usr/bin`.
+
+```bash
+# PREFLIGHT / SAFE TO RUN (downloads HashiCorp release + SHA256SUMS; needs Public Network)
+TF_VERSION=1.15.8
+case "$(uname -m)" in
+  aarch64|arm64) TF_ARCH=arm64 ;;
+  x86_64|amd64)  TF_ARCH=amd64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+mkdir -p "$HOME/bin" "$HOME/tmp"
+cd "$HOME/tmp"
+curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_${TF_ARCH}.zip"
+curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS"
+sha256sum -c --ignore-missing "terraform_${TF_VERSION}_SHA256SUMS"
+unzip -o "terraform_${TF_VERSION}_linux_${TF_ARCH}.zip" -d "$HOME/bin"
+chmod 755 "$HOME/bin/terraform"
+
+export PATH="$HOME/bin:$PATH"
+command -v terraform
+terraform version
+```
+
+Expect `command -v terraform` to resolve to `$HOME/bin/terraform` and
+`Terraform v1.15.8` on `linux_arm64` in Cloud Shell. Prepend `$HOME/bin` for
+the session; do not permanently edit shell startup files unless the operator
+already manages PATH that way.
 
 ---
 
@@ -320,7 +474,7 @@ Backend location remains in `backend.hcl`, not tfvars.
 
 | Variable | Purpose |
 | --- | --- |
-| `oci_auth` / `oci_config_file_profile` | SecurityToken selection for Cloud Shell |
+| `oci_auth` / `oci_config_file_profile` | APIKey + profile `tradingchassis` for Cloud Shell |
 | `oci_region` | Provider / deployment region |
 | `oci_compartment_id` | Compartment for network/compute/storage |
 | `oci_tenancy_id` | Tenancy for Dynamic Group / IAM policy |
@@ -377,29 +531,92 @@ Native OCI Object Storage backend
 - Enable Object Storage bucket versioning on that bucket before first live init
   (operational prerequisite / recovery control). `terraform init` does not verify
   versioning.
+- The bucket must be private (`NoPublicAccess`). Do not reuse an arbitrary
+  application or `data` bucket merely because it already exists.
 - Copy `terraform/backend.hcl.example` to the ignored `terraform/backend.hcl`
-  and supply `bucket`, `namespace`, `region`, unique `key`, plus SecurityToken
+  and supply `bucket`, `namespace`, `region`, unique `key`, plus APIKey
   auth selection fields.
+- Production-style example key: `tradingchassis/production/terraform.tfstate`.
+  Do not reuse a disposable `backend-test` key for production.
 - Local state is **not** an operator deployment fallback. CI may use
   `terraform init -backend=false` for static validation only.
 - No V2 state migration is required for the first V2 clean-room deployment.
 - Details: [`terraform/README.md`](../terraform/README.md).
+
+### External state-bucket bootstrap (operator mutation)
+
+This is an **OPERATOR BOOTSTRAP ACTION**, not Terraform, Ansible, or GitOps.
+The root must not contain `oci_objectstorage_bucket`. The bucket is not part of
+the Terraform state it later stores and must survive infrastructure teardown.
+
+Use the APIKey identity explicitly. GET first; CREATE only if absent; GET/VERIFY
+after. Do not run these commands from CI.
+
+```bash
+# MUTATION BOUNDARY: create the dedicated state bucket only if it does not exist.
+# Replace placeholders. Do not reuse an application/data bucket.
+NS="$(oci os ns get \
+  --config-file "$HOME/.oci/config" \
+  --profile tradingchassis \
+  --auth api_key \
+  --query 'data' \
+  --raw-output)"
+BUCKET="<dedicated-state-bucket>"          # example name: tradingchassis-terraform-state
+COMPARTMENT="<compartment-ocid>"
+BACKEND_REGION="<backend-region>"
+
+if oci os bucket get \
+  --namespace-name "$NS" \
+  --bucket-name "$BUCKET" \
+  --region "$BACKEND_REGION" \
+  --config-file "$HOME/.oci/config" \
+  --profile tradingchassis \
+  --auth api_key >/dev/null 2>&1
+then
+  echo "state bucket already exists: $BUCKET"
+else
+  oci os bucket create \
+    --namespace-name "$NS" \
+    --compartment-id "$COMPARTMENT" \
+    --name "$BUCKET" \
+    --region "$BACKEND_REGION" \
+    --public-access-type NoPublicAccess \
+    --versioning Enabled \
+    --config-file "$HOME/.oci/config" \
+    --profile tradingchassis \
+    --auth api_key
+fi
+
+# PREFLIGHT / SAFE TO RUN (verify Versioning Enabled + NoPublicAccess)
+oci os bucket get \
+  --namespace-name "$NS" \
+  --bucket-name "$BUCKET" \
+  --region "$BACKEND_REGION" \
+  --config-file "$HOME/.oci/config" \
+  --profile tradingchassis \
+  --auth api_key \
+  --query '[data.versioning, data."public-access-type"]' \
+  --raw-output
+```
+
+Expect versioning `Enabled` and public access `NoPublicAccess` before any
+production `terraform init -backend-config=backend.hcl`.
 
 ### Backend preflight (Cloud Shell / OCI CLI)
 
 These commands are **PREFLIGHT / SAFE TO RUN** metadata checks. They do not create
 buckets, enable versioning, or write objects.
 
-They must use the same SecurityToken profile that Terraform will use.
+They must use the same APIKey profile that Terraform will use.
 Do **not** rely on Cloud Shell's built-in `instance_obo_user` identity for these
 checks; that path does not prove Terraform backend/provider authentication.
 
 ```bash
-# Namespace via SecurityToken profile tradingchassis
+# Namespace via APIKey profile tradingchassis
 oci os ns get \
   --config-file "$HOME/.oci/config" \
   --profile tradingchassis \
-  --auth security_token
+  --auth api_key
 
 # Bucket exists + versioning status (expect versioning = Enabled)
 # Use the backend Object Storage region from backend.hcl, not merely the
@@ -410,7 +627,7 @@ oci os bucket get \
   --region <backend-region> \
   --config-file "$HOME/.oci/config" \
   --profile tradingchassis \
-  --auth security_token \
+  --auth api_key \
   --query 'data.versioning' \
   --raw-output
 ```
@@ -459,6 +676,7 @@ export TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"
 ```
 
 Never commit private keys. Never put the private key into Terraform inputs.
+The VM SSH keypair is separate from the OCI API signing key.
 
 ### SSH ingress and Cloud Shell egress
 
@@ -484,6 +702,7 @@ for:
 
 ```text
 GitHub clone / pull
+HashiCorp Terraform releases download
 Terraform Registry provider download
 Ansible Galaxy collection install
 SSH to the VM public IP
@@ -619,28 +838,29 @@ execution and are **not** part of this readiness implementation.
 
 ```text
 1. Open OCI Cloud Shell (Console region chosen intentionally; enable Public Network)
-2. Confirm public-network/internet reachability for GitHub, registries, and SSH
+2. Confirm public-network/internet reachability for GitHub, HashiCorp releases, registries, and SSH
 3. git clone <repo> under $HOME && cd infrastructure
-4. ./tools/check-cloud-shell-readiness
-5. oci session authenticate --profile-name tradingchassis --region <oci-region>
-6. Verify SecurityToken profile (oci iam region list --profile tradingchassis --auth security_token)
-7. Verify external state bucket exists and versioning=Enabled using SecurityToken profile
-8. cp terraform/backend.hcl.example terraform/backend.hcl  # edit location + SecurityToken fields
-9. cp terraform/terraform.tfvars.example terraform/terraform.tfvars  # edit inputs
-10. Create ~/.ssh/tradingchassis ed25519 keypair; ssh-add; set ssh_public_key literal or TF_VAR_ssh_public_key
-11. Set ssh_ingress_cidr to current Cloud Shell public IP /32
-12. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform init -backend-config=backend.hcl
-13. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform validate
-14. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform plan -out=terraform.tfplan
-15. Review plan
-16. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform apply terraform.tfplan
-17. Read targeted outputs; ./tools/render-ansible-inventory
-18. Install ansible-core==2.21.2 in $HOME venv if needed; ansible-galaxy install -r ansible/requirements.yml
-19. SSH with StrictHostKeyChecking=accept-new to ubuntu@instance_public_ip
-20. FIRST LIVE DEPLOYMENT: ansible-playbook site.yml with device path + allow_format=true
-21. FIRST LIVE DEPLOYMENT: ansible-playbook private-runtime-config.yml -e @ansible/extra-vars/private-runtime.yml
-22. Verify Argo Applications / CSI DaemonSets / SPC existence via ssh + microk8s kubectl
-23. Run acceptance checks (secret-safe) and a second site.yml converge without formatting
+4. Install Terraform 1.15.8 under $HOME/bin; export PATH="$HOME/bin:$PATH"; terraform version
+5. ./tools/check-cloud-shell-readiness
+6. Create $HOME/.oci API signing key + [tradingchassis] profile (do not modify /etc/oci)
+7. Verify APIKey identity (oci iam region list --config-file "$HOME/.oci/config" --profile tradingchassis --auth api_key)
+8. GET/CREATE/VERIFY dedicated external state bucket (Versioning Enabled, NoPublicAccess)
+9. cp terraform/backend.hcl.example terraform/backend.hcl  # edit location + APIKey fields
+10. cp terraform/terraform.tfvars.example terraform/terraform.tfvars  # edit inputs
+11. Create ~/.ssh/tradingchassis ed25519 keypair; ssh-add; set ssh_public_key literal or TF_VAR_ssh_public_key
+12. Set ssh_ingress_cidr to current Cloud Shell public IP /32
+13. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform init -backend-config=backend.hcl
+14. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform validate
+15. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform plan -out=terraform.tfplan
+16. Review plan
+17. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform apply terraform.tfplan
+18. Read targeted outputs; ./tools/render-ansible-inventory
+19. Install ansible-core==2.21.2 in $HOME venv if needed; ansible-galaxy install -r ansible/requirements.yml
+20. SSH with StrictHostKeyChecking=accept-new to ubuntu@instance_public_ip
+21. FIRST LIVE DEPLOYMENT: ansible-playbook site.yml with device path + allow_format=true
+22. FIRST LIVE DEPLOYMENT: ansible-playbook private-runtime-config.yml -e @ansible/extra-vars/private-runtime.yml
+23. Verify Argo Applications / CSI DaemonSets / SPC existence via ssh + microk8s kubectl
+24. Run acceptance checks (secret-safe) and a second site.yml converge without formatting
 ```
 
 Local static helper (no OCI mutation):
@@ -653,7 +873,8 @@ Session restart resume:
 
 ```text
 cd $HOME/.../infrastructure
-oci session refresh --profile tradingchassis   # or re-authenticate
+export PATH="$HOME/bin:$PATH"
+reuse $HOME/.oci/config profile tradingchassis (APIKey)
 reuse backend.hcl, terraform.tfvars, SSH keypair
 recompute ssh_ingress_cidr if Cloud Shell public IP changed, then plan/apply if needed
 terraform init -backend-config=backend.hcl if required
@@ -995,6 +1216,13 @@ document.
 | Terraform fmt / backend contract / init `-backend=false` / validate | statically validated by CI |
 | Ansible lint / syntax-check | statically validated by CI |
 | Kustomize / Helm GitOps renders / contracts | statically validated by CI |
+| Cloud Shell built-in `instance_obo_user` OCI CLI | live proven (CLI convenience only) |
+| APIKey / profile `tradingchassis` OCI CLI | live proven |
+| Terraform 1.15.8 linux_arm64 in Cloud Shell (`$HOME/bin`) | live proven |
+| OCI provider APIKey / `tradingchassis` data-source read | live proven (no resources) |
+| Dedicated state bucket exists, NoPublicAccess, Versioning Enabled | live proven |
+| Native OCI backend init with APIKey / empty backend-test key | live proven |
+| Production state key write / locking / root plan / apply | **not yet live proven** |
 | Scratch PVC binding to `/mnt/scratch` | implemented in Git; must be proven live |
 | OCI secrets Application sync-wave + Ansible readiness gate | implemented in Git; must be proven live |
 | Terraform apply | must be proven during first clean-room deployment |

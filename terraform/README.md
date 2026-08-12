@@ -171,16 +171,18 @@ Still open before collaborative live apply:
 
 ```text
 .terraform.lock.hcl (if still absent)
-SecurityToken/Cloud Shell live authentication proof
-plan/review/apply workflow against the real tenancy
+production Terraform init/plan/apply against the production state key
 live provisioning validation
 ```
 
-Remote state is configured via the native OCI Object Storage backend with an
-externally supplied bucket. Live backend connectivity is not yet proven.
+Remote state uses the native OCI Object Storage backend with an externally
+supplied bucket. Native backend **init** with APIKey / profile `tradingchassis`
+is live proven against an empty backend-test key. Production state write and
+locking are **not** yet live proven.
 
-Canonical Cloud Shell operator workflow (SecurityToken for backend + provider,
-Terraform→Ansible handoff helper, private-runtime extra-vars file):
+Canonical Cloud Shell operator workflow (APIKey for backend + provider,
+user-local Terraform 1.15.8, Terraform→Ansible handoff helper, private-runtime
+extra-vars file):
 [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 The next planned operator-facing scope is the first real clean-room deployment,
@@ -227,11 +229,12 @@ Private SSH keys must never be stored in Terraform configuration, tfvars committ
 Before `plan` / `apply`, the operator machine needs:
 
 ```text
-Terraform ~> 1.15.0
-an externally pre-existing OCI Object Storage state bucket
-bucket versioning enabled on that bucket (operational prerequisite)
-operator-local backend.hcl (from backend.hcl.example)
-OCI authentication for both the OCI backend and the OCI provider
+Terraform ~> 1.15.0 (Cloud Shell: install 1.15.8 under $HOME/bin; do not trust preinstall)
+an externally pre-existing dedicated OCI Object Storage state bucket
+bucket Versioning Enabled and NoPublicAccess (operational prerequisite)
+operator-local backend.hcl (from backend.hcl.example) with auth = "APIKey"
+OCI APIKey authentication for both the OCI backend and the OCI provider
+  (Cloud Shell: $HOME/.oci/config profile tradingchassis)
 local private inputs for required variables (never commit tfvars)
 SSH public key content for instance metadata (ssh_public_key literal or TF_VAR_ssh_public_key)
 ```
@@ -391,9 +394,11 @@ CI is the only approved `-backend=false` exception, and only for static validati
 
 ### Bucket versioning
 
-Enable Object Storage bucket versioning on the external state bucket before the
-first live init. This is a required operational prerequisite / recovery control.
-`terraform init` itself does not verify versioning.
+Enable Object Storage bucket versioning (`Enabled`) and `NoPublicAccess` on a
+**dedicated** external state bucket before the first live init. Do not reuse an
+arbitrary application or `data` bucket. `terraform init` itself does not verify
+versioning. Bucket creation is an operator bootstrap action; see
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 ### State sensitivity and access
 
@@ -409,9 +414,11 @@ Terraform OCI backend authentication
 ```
 
 Both need valid OCI access, but they are distinct components. Provider
-configuration does not automatically configure the backend. Exact Cloud Shell
-authentication modes are documented in a later execution-readiness scope and are
-not hardcoded here.
+configuration does not automatically configure the backend. Canonical Cloud
+Shell path: `auth = "APIKey"` and `config_file_profile = "tradingchassis"` in
+both `backend.hcl` and provider variables. Do not use Cloud Shell
+`instance_obo_user` for Terraform. SecurityToken remains a portable alternative
+outside that Cloud Shell path.
 
 ### First V2 clean-room state
 
@@ -428,10 +435,10 @@ backend reconfiguration/migration and is outside the first-deploy path.
 Native OCI backend declaration: implemented / statically validated
 Partial backend configuration:  implemented / statically validated
 CI backend isolation:           implemented / statically validated
-Real OCI bucket connectivity:   not live validated
-Remote state creation:          not live validated
+APIKey backend init (empty test key): live proven
+Real production state write:    not live validated
 State locking:                  backend capability configured / not live validated
-Bucket versioning:              external prerequisite / not verified by Terraform
+Bucket versioning:              external prerequisite / operator-verified when Enabled
 ```
 
 ## Outputs used by Ansible

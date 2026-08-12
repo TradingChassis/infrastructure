@@ -9,9 +9,11 @@
 # Do not use Terraform functions such as file() or pathexpand() here.
 
 # --- Authentication selection (non-secret) ---
-# Canonical Cloud Shell path after:
-#   oci session authenticate --profile-name tradingchassis --region <oci-region>
-oci_auth                = "SecurityToken"
+# Canonical Cloud Shell path after creating $HOME/.oci/config profile
+# [tradingchassis] with an operator-local API signing key.
+# Leave these unset outside Cloud Shell when using default provider/API-key
+# environment behavior (CI static validation leaves them unset).
+oci_auth                = "APIKey"
 oci_config_file_profile = "tradingchassis"
 
 # --- Required deployment inputs ---

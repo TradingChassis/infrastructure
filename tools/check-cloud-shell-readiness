@@ -59,6 +59,7 @@ require_cmd python3
 require_cmd ssh
 require_cmd ssh-keygen
 require_cmd curl
+printf 'INFO: architecture %s (map aarch64/arm64 → arm64, x86_64 → amd64 for Terraform zip)\n' "$(uname -m)"
 if command -v oci >/dev/null 2>&1; then
   pass "command available: oci"
 else
@@ -85,6 +86,7 @@ PY
     pass "terraform version satisfies ~> 1.15.0 (${tf_ver})"
   else
     fail "terraform version ${tf_ver:-unknown} does not satisfy ~> 1.15.0"
+    warn "Cloud Shell preinstall may be too old; install 1.15.8 under \$HOME/bin and prepend \$HOME/bin to PATH"
   fi
 else
   fail "missing command: terraform"
@@ -127,10 +129,15 @@ if [[ -f "${ROOT}/terraform/backend.hcl" ]]; then
   else
     pass "terraform/backend.hcl has no angle-bracket placeholders"
   fi
-  if ! grep -Eq '^[[:space:]]*auth[[:space:]]*=[[:space:]]*"SecurityToken"' "${ROOT}/terraform/backend.hcl"; then
-    warn "backend.hcl does not set auth = \"SecurityToken\" (required for canonical Cloud Shell path)"
+  if ! grep -Eq '^[[:space:]]*auth[[:space:]]*=[[:space:]]*"APIKey"' "${ROOT}/terraform/backend.hcl"; then
+    warn "backend.hcl does not set auth = \"APIKey\" (required for canonical Cloud Shell path)"
   else
-    pass "backend.hcl selects SecurityToken auth"
+    pass "backend.hcl selects APIKey auth"
+  fi
+  if ! grep -Eq '^[[:space:]]*config_file_profile[[:space:]]*=[[:space:]]*"tradingchassis"' "${ROOT}/terraform/backend.hcl"; then
+    warn "backend.hcl does not set config_file_profile = \"tradingchassis\""
+  else
+    pass "backend.hcl selects profile tradingchassis"
   fi
 else
   if [[ "$STRICT" -eq 1 ]]; then
@@ -142,11 +149,49 @@ fi
 
 if [[ -f "${ROOT}/terraform/terraform.tfvars" ]]; then
   pass "operator terraform.tfvars present"
+  if grep -Eq '^[[:space:]]*oci_auth[[:space:]]*=[[:space:]]*"APIKey"' "${ROOT}/terraform/terraform.tfvars"; then
+    pass "terraform.tfvars selects APIKey auth"
+  else
+    warn "terraform.tfvars does not set oci_auth = \"APIKey\" (canonical Cloud Shell path)"
+  fi
 else
   if [[ "$STRICT" -eq 1 ]]; then
     fail "operator terraform.tfvars missing"
   else
     warn "operator terraform.tfvars missing (copy from terraform.tfvars.example)"
+  fi
+fi
+
+oci_config="${HOME}/.oci/config"
+api_key="${HOME}/.oci/tradingchassis_api_key.pem"
+if [[ -f "$oci_config" ]]; then
+  pass "operator OCI config present: $oci_config"
+  oci_mode="$(stat -c '%a' "$oci_config" 2>/dev/null || stat -f '%Lp' "$oci_config")"
+  if [[ "$oci_mode" == "600" || "$oci_mode" == "400" ]]; then
+    pass "OCI config permissions are restrictive (${oci_mode})"
+  else
+    fail "OCI config permissions should be 600 or 400 (found ${oci_mode})"
+  fi
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "operator OCI config missing: $oci_config"
+  else
+    warn "operator OCI config missing: $oci_config (create profile [tradingchassis]; do not copy /etc/oci/config)"
+  fi
+fi
+if [[ -f "$api_key" ]]; then
+  pass "API signing private key present: $api_key"
+  key_mode="$(stat -c '%a' "$api_key" 2>/dev/null || stat -f '%Lp' "$api_key")"
+  if [[ "$key_mode" == "600" || "$key_mode" == "400" ]]; then
+    pass "API signing key permissions are restrictive (${key_mode})"
+  else
+    fail "API signing key permissions should be 600 or 400 (found ${key_mode})"
+  fi
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "API signing private key missing: $api_key"
+  else
+    warn "API signing private key missing: $api_key"
   fi
 fi
 
@@ -175,6 +220,18 @@ else
   else
     warn "SSH private key missing: $priv"
   fi
+fi
+
+# Ensure committed examples still select APIKey.
+if grep -Eq '^[[:space:]]*auth[[:space:]]*=[[:space:]]*"APIKey"' "${ROOT}/terraform/backend.hcl.example"; then
+  pass "backend.hcl.example selects APIKey auth"
+else
+  fail "backend.hcl.example must set auth = \"APIKey\""
+fi
+if grep -Eq '^[[:space:]]*oci_auth[[:space:]]*=[[:space:]]*"APIKey"' "${ROOT}/terraform/terraform.tfvars.example"; then
+  pass "terraform.tfvars.example selects APIKey auth"
+else
+  fail "terraform.tfvars.example must set oci_auth = \"APIKey\""
 fi
 
 # Ensure source contract still points at native OCI backend.

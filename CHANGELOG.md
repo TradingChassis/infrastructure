@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Configured Terraform to use the native OCI Object Storage backend with an externally supplied state bucket and environment-specific object key.
-- Defined the OCI Cloud Shell operator workflow for SecurityToken Terraform authentication, remote-state initialization, and deterministic Terraform-to-Ansible handoff.
+- Defined the OCI Cloud Shell operator workflow for Terraform authentication, remote-state initialization, and deterministic Terraform-to-Ansible handoff.
 - Activated the V2 runtime overlays for PostgreSQL, MLflow, and Monitoring, removing the active V1 runtime-injection dependency and hardening PostgreSQL bootstrap against delayed secret availability.
 - Made the OCI secrets bootstrap path deterministic by ordering the platform Application ahead of secret consumers and gating private runtime materialization on CSI/provider readiness.
 - Cursor and agent safety foundation (canonical rule, IDE/CLI permissions, Bugbot guidance)
@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Aligned the OCI Cloud Shell operator workflow with live-proven API-key authentication, user-local Terraform 1.15.8 bootstrap, and explicit OCI CLI `--auth api_key` preflights.
+- Documented and validated the external dedicated OCI state-bucket prerequisite (Versioning Enabled, NoPublicAccess) without moving bucket ownership into Terraform.
 - Resolved ShellCheck findings in the agent safety tooling without weakening validation behavior
 - Hardened SPC inspection guidance to avoid exposing private deployment configuration through serialized last-applied annotations.
 
