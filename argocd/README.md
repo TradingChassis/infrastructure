@@ -6,41 +6,34 @@ Argo CD owns all long-lived Kubernetes desired state managed from this directory
 The root Application (`root-app.yaml`) is applied once by Ansible bootstrap and
 subsequently manages child Applications via the Kustomization.
 
-## Application overlay transition
+## Application overlay status
 
 Workload Applications for `postgres`, `mlflow`, and `monitoring` keep their Argo
-CD paths at `apps/<app>`. Those entry points are shims that still render the
-**V1-compatible overlays**.
+CD paths at `apps/<app>`. Those entry points are shims that now render the
+**active V2 overlays**.
 
 ```text
-apps/<app>/kustomization.yaml  → overlays/v1   (active)
-apps/<app>/overlays/v2         → prepared only (inactive)
+apps/<app>/kustomization.yaml  → overlays/v2   (active)
+apps/<app>/overlays/v1         → historical fallback (inactive)
 ```
 
-The active V1 overlays retain SecretProviderClass placeholders with
-`vaultId: ${VAULT_ID}` so the existing V1 runtime injection scripts continue to
-have valid patch targets.
-
-The prepared V2 overlays intentionally omit SecretProviderClass resources.
+Active V2 overlays intentionally omit SecretProviderClass resources.
 Private deployment configuration (`VAULT_ID`, `OCI_REGION`) stays outside the
-public repository. An explicit opt-in Ansible playbook
+public repository. The explicit opt-in Ansible playbook
 (`ansible/playbooks/private-runtime-config.yml`, role `private_runtime_config`)
-is prepared to materialize those objects later. That playbook is **not** part
-of `site.yml` and is **not** executed automatically.
+materializes the runtime Secret and three SecretProviderClass resources.
+That playbook is **not** part of `site.yml` and is **not** executed automatically.
 
-Prepared-state semantics:
+Active ownership semantics:
 
 ```text
-Argo CD actively owns the V1 SecretProviderClass resources today.
-The Ansible playbook exists but is not run by default.
-Therefore no active dual ownership exists.
+Argo CD owns workloads (and CSI/provider via oci-secrets).
+Ansible private_runtime_config owns the three SPCs and tradingchassis-runtime-config.
+Git does not own active runtime SecretProviderClass resources.
 ```
 
-Do **not** execute the private runtime-configuration playbook while Argo CD is
-still reconciling those V1 SecretProviderClass resources, except as part of the
-separately defined and controlled ownership handoff. At no steady-state point
-may Argo CD and Ansible both be authoritative for the same SecretProviderClass
-resources.
+At no steady-state point may Argo CD and Ansible both be authoritative for the
+same SecretProviderClass resources.
 
 Primary V2 fresh deployment path:
 
@@ -48,21 +41,20 @@ Primary V2 fresh deployment path:
 docs/V2_CLEAN_ROOM_DEPLOYMENT.md
 ```
 
-Historical in-place cutover sequencing (fallback only):
+Historical in-place cutover sequencing (fallback only; not the Greenfield path):
 
 ```text
 docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md
 ```
 
-No live cutover has occurred; active GitOps paths still resolve to
-`overlays/v1`, and V1 runtime injection remains usable.
+V1 overlays and `scripts/inject-runtime-values.sh` / `scripts/08-runtime.sh`
+remain in the repository as historical fallback artifacts. They are **not**
+required by the canonical clean-room sequence.
 
-MLflow V2 prepares `AWS_DEFAULT_REGION` via
-`secretKeyRef` to `tradingchassis-runtime-config` / `OCI_REGION`. Because Secret
-references are namespace-scoped and the MLflow Deployment runs in `mlflow`, the
-private runtime-configuration role is prepared to create
-`tradingchassis-runtime-config` in the `mlflow` namespace during the controlled
-handoff (not during routine V1 operation).
+MLflow V2 sets `AWS_DEFAULT_REGION` via `secretKeyRef` to
+`tradingchassis-runtime-config` / `OCI_REGION` in the `mlflow` namespace.
+`private_runtime_config` creates that Secret during the explicit private-runtime
+playbook run.
 
 ## Scratch storage platform
 
@@ -88,10 +80,9 @@ Ownership map:
 ```text
 Terraform:  instance-principal IAM (dynamic group, policy, vault reference)
 Argo CD:    Secrets Store CSI Driver + OCI Secrets Store CSI Provider
-            application workloads (active V1 overlays today)
+            application workloads (active V2 overlays)
 Ansible:    explicit private runtime config playbook (Secret + SPC instances)
-            prepared only; not in site.yml; not auto-executed
-Later:      activate V2 overlays (no Git-owned SecretProviderClass)
+            not in site.yml; not auto-executed
 ```
 
 ### Compatibility baseline
@@ -179,8 +170,6 @@ Canonical operator sequence: `docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
 
 ### Deferred
 
-- Explicit live cutover from overlays/v1 to overlays/v2 (see
-  `docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`)
 - Activation of `private_runtime_config` inside the canonical Ansible converge
-- Runtime VAULT_ID / OCI_REGION script retirement (scripts/08-runtime.sh)
-- Activation of prepared V2 application overlays
+- Runtime VAULT_ID / OCI_REGION script retirement after clean-room proof
+- Post-proof deletion of inactive V1 overlays and historical injection scripts

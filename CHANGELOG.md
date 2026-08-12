@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Activated the V2 runtime overlays for PostgreSQL, MLflow, and Monitoring, removing the active V1 runtime-injection dependency and hardening PostgreSQL bootstrap against delayed secret availability.
 - Made the OCI secrets bootstrap path deterministic by ordering the platform Application ahead of secret consumers and gating private runtime materialization on CSI/provider readiness.
 - Cursor and agent safety foundation (canonical rule, IDE/CLI permissions, Bugbot guidance)
 - Secret and index protection via `.cursorignore` and expanded `.gitignore` patterns

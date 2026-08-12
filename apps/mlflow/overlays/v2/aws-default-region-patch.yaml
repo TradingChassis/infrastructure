@@ -1,5 +1,5 @@
 ---
-# Strategic merge patch for the prepared V2 MLflow region contract.
+# Strategic merge patch for the active V2 MLflow region contract.
 # Merges by container name and env name; preserves existing env entries.
 apiVersion: apps/v1
 kind: Deployment

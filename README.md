@@ -21,10 +21,11 @@ GitHub Actions → static validation only
 
 **Start here for a fresh environment:** [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
-That runbook is the canonical operator contract. It is **not** yet fully
-executable end-to-end (remaining Phase-A scope includes V2 overlay activation;
+That runbook is the canonical operator contract. Remaining Phase-A scopes are
+Terraform remote state, OCI Cloud Shell execution readiness, and the first live
+clean-room deployment. Active postgres/mlflow/monitoring shims now select V2;
 OCI secrets bootstrap ordering and scratch Kubernetes binding are implemented in
-Git and await live validation). It is **not** live-validated merely because CI passes.
+Git and await live validation. It is **not** live-validated merely because CI passes.
 
 The historical in-place SecretProviderClass handoff document
 ([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))
@@ -58,7 +59,7 @@ deterministic operator sequence (Terraform outputs → Ansible inventory →
 5. `05-monitoring.sh`: installs Prometheus Operator CRDs
 6. `06-argocd.sh`: installs Argo CD and enables `--enable-helm` in Argo CD Kustomize build options
 7. `07-apps.sh`: applies all Argo CD Application manifests from `argocd/`
-8. `08-runtime.sh`: injects runtime values (vault and region patching)
+8. `08-runtime.sh`: historical V1 runtime injection only (not part of the V2 clean-room path)
 
 ### GitOps application layer (`apps/` and `argocd/`)
 

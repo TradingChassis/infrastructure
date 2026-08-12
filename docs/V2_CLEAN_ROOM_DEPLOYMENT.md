@@ -41,10 +41,15 @@ Phase-A implementation scopes are merged and live-validated.
 Known remaining blockers at the time this runbook was written:
 
 ```text
-- Active postgres/mlflow/monitoring shims still select overlays/v1.
 - Terraform remote state in OCI Object Storage is not yet configured.
 - OCI Cloud Shell execution/auth/SSH handoff is not yet validated.
 - First real clean-room deployment has not yet been executed.
+```
+
+V2 runtime overlay status:
+
+```text
+implemented / V2 active / awaiting live validation
 ```
 
 OCI secrets bootstrap ordering status:
@@ -63,7 +68,8 @@ Repository manifests bind scratch-dev/scratch-prod to the OCI-backed `/mnt/scrat
 filesystem via static hostPath PersistentVolumes. This is **not** live-validated.
 
 Do **not** declare clean-room acceptance complete while remaining gaps above remain,
-or while scratch binding / OCI secrets platform readiness lack live evidence.
+or while scratch binding / OCI secrets platform readiness / V2 runtime consumers
+lack live evidence.
 Do **not** treat CI static validation as proof of a successful live rebuild.
 
 ---
@@ -536,7 +542,7 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible/playbooks/private-runtime-config.yml
 ```
 
-### Expected materialization (prepared V2 contract)
+### Expected materialization (active V2 contract)
 
 ```text
 Secret/tradingchassis-runtime-config in namespace mlflow (key OCI_REGION)
@@ -567,41 +573,36 @@ Do **not** print `.data` values, `spec.parameters.vaultId`, or full SPC YAML/JSO
 
 ---
 
-## V2 overlay status (current transition)
+## V2 overlay status (active / awaiting live validation)
 
 ```text
-apps/postgres/kustomization.yaml  → overlays/v1   (active)
-apps/mlflow/kustomization.yaml    → overlays/v1   (active)
-apps/monitoring/kustomization.yaml → overlays/v1  (active)
+apps/postgres/kustomization.yaml   → overlays/v2   (active)
+apps/mlflow/kustomization.yaml     → overlays/v2   (active)
+apps/monitoring/kustomization.yaml → overlays/v2   (active)
 
-apps/*/overlays/v2                → prepared only (inactive)
+apps/*/overlays/v1                 → historical fallback (inactive)
 ```
 
-Therefore:
+Active V2 overlays contain **no** Git-owned SecretProviderClass resources.
+`private_runtime_config` owns the three SPCs and `tradingchassis-runtime-config`.
+MLflow reads `AWS_DEFAULT_REGION` from Secret `tradingchassis-runtime-config`
+key `OCI_REGION`.
+
+The canonical clean-room path does **not** run
+`scripts/inject-runtime-values.sh` or `scripts/08-runtime.sh`.
+Those scripts remain historical V1 fallback only.
+
+PostgreSQL MLflow-init Job bootstrap:
 
 ```text
-the clean-room runbook cannot be considered executable end-to-end
-until the coordinated V2 overlay activation scope is merged.
+mounts SecretProviderClass postgres-secret-bundle (CSI)
+keeps bounded Job retries (backoffLimit + activeDeadlineSeconds)
+waits with bounded pg_isready before idempotent DB init
 ```
 
-Do **not** run `scripts/inject-runtime-values.sh` or `scripts/08-runtime.sh` as
-part of the **desired** V2 clean-room path.
-
-While V1 overlays remain active, Git still owns SecretProviderClass placeholders
-with `vaultId: ${VAULT_ID}`. Running `private-runtime-config.yml` against that
-state outside a controlled ownership plan risks dual authority — see the
-historical cutover document for that fallback procedure, not for clean-room.
-
-### Intended post-activation steady state (prepared source)
-
-When V2 overlays are activated in a dedicated scope:
-
-```text
-V2 overlays contain no Git-owned SecretProviderClass resources.
-private_runtime_config creates the three SPCs and the runtime Secret.
-MLflow reads AWS_DEFAULT_REGION from Secret tradingchassis-runtime-config key OCI_REGION.
-No scripts/inject-runtime-values.sh execution is required for steady state.
-```
+Temporary absence of `postgres-secret` during early Argo reconciliation must not
+leave a permanently failed Job that requires manual recreation.
+Live consumer health remains to be proven on the first clean-room deployment.
 
 ---
 
@@ -689,7 +690,7 @@ Mark each item only with live evidence. None of these are claimed proven by this
 | OCI provider Ready | yes |
 | SPC CRD present | yes |
 | Namespaces `postgres` / `mlflow` / `monitoring` present | yes |
-| `private-runtime-config.yml` succeeded (after V2 overlay activation) | yes |
+| `private-runtime-config.yml` succeeded | yes |
 | Three SPCs exist (names only; no spec dumps) | yes |
 | Secret `tradingchassis-runtime-config` exists with key `OCI_REGION` | yes |
 | PostgreSQL Healthy | yes |
