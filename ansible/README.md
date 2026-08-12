@@ -365,19 +365,22 @@ Kubernetes scratch binding to `/mnt/scratch` is implemented under `apps/scratch/
 `inventory/example.yml` is a non-live structural example.
 It uses an RFC 5737 documentation address and must never be used as production inventory.
 
-Terraform provides infrastructure outputs such as `instance_public_ip` and
-`scratch_volume_device`. This repository does **not** generate inventory from
-Terraform and does not define dynamic inventory.
-
-Approved operator contract (manual, documented):
+Canonical operator handoff:
 
 ```text
 terraform output instance_public_ip   → inventory ansible_host
-operator-supplied SSH username          → inventory ansible_user
+ubuntu (Ubuntu 24.04 image contract)  → inventory ansible_user
+~/.ssh/tradingchassis                 → ansible_ssh_private_key_file
 terraform output scratch_volume_device → -e scratch_storage_device_path
 ```
 
-Canonical sequence, wait gates, and acceptance checklist:
+Render the ignored runtime inventory after apply:
+
+```bash
+./tools/render-ansible-inventory
+```
+
+Canonical sequence, Cloud Shell auth, wait gates, and acceptance checklist:
 [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 ## Bootstrap sequence (operator)

@@ -152,7 +152,123 @@ jobs:
           if example_ignored.returncode == 0:
               raise SystemExit("terraform/backend.hcl.example must not be gitignored")
 
+          if not re.search(r'(?m)^\s*auth\s*=\s*"SecurityToken"\s*$', example_text):
+              raise SystemExit('backend.hcl.example must set auth = "SecurityToken" for the Cloud Shell path')
+          if not re.search(r'(?m)^\s*config_file_profile\s*=\s*"[^"]+"\s*$', example_text):
+              raise SystemExit("backend.hcl.example must set config_file_profile")
+
           print("PASS: OCI remote state backend static contract")
+          PY
+
+      - name: Validate Cloud Shell execution-readiness contracts
+        # Static structural checks only. Does not emulate Cloud Shell identity.
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          required = [
+              "docs/V2_CLEAN_ROOM_DEPLOYMENT.md",
+              "terraform/terraform.tfvars.example",
+              "terraform/backend.hcl.example",
+              "ansible/extra-vars/private-runtime.yml.example",
+              "tools/render-ansible-inventory",
+              "tools/check-cloud-shell-readiness",
+          ]
+          for path in required:
+              if not Path(path).is_file():
+                  raise SystemExit(f"missing required file: {path}")
+
+          runbook = Path("docs/V2_CLEAN_ROOM_DEPLOYMENT.md").read_text(encoding="utf-8")
+          for needle in (
+              "SecurityToken",
+              "instance_obo_user",
+              "oci session authenticate",
+              "terraform init -backend-config=backend.hcl",
+              "tools/render-ansible-inventory",
+              "scratch_storage_device_path",
+              "scratch_storage_allow_format",
+              "private-runtime.yml",
+              "ansible/playbooks/site.yml",
+              "ansible/playbooks/private-runtime-config.yml",
+          ):
+              if needle not in runbook:
+                  raise SystemExit(f"runbook missing required contract text: {needle}")
+          if "terraform init -backend=false" in runbook and "static validation only" not in runbook:
+              raise SystemExit("runbook mentions -backend=false without static-validation framing")
+          # Operator path must appear before private-runtime playbook references.
+          site_idx = runbook.find("ansible/playbooks/site.yml")
+          private_idx = runbook.find("ansible/playbooks/private-runtime-config.yml")
+          if site_idx < 0 or private_idx < 0 or site_idx > private_idx:
+              raise SystemExit("runbook must present site.yml before private-runtime-config.yml")
+
+          helper = Path("tools/render-ansible-inventory").read_text(encoding="utf-8")
+          for needle in (
+              "instance_public_ip",
+              "scratch_volume_device",
+              "ansible_host",
+              "ansible_user",
+              "ansible_ssh_private_key_file",
+              "scratch_storage_device_path",
+          ):
+              if needle not in helper:
+                  raise SystemExit(f"render-ansible-inventory missing contract token: {needle}")
+          for forbidden in ("ansible-playbook", "kubectl", "VAULT_ID", "private_runtime_config_vault_id"):
+              if forbidden in helper:
+                  raise SystemExit(f"render-ansible-inventory must not include: {forbidden}")
+          if re.search(r"(?m)^\s*terraform\s+(init|plan|apply|destroy)\b", helper):
+              raise SystemExit("render-ansible-inventory must not invoke mutating terraform commands")
+
+          preflight = Path("tools/check-cloud-shell-readiness").read_text(encoding="utf-8")
+          if re.search(r"(?m)^\s*terraform\s+(init|plan|apply|destroy)\b", preflight):
+              raise SystemExit("check-cloud-shell-readiness must not invoke mutating terraform commands")
+          if "ansible-playbook -i" in preflight:
+              raise SystemExit("check-cloud-shell-readiness must not invoke ansible-playbook against inventory")
+
+          tfvars = Path("terraform/terraform.tfvars.example").read_text(encoding="utf-8")
+          for field in (
+              "oci_auth",
+              "oci_config_file_profile",
+              "oci_region",
+              "oci_compartment_id",
+              "oci_tenancy_id",
+              "oci_vault_id",
+              "oci_vault_compartment_id",
+              "ssh_ingress_cidr",
+              "ssh_public_key",
+          ):
+              if field not in tfvars:
+                  raise SystemExit(f"terraform.tfvars.example missing field: {field}")
+          if 'oci_auth                = "SecurityToken"' not in tfvars:
+              raise SystemExit("terraform.tfvars.example must select SecurityToken")
+
+          prv = Path("ansible/extra-vars/private-runtime.yml.example").read_text(encoding="utf-8")
+          if "private_runtime_config_vault_id" not in prv or "private_runtime_config_oci_region" not in prv:
+              raise SystemExit("private-runtime.yml.example missing required keys")
+
+          providers = Path("terraform/providers.tf").read_text(encoding="utf-8")
+          if "var.oci_auth" not in providers or "var.oci_config_file_profile" not in providers:
+              raise SystemExit("providers.tf must wire optional oci_auth / oci_config_file_profile")
+
+          for path, expect_ignored in (
+              ("ansible/inventory/local.yml", True),
+              ("ansible/extra-vars/private-runtime.yml", True),
+              ("terraform/terraform.tfvars.example", False),
+              ("ansible/extra-vars/private-runtime.yml.example", False),
+          ):
+              result = subprocess.run(
+                  ["git", "check-ignore", "-v", path],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              ignored = result.returncode == 0
+              if ignored != expect_ignored:
+                  raise SystemExit(f"gitignore contract failed for {path}: ignored={ignored}")
+
+          print("PASS: Cloud Shell execution-readiness static contract")
           PY
 
       - name: Terraform init (CI validation mode; backend disabled)

@@ -171,15 +171,19 @@ Still open before collaborative live apply:
 
 ```text
 .terraform.lock.hcl (if still absent)
-approved OCI authentication (Cloud Shell scope)
-plan/review/apply workflow
+SecurityToken/Cloud Shell live authentication proof
+plan/review/apply workflow against the real tenancy
 live provisioning validation
 ```
 
 Remote state is configured via the native OCI Object Storage backend with an
 externally supplied bucket. Live backend connectivity is not yet proven.
 
-The next planned operator-facing scope is OCI Cloud Shell execution readiness,
+Canonical Cloud Shell operator workflow (SecurityToken for backend + provider,
+Terraform→Ansible handoff helper, private-runtime extra-vars file):
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
+
+The next planned operator-facing scope is the first real clean-room deployment,
 not an unrelated Terraform resource expansion.
 
 ## Reference compute profile

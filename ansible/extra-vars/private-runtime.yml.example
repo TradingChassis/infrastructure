@@ -1,0 +1,14 @@
+# Operator-local private runtime inputs for private-runtime-config.yml.
+# Copy to private-runtime.yml (gitignored) and replace placeholders.
+# Do not commit private-runtime.yml.
+#
+# Prefer:
+#   ansible-playbook ... -e @ansible/extra-vars/private-runtime.yml
+# over inline -e values that land in shell history.
+#
+# Ansible does not parse .env. Staging names in .env.example map to these keys:
+#   VAULT_ID   → private_runtime_config_vault_id
+#   OCI_REGION → private_runtime_config_oci_region
+
+private_runtime_config_vault_id: "<vault-ocid>"
+private_runtime_config_oci_region: "<oci-region>"

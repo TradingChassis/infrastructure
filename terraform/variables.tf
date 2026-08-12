@@ -174,3 +174,35 @@ variable "oci_vault_compartment_id" {
   type        = string
   description = "OCID of the compartment that contains the Vault secrets whose bundles the reference instance may read. Kept separate from oci_compartment_id because V1 does not prove Vault and compute share one compartment."
 }
+
+variable "oci_auth" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Optional OCI provider authentication method. Use SecurityToken for the canonical Cloud Shell workflow after oci session authenticate. Leave null for default provider/API-key environment behavior (CI static validation)."
+
+  validation {
+    condition = (
+      var.oci_auth == null ||
+      contains(
+        [
+          "APIKey",
+          "SecurityToken",
+          "InstancePrincipal",
+          "InstancePrincipalWithCerts",
+          "ResourcePrincipal",
+          "OKEWorkloadIdentity",
+        ],
+        var.oci_auth
+      )
+    )
+    error_message = "oci_auth must be null or one of: APIKey, SecurityToken, InstancePrincipal, InstancePrincipalWithCerts, ResourcePrincipal, OKEWorkloadIdentity."
+  }
+}
+
+variable "oci_config_file_profile" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Optional OCI config profile name (for example tradingchassis) used with SecurityToken or APIKey profile authentication. Leave null when unused."
+}
