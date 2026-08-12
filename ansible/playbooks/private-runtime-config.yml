@@ -6,11 +6,20 @@
 #   VAULT_ID   → private_runtime_config_vault_id
 #   OCI_REGION → private_runtime_config_oci_region
 #
-# Do not execute it against a cluster while Argo CD is still reconciling
-# the V1 SecretProviderClass resources, except as part of the separately
-# defined and controlled V2 ownership cutover.
+# Fresh V2 clean-room sequence:
+#   1. site.yml (MicroK8s + Argo CD + root Application)
+#   2. private-runtime-config.yml
+# The role performs bounded, condition-based waits for the OCI secrets
+# platform (SPC CRD, CSIDriver, CSI Driver DaemonSet, OCI provider DaemonSet)
+# and for Argo-created application namespaces before any mutation.
+# Operators do not need to guess sleep timing.
 #
-# Prepared state only:
+# While active GitOps shims still select overlays/v1, do not execute this
+# playbook against a cluster where Argo CD remains authoritative for the
+# same SecretProviderClass identities, except as part of the separately
+# defined historical ownership cutover fallback.
+#
+# Prepared state only for V2 overlay activation:
 # - Active GitOps paths remain overlays/v1 (Argo owns the V1 SPC resources).
 # - This playbook exists but is not executed automatically.
 # - Therefore no active dual ownership exists until someone runs it.

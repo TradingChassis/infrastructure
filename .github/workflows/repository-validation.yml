@@ -343,6 +343,86 @@ jobs:
                   print(f"FAIL: {shim} must not activate overlays/v2")
                   sys.exit(1)
 
+          tasks_path = root / "ansible/roles/private_runtime_config/tasks/main.yml"
+          tasks_text = tasks_path.read_text(encoding="utf-8")
+          if re.search(r"(?m)^\s*-\s+ansible\.builtin\.(pause|wait_for)\b", tasks_text):
+              print("FAIL: private_runtime_config must not use pause/wait_for sleep ordering")
+              sys.exit(1)
+          if re.search(r"(?m)^\s*sleep\b", tasks_text):
+              print("FAIL: private_runtime_config must not use shell sleep ordering")
+              sys.exit(1)
+
+          mutate_markers = (
+              "Materialize MLflow runtime configuration Secret",
+              "Materialize SecretProviderClass resources",
+          )
+          mutate_indexes = [tasks_text.find(marker) for marker in mutate_markers]
+          if any(idx < 0 for idx in mutate_indexes):
+              print("FAIL: private_runtime_config mutation task names missing")
+              sys.exit(1)
+          first_mutate = min(mutate_indexes)
+
+          readiness_markers = (
+              "Wait for SecretProviderClass CustomResourceDefinition",
+              "Wait for Secrets Store CSIDriver object",
+              "Wait for Secrets Store CSI Driver DaemonSet readiness",
+              "Wait for OCI Secrets Store CSI Provider DaemonSet readiness",
+              "Wait for required application namespaces",
+          )
+          for marker in readiness_markers:
+              idx = tasks_text.find(marker)
+              if idx < 0:
+                  print(f"FAIL: missing readiness task: {marker}")
+                  sys.exit(1)
+              if idx > first_mutate:
+                  print(f"FAIL: readiness task must precede mutation: {marker}")
+                  sys.exit(1)
+
+          for marker in readiness_markers:
+              block_start = tasks_text.find(marker)
+              block_end = tasks_text.find("- name:", block_start + 1)
+              if block_end < 0:
+                  block_end = first_mutate
+              block = tasks_text[block_start:block_end]
+              if "until:" not in block:
+                  print(f"FAIL: readiness task missing until: {marker}")
+                  sys.exit(1)
+              if "retries:" not in block:
+                  print(f"FAIL: readiness task missing retries: {marker}")
+                  sys.exit(1)
+              if "delay:" not in block:
+                  print(f"FAIL: readiness task missing delay: {marker}")
+                  sys.exit(1)
+
+          expected_defaults = {
+              "private_runtime_config_spc_crd_name": (
+                  "secretproviderclasses.secrets-store.csi.x-k8s.io"
+              ),
+              "private_runtime_config_platform_namespace": "kube-system",
+              "private_runtime_config_csi_driver_name": "secrets-store.csi.k8s.io",
+              "private_runtime_config_csi_driver_daemonset_name": (
+                  "oci-secrets-secrets-store-csi-driver"
+              ),
+              "private_runtime_config_oci_provider_daemonset_name": (
+                  "oci-secrets-store-csi-driver-provider"
+              ),
+          }
+          for key, expected in expected_defaults.items():
+              if defaults.get(key) != expected:
+                  print(f"FAIL: {key}={defaults.get(key)!r}, expected {expected!r}")
+                  sys.exit(1)
+
+          retries = defaults.get("private_runtime_config_readiness_retries")
+          delay = defaults.get("private_runtime_config_readiness_delay_seconds")
+          if not isinstance(retries, int) or retries < 1:
+              print("FAIL: private_runtime_config_readiness_retries must be a positive int")
+              sys.exit(1)
+          if not isinstance(delay, int) or delay < 1:
+              print(
+                  "FAIL: private_runtime_config_readiness_delay_seconds must be a positive int"
+              )
+              sys.exit(1)
+
           print("PASS: private runtime configuration contracts are consistent.")
           PY
 
@@ -680,6 +760,183 @@ jobs:
 
           grep -Fq 'namespace: kube-system' /tmp/oci-secrets-helm-rendered.yaml
           echo "PASS: Rendered resources target kube-system."
+
+          python3 <<'PY'
+          from pathlib import Path
+          import sys
+          import yaml
+
+          rendered = list(
+              yaml.safe_load_all(
+                  Path("/tmp/oci-secrets-helm-rendered.yaml").read_text(encoding="utf-8")
+              )
+          )
+          defaults = yaml.safe_load(
+              Path("ansible/roles/private_runtime_config/defaults/main.yml").read_text(
+                  encoding="utf-8"
+              )
+          )
+          app = yaml.safe_load(Path("argocd/oci-secrets-app.yaml").read_text(encoding="utf-8"))
+
+          if app.get("metadata", {}).get("name") != "oci-secrets":
+              print("FAIL: oci-secrets Application metadata.name must remain oci-secrets")
+              sys.exit(1)
+
+          daemonsets = {
+              (d.get("metadata") or {}).get("name")
+              for d in rendered
+              if isinstance(d, dict) and d.get("kind") == "DaemonSet"
+          }
+          expected_csi = defaults["private_runtime_config_csi_driver_daemonset_name"]
+          expected_provider = defaults[
+              "private_runtime_config_oci_provider_daemonset_name"
+          ]
+          if expected_csi not in daemonsets:
+              print(
+                  f"FAIL: Helm render missing CSI DaemonSet {expected_csi!r}; "
+                  f"found={sorted(n for n in daemonsets if n)}"
+              )
+              sys.exit(1)
+          if expected_provider not in daemonsets:
+              print(
+                  f"FAIL: Helm render missing provider DaemonSet {expected_provider!r}; "
+                  f"found={sorted(n for n in daemonsets if n)}"
+              )
+              sys.exit(1)
+
+          csidrivers = {
+              (d.get("metadata") or {}).get("name")
+              for d in rendered
+              if isinstance(d, dict) and d.get("kind") == "CSIDriver"
+          }
+          expected_csidriver = defaults["private_runtime_config_csi_driver_name"]
+          if expected_csidriver not in csidrivers:
+              print(
+                  f"FAIL: Helm render missing CSIDriver {expected_csidriver!r}; "
+                  f"found={sorted(n for n in csidrivers if n)}"
+              )
+              sys.exit(1)
+
+          print(
+              "PASS: Ansible readiness DaemonSet/CSIDriver names match Argo Helm render."
+          )
+          PY
+
+      - name: Validate OCI secrets bootstrap ordering contract
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import sys
+          import yaml
+
+          def wave(doc):
+              ann = (doc.get("metadata") or {}).get("annotations") or {}
+              return ann.get("argocd.argoproj.io/sync-wave")
+
+          apps = {}
+          for path in sorted(Path("argocd").glob("*-app*.yaml")):
+              doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(doc, dict) or doc.get("kind") != "Application":
+                  continue
+              name = doc["metadata"]["name"]
+              apps[name] = {"path": str(path), "wave": wave(doc), "doc": doc}
+
+          if "oci-secrets" not in apps:
+              print("FAIL: missing oci-secrets Application")
+              sys.exit(1)
+          if apps["oci-secrets"]["wave"] != "-1":
+              print(
+                  "FAIL: oci-secrets sync-wave must be '-1', "
+                  f"found {apps['oci-secrets']['wave']!r}"
+              )
+              sys.exit(1)
+
+          consumers = ("postgres", "mlflow", "monitoring")
+          for name in consumers:
+              if name not in apps:
+                  print(f"FAIL: missing Application {name}")
+                  sys.exit(1)
+              if apps[name]["wave"] != "1":
+                  print(
+                      f"FAIL: {name} sync-wave must be '1', found {apps[name]['wave']!r}"
+                  )
+                  sys.exit(1)
+
+          oci_wave = int(apps["oci-secrets"]["wave"])
+          for name in consumers:
+              if int(apps[name]["wave"]) <= oci_wave:
+                  print(
+                      f"FAIL: {name} sync-wave must be later than oci-secrets "
+                      f"({apps[name]['wave']} vs {apps['oci-secrets']['wave']})"
+                  )
+                  sys.exit(1)
+
+          # Independent apps must not be delayed behind secret consumers without cause.
+          for name in ("scratch-storage", "scratch-dev", "scratch-prod", "argo"):
+              if name in apps and apps[name]["wave"] not in (None, "0"):
+                  print(
+                      f"FAIL: {name} should keep default/0 sync-wave, "
+                      f"found {apps[name]['wave']!r}"
+                  )
+                  sys.exit(1)
+
+          # Preserve ownership / sync policy contracts on ordered apps.
+          for name in ("oci-secrets",) + consumers:
+              doc = apps[name]["doc"]
+              automated = ((doc.get("spec") or {}).get("syncPolicy") or {}).get(
+                  "automated"
+              ) or {}
+              if automated.get("prune") is not True or automated.get("selfHeal") is not True:
+                  print(f"FAIL: {name} must keep automated prune+selfHeal")
+                  sys.exit(1)
+
+          oci_opts = (
+              ((apps["oci-secrets"]["doc"].get("spec") or {}).get("syncPolicy") or {}).get(
+                  "syncOptions"
+              )
+              or []
+          )
+          if "CreateNamespace=false" not in oci_opts:
+              print("FAIL: oci-secrets must keep CreateNamespace=false")
+              sys.exit(1)
+          for name in consumers:
+              opts = (
+                  ((apps[name]["doc"].get("spec") or {}).get("syncPolicy") or {}).get(
+                      "syncOptions"
+                  )
+                  or []
+              )
+              if "CreateNamespace=true" not in opts:
+                  print(f"FAIL: {name} must keep CreateNamespace=true")
+                  sys.exit(1)
+
+          rendered = Path("/tmp/argocd-rendered.yaml")
+          if rendered.exists():
+              docs = list(yaml.safe_load_all(rendered.read_text(encoding="utf-8")))
+              by_name = {
+                  d["metadata"]["name"]: d
+                  for d in docs
+                  if isinstance(d, dict)
+                  and d.get("kind") == "Application"
+                  and "metadata" in d
+              }
+              for name, expected_wave in (
+                  ("oci-secrets", "-1"),
+                  ("postgres", "1"),
+                  ("mlflow", "1"),
+                  ("monitoring", "1"),
+              ):
+                  ann = (by_name[name].get("metadata") or {}).get("annotations") or {}
+                  if ann.get("argocd.argoproj.io/sync-wave") != expected_wave:
+                      print(
+                          f"FAIL: rendered {name} sync-wave mismatch: "
+                          f"{ann.get('argocd.argoproj.io/sync-wave')!r}"
+                      )
+                      sys.exit(1)
+
+          print("PASS: OCI secrets bootstrap Application ordering contract.")
+          PY
 
       - name: Verify provider image tag resolves to expected multi-arch digest
         run: |

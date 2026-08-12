@@ -257,13 +257,18 @@ kubeconfigs from the workspace, or discover secrets automatically.
 The `private_runtime_config` role:
 
 * fail-closed validates Vault OCID shape (`ocid1.vault...`) and OCI region shape
-* requires the SecretProviderClass CRD already installed by Argo CD `oci-secrets`
-* requires application namespaces `postgres`, `mlflow`, and `monitoring` to exist
-* materializes Secret `tradingchassis-runtime-config` in namespace `mlflow` with key `OCI_REGION`
+* performs bounded, condition-based waits for Argo-owned OCI secrets platform readiness:
+  * SecretProviderClass CRD
+  * CSIDriver `secrets-store.csi.k8s.io`
+  * DaemonSet `kube-system/oci-secrets-secrets-store-csi-driver`
+  * DaemonSet `kube-system/oci-secrets-store-csi-driver-provider`
+* waits for application namespaces `postgres`, `mlflow`, and `monitoring` (Argo CreateNamespace)
+* only then materializes Secret `tradingchassis-runtime-config` in namespace `mlflow` with key `OCI_REGION`
 * materializes exactly three SecretProviderClass resources with `authType: instance`
 * renders literal `vaultId` from `private_runtime_config_vault_id` (no Git placeholder)
 * uses `kubernetes.core` with the MicroK8s kubeconfig contract (no shell kubectl)
 * sets `no_log: true` on tasks that handle private values
+* does **not** validate live OCI Vault retrieval before SPC creation
 
 Explicit playbook only (example syntax for the dedicated cutover scope):
 
@@ -387,8 +392,9 @@ Canonical sequence, wait gates, and acceptance checklist:
 ## Bootstrap sequence (operator)
 
 1. **First:** `ansible/playbooks/site.yml` (host → scratch → MicroK8s → Argo bootstrap).
-2. **Wait:** OCI secrets platform Ready (SPC CRD, CSI Driver, OCI provider, app namespaces).
-3. **Second:** `ansible/playbooks/private-runtime-config.yml` (explicit opt-in only).
+2. **Second:** `ansible/playbooks/private-runtime-config.yml` (explicit opt-in only).
+   The role waits for OCI secrets platform readiness and application namespaces
+   with a bounded retry loop; do not insert manual sleep timing.
 
 `private_runtime_config` is intentionally **not** in `site.yml`.
 

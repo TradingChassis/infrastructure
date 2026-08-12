@@ -20,8 +20,22 @@ private_runtime_config_secret_type: Opaque
 # This role never installs the CSI Driver or OCI provider (Argo CD owns those).
 private_runtime_config_spc_crd_name: secretproviderclasses.secrets-store.csi.x-k8s.io
 
+# Platform workloads are owned by Argo Application oci-secrets (Helm release name
+# oci-secrets, destination kube-system). Names match the Oracle chart v0.5.0
+# render with that release name — see CI cross-contract validation.
+private_runtime_config_platform_namespace: kube-system
+private_runtime_config_csi_driver_name: secrets-store.csi.k8s.io
+private_runtime_config_csi_driver_daemonset_name: oci-secrets-secrets-store-csi-driver
+private_runtime_config_oci_provider_daemonset_name: oci-secrets-store-csi-driver-provider
+
+# Bounded readiness waits after site.yml / Argo bootstrap. Condition-based
+# (no sleep-only ordering). ~6 minutes max with the defaults below.
+private_runtime_config_readiness_retries: 36
+private_runtime_config_readiness_delay_seconds: 10
+
 # Application namespaces are created by Argo CD (CreateNamespace). This role
-# does not own Namespace objects and fails closed if they are absent.
+# does not own Namespace objects and fails closed if they remain absent after
+# the bounded wait.
 private_runtime_config_required_namespaces:
   - postgres
   - mlflow

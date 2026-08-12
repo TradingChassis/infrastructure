@@ -145,14 +145,37 @@ resolves to the recorded multi-architecture manifest digest
 with platforms `linux/amd64` and `linux/arm64`. Kubernetes is not deploying
 `image@sha256:...` for this chart.
 
-### Bootstrap ordering risk
+### Bootstrap ordering
 
-On a fresh cluster the root Application may sync workload Applications that
-consume Secrets Store CSI in parallel with `oci-secrets`. Pods can fail until
-the CSI Driver and OCI provider become Ready. This is a partially confirmed
-operational bootstrap risk and is deferred until the SecretProviderClass /
-application-consumer migration, where ordering can be addressed without
-expanding this platform-ownership change.
+Root App-of-Apps Application sync-wave contract:
+
+```text
+oci-secrets                 sync-wave = -1
+postgres / mlflow / monitoring  sync-wave = 1
+scratch / argo              default (unset)
+```
+
+What this guarantees:
+
+```text
+Application CR create/sync ordering inside the root sync
+oci-secrets gets a deterministic head start over secret consumers
+```
+
+What this does **not** guarantee:
+
+```text
+oci-secrets becomes Healthy before consumer Applications start syncing
+CSI mounts succeed
+Vault retrieval succeeds
+```
+
+Runtime platform readiness for private materialization is enforced by
+`ansible/roles/private_runtime_config` (bounded waits for the SPC CRD,
+CSIDriver, CSI Driver DaemonSet, and OCI provider DaemonSet) before creating
+the runtime Secret and SecretProviderClass resources.
+
+Canonical operator sequence: `docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
 
 ### Deferred
 
@@ -160,4 +183,4 @@ expanding this platform-ownership change.
   `docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`)
 - Activation of `private_runtime_config` inside the canonical Ansible converge
 - Runtime VAULT_ID / OCI_REGION script retirement (scripts/08-runtime.sh)
-- Bootstrap sync ordering for CSI consumers
+- Activation of prepared V2 application overlays

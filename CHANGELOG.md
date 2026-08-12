@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Made the OCI secrets bootstrap path deterministic by ordering the platform Application ahead of secret consumers and gating private runtime materialization on CSI/provider readiness.
 - Cursor and agent safety foundation (canonical rule, IDE/CLI permissions, Bugbot guidance)
 - Secret and index protection via `.cursorignore` and expanded `.gitignore` patterns
 - Local static safety self-check and validation wrappers (`tools/check-agent-safety`, `tools/validate-safe`) with unit tests
