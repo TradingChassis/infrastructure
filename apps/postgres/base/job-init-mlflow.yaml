@@ -4,7 +4,12 @@ metadata:
   name: init-mlflow-postgres
   namespace: postgres
 spec:
-  backoffLimit: 3
+  # Fresh-cluster bootstrap may create this Job before Ansible materializes the
+  # SecretProviderClass and before the CSI driver syncs postgres-secret.
+  # Temporary mount/config failures must retry within a bounded window instead
+  # of permanently failing after a handful of attempts.
+  backoffLimit: 30
+  activeDeadlineSeconds: 1800
   template:
     spec:
       restartPolicy: OnFailure
@@ -49,14 +54,29 @@ spec:
                   name: postgres-secret
                   key: MLFLOW_PASSWORD
 
+          volumeMounts:
+            # Mount the SPC so this Job can trigger secretObjects sync itself.
+            # Without this mount the Job depends on another Pod having already
+            # created postgres-secret and can permanently fail during bootstrap.
+            - name: secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
           command:
             - sh
             - -c
             - |
-              set -e
+              set -eu
 
-              echo "Waiting for PostgreSQL..."
+              echo "Waiting for PostgreSQL to accept connections..."
+              max_attempts=180
+              attempt=0
               until pg_isready -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                  echo "PostgreSQL did not become ready within the bounded wait" >&2
+                  exit 1
+                fi
                 sleep 2
               done
 
@@ -86,3 +106,11 @@ spec:
               EOF
 
               echo "MLflow database initialization complete"
+
+      volumes:
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: postgres-secret-bundle

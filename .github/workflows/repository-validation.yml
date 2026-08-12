@@ -336,11 +336,11 @@ jobs:
               "apps/monitoring/kustomization.yaml",
           ):
               text = (root / shim).read_text(encoding="utf-8")
-              if "overlays/v1" not in text:
-                  print(f"FAIL: {shim} must remain on overlays/v1")
+              if "overlays/v2" not in text:
+                  print(f"FAIL: {shim} must select overlays/v2")
                   sys.exit(1)
-              if re.search(r"overlays/v2", text):
-                  print(f"FAIL: {shim} must not activate overlays/v2")
+              if re.search(r"(?m)^\s*-\s+overlays/v1\s*$", text):
+                  print(f"FAIL: {shim} must not keep overlays/v1 as the active resource")
                   sys.exit(1)
 
           tasks_path = root / "ansible/roles/private_runtime_config/tasks/main.yml"
@@ -999,7 +999,7 @@ jobs:
           print("PASS: Manifest includes linux/amd64 and linux/arm64.")
           PY
 
-      - name: Validate active V1 application overlays
+      - name: Validate historical V1 application overlays
         run: |
           set -euo pipefail
           # Enable Helm for monitoring (kube-prometheus-stack via Kustomize).
@@ -1019,9 +1019,9 @@ jobs:
           )
 
           expected = {
-              "apps/postgres": "postgres-secret-bundle",
-              "apps/mlflow": "mlflow-secret-bundle",
-              "apps/monitoring": "monitoring-secret-bundle",
+              "apps/postgres/overlays/v1": "postgres-secret-bundle",
+              "apps/mlflow/overlays/v1": "mlflow-secret-bundle",
+              "apps/monitoring/overlays/v1": "monitoring-secret-bundle",
           }
 
           def load_docs(text: str):
@@ -1054,7 +1054,7 @@ jobs:
               # Escape so Actions emits the literal placeholder string for Python.
               expected_vault_id = "${{ '${VAULT_ID}' }}"
               if vault_id != expected_vault_id:
-                  print(f"FAIL: {path} vaultId={vault_id!r}, expected {expected_vault_id!r} placeholder for V1 runtime patch")
+                  print(f"FAIL: {path} vaultId={vault_id!r}, expected {expected_vault_id!r} placeholder for historical V1")
                   sys.exit(1)
               sync_options = (
                   spcs[0]
@@ -1069,12 +1069,182 @@ jobs:
                       f"(got {sync_options!r})"
                   )
                   sys.exit(1)
-              print(f"PASS: active {path} retains V1 SPC patch target {spc_name}.")
+              print(f"PASS: historical {path} retains V1 SPC fallback contract {spc_name}.")
 
-          print("PASS: Active application entry points remain V1-compatible.")
+          print("PASS: Historical V1 overlays remain renderable fallback artifacts.")
           PY
 
-      - name: Validate prepared V2 application overlays
+      - name: Validate active V2 application overlays
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import yaml
+
+          # kube-prometheus-stack CRDs emit bare "=" enum values. PyYAML 1.1 maps
+          # those to tag:yaml.org,2002:value without a SafeLoader constructor.
+          yaml.SafeLoader.add_constructor(
+              "tag:yaml.org,2002:value",
+              lambda loader, node: loader.construct_scalar(node),
+          )
+
+          active_apps = (
+              "apps/postgres",
+              "apps/mlflow",
+              "apps/monitoring",
+          )
+
+          def load_docs(text: str):
+              return [
+                  doc for doc in yaml.safe_load_all(text)
+                  if isinstance(doc, dict)
+              ]
+
+          for shim in active_apps:
+              text = Path(f"{shim}/kustomization.yaml").read_text(encoding="utf-8")
+              if "overlays/v2" not in text:
+                  print(f"FAIL: {shim}/kustomization.yaml must select overlays/v2")
+                  sys.exit(1)
+              if re.search(r"(?m)^\s*-\s+overlays/v1\s*$", text):
+                  print(f"FAIL: {shim}/kustomization.yaml must not keep overlays/v1 active")
+                  sys.exit(1)
+
+          rendered = {}
+          for path in active_apps:
+              proc = subprocess.run(
+                  ["kustomize", "build", "--enable-helm", path],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              if "${VAULT_ID}" in proc.stdout or "${OCI_REGION}" in proc.stdout:
+                  print(f"FAIL: active render {path} still contains V1 runtime placeholders")
+                  sys.exit(1)
+              docs = load_docs(proc.stdout)
+              rendered[path] = docs
+              spcs = [d for d in docs if d.get("kind") == "SecretProviderClass"]
+              if spcs:
+                  names = [d.get("metadata", {}).get("name") for d in spcs]
+                  print(f"FAIL: active {path} must not contain SecretProviderClass; found {names}")
+                  sys.exit(1)
+              print(f"PASS: active {path} renders V2 without SecretProviderClass.")
+
+          # MLflow active region contract
+          deployments = [
+              d for d in rendered["apps/mlflow"]
+              if d.get("kind") == "Deployment"
+              and d.get("metadata", {}).get("name") == "mlflow"
+          ]
+          if len(deployments) != 1:
+              print(f"FAIL: expected one mlflow Deployment, found {len(deployments)}")
+              sys.exit(1)
+          containers = (
+              deployments[0]
+              .get("spec", {})
+              .get("template", {})
+              .get("spec", {})
+              .get("containers", [])
+          )
+          mlflow_containers = [c for c in containers if c.get("name") == "mlflow"]
+          if len(mlflow_containers) != 1:
+              print("FAIL: mlflow container missing from active V2 Deployment")
+              sys.exit(1)
+          env = mlflow_containers[0].get("env") or []
+          region_env = [e for e in env if e.get("name") == "AWS_DEFAULT_REGION"]
+          if len(region_env) != 1:
+              print(f"FAIL: expected one AWS_DEFAULT_REGION env, found {len(region_env)}")
+              sys.exit(1)
+          ref = region_env[0].get("valueFrom", {}).get("secretKeyRef", {})
+          if ref.get("name") != "tradingchassis-runtime-config":
+              print(f"FAIL: unexpected Secret name {ref.get('name')!r}")
+              sys.exit(1)
+          if ref.get("key") != "OCI_REGION":
+              print(f"FAIL: unexpected Secret key {ref.get('key')!r}")
+              sys.exit(1)
+          if "value" in region_env[0]:
+              print("FAIL: AWS_DEFAULT_REGION must not embed a concrete region value")
+              sys.exit(1)
+          if not any(e.get("name") == "MLFLOW_BACKEND_STORE_URI" for e in env):
+              print("FAIL: MLFLOW_BACKEND_STORE_URI missing after V2 region patch")
+              sys.exit(1)
+          print("PASS: active MLflow uses tradingchassis-runtime-config / OCI_REGION.")
+
+          # PostgreSQL init Job bootstrap contract
+          jobs = [
+              d for d in rendered["apps/postgres"]
+              if d.get("kind") == "Job"
+              and d.get("metadata", {}).get("name") == "init-mlflow-postgres"
+          ]
+          if len(jobs) != 1:
+              print(f"FAIL: expected one init-mlflow-postgres Job, found {len(jobs)}")
+              sys.exit(1)
+          job = jobs[0]
+          backoff = job.get("spec", {}).get("backoffLimit")
+          deadline = job.get("spec", {}).get("activeDeadlineSeconds")
+          if not isinstance(backoff, int) or backoff < 20:
+              print(
+                  f"FAIL: init-mlflow-postgres backoffLimit must be >= 20 for "
+                  f"delayed secret availability (got {backoff!r})"
+              )
+              sys.exit(1)
+          if not isinstance(deadline, int) or deadline < 900:
+              print(
+                  f"FAIL: init-mlflow-postgres activeDeadlineSeconds must be >= 900 "
+                  f"(got {deadline!r})"
+              )
+              sys.exit(1)
+          pod_spec = job.get("spec", {}).get("template", {}).get("spec", {})
+          volumes = pod_spec.get("volumes") or []
+          csi_vols = [
+              v for v in volumes
+              if (v.get("csi") or {}).get("driver") == "secrets-store.csi.k8s.io"
+              and (v.get("csi") or {}).get("volumeAttributes", {}).get("secretProviderClass")
+              == "postgres-secret-bundle"
+          ]
+          if len(csi_vols) != 1:
+              print(
+                  "FAIL: init-mlflow-postgres must mount CSI secretProviderClass "
+                  "postgres-secret-bundle so it can sync postgres-secret itself"
+              )
+              sys.exit(1)
+          containers = pod_spec.get("containers") or []
+          if len(containers) != 1:
+              print("FAIL: init-mlflow-postgres must have exactly one container")
+              sys.exit(1)
+          command = containers[0].get("command") or []
+          command_text = "\n".join(str(part) for part in command)
+          if "pg_isready" not in command_text:
+              print("FAIL: init-mlflow-postgres must wait with pg_isready")
+              sys.exit(1)
+          if "max_attempts" not in command_text:
+              print("FAIL: init-mlflow-postgres pg_isready wait must be bounded")
+              sys.exit(1)
+          if re.search(r"(?m)^\s*set\s+-x\b", command_text):
+              print("FAIL: init-mlflow-postgres must not enable shell xtrace")
+              sys.exit(1)
+          print("PASS: PostgreSQL init Job tolerates delayed secret and DB readiness.")
+
+          # Canonical V2 docs must not require V1 Bash runtime injection.
+          runbook = Path("docs/V2_CLEAN_ROOM_DEPLOYMENT.md").read_text(encoding="utf-8")
+          for forbidden in (
+              "scripts/inject-runtime-values.sh as part of the desired V2",
+              "required: scripts/08-runtime.sh",
+              "required: scripts/inject-runtime-values.sh",
+          ):
+              if forbidden in runbook:
+                  print(f"FAIL: V2 runbook still requires historical injection ({forbidden})")
+                  sys.exit(1)
+          if "overlays/v1   (active)" in runbook or "→ overlays/v1   (active)" in runbook:
+              print("FAIL: V2 runbook still marks overlays/v1 as active")
+              sys.exit(1)
+
+          print("PASS: Active V2 application overlays are consistent.")
+          PY
+
+      - name: Validate prepared V2 application overlay trees
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -1115,7 +1285,7 @@ jobs:
                   names = [d.get("metadata", {}).get("name") for d in spcs]
                   print(f"FAIL: {path} must not contain SecretProviderClass; found {names}")
                   sys.exit(1)
-              print(f"PASS: prepared {path} omits SecretProviderClass.")
+              print(f"PASS: {path} omits SecretProviderClass.")
 
           mlflow = subprocess.run(
               ["kustomize", "build", "apps/mlflow/overlays/v2"],

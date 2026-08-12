@@ -282,27 +282,26 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
 ```
 
 Do **not** run that playbook against a cluster while Argo CD is still
-reconciling the V1 SecretProviderClass resources, except as part of the
-separately defined and controlled V2 ownership handoff. The same SPC
-identities (`postgres-secret-bundle`, `mlflow-secret-bundle`,
-`monitoring-secret-bundle`) exist in the active V1 overlays today.
+reconciling historical V1 SecretProviderClass resources as the active desired
+state. Active V2 overlays omit those Git-owned SPCs; the same SPC identities
+(`postgres-secret-bundle`, `mlflow-secret-bundle`,
+`monitoring-secret-bundle`) remain only in inactive V1 overlays.
 
 ### Preparation (current repository state)
 
 ```text
 site.yml unchanged (role not auto-run)
-active apps/*/kustomization.yaml still → overlays/v1
-Argo CD remains authoritative for the V1 SecretProviderClass resources
-prepared overlays/v2 remain inactive
+active apps/*/kustomization.yaml → overlays/v2
+Ansible owns the three SecretProviderClass resources and the runtime Secret
+after private-runtime-config.yml is executed
+historical overlays/v1 remain inactive fallback artifacts
 private-runtime-config playbook exists but is not executed automatically
-therefore no active dual ownership exists
-V1 scripts/08-runtime.sh and inject-runtime-values.sh remain usable
-no live cutover has occurred
+V1 scripts/08-runtime.sh and inject-runtime-values.sh are historical only
 ```
 
-### Future ownership handoff (deferred)
+### Future ownership notes
 
-Canonical procedure (design only; not executed by merging documentation):
+Canonical historical in-place procedure (fallback only; not Greenfield):
 
 ```text
 docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md
@@ -313,14 +312,9 @@ The primary V2 fresh-environment path is
 `docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
 
 ```text
-The playbook and V2 overlays are preparation only.
-Exact live ownership handoff sequencing (if an in-place cutover is ever required)
-remains deferred to that fallback runbook and a dedicated live cutover scope.
-The procedure must transfer SecretProviderClass ownership from the V1 Argo tree
-to Ansible without leaving both reconcilers authoritative for the same objects.
-It must account for Argo prune behavior, sync timing, resource continuity,
-SPC consumer availability, and rollback.
-This repository scope does not define live execution success.
+Active V2 overlays omit Git-owned SPCs.
+private_runtime_config materializes the three SPCs and runtime Secret.
+V1 runtime Application patching is not part of the clean-room path.
 ```
 
 Ownership invariant:
@@ -330,15 +324,14 @@ At no steady-state point may Argo CD and Ansible both be authoritative
 for the same SecretProviderClass resources.
 ```
 
-### Post-cutover steady state (target, not active)
+### Post-activation steady state (active)
 
 ```text
 active apps/*/kustomization.yaml → overlays/v2 (no Git-owned SPCs)
 Ansible owns the three SecretProviderClass resources and the runtime Secret
 Argo owns workloads, CSI Driver, and OCI provider
-V1 runtime Application patching is no longer required
+V1 runtime Application patching is no longer required for Greenfield
 ```
-
 Idempotency design (statically designed; live second-converge validation deferred):
 
 ```text
@@ -362,10 +355,8 @@ volume remount/reload behavior is not claimed without live evidence.
 ```text
 Prometheus Operator CRD ownership / monitoring app ownership cleanup
 canonical site.yml activation of private_runtime_config
-explicit V1→V2 overlay cutover (see docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md)
-runtime VAULT_ID / OCI_REGION Application patch script retirement
+post-proof V1 overlay and runtime-injection script cleanup
 ```
-
 Kubernetes scratch binding to `/mnt/scratch` is implemented under `apps/scratch/**`
 (Argo-owned StorageClass/PVs/PVCs) with Ansible creating `/mnt/scratch/dev` and
 `/mnt/scratch/prod` after a verified mount. Live clean-room validation remains open.
@@ -398,9 +389,10 @@ Canonical sequence, wait gates, and acceptance checklist:
 
 `private_runtime_config` is intentionally **not** in `site.yml`.
 
-While active application shims still point at `overlays/v1`, the clean-room path
-is not fully executable end-to-end; V2 overlay activation is a separate scope.
-Do not treat V1 `scripts/inject-runtime-values.sh` as part of the desired V2 path.
+Active application shims point at `overlays/v2`. The private-runtime playbook
+supplies the SecretProviderClass resources and `tradingchassis-runtime-config`
+consumed by those overlays. Do not treat V1 `scripts/inject-runtime-values.sh`
+as part of the desired V2 path.
 
 ## V1 migration strategy
 
