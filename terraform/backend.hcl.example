@@ -1,8 +1,10 @@
 # Copy to backend.hcl and replace placeholders with your existing OCI Object
 # Storage state location. Do not commit backend.hcl.
 #
-# Authentication is supplied by the operator environment (for example OCI
-# Cloud Shell or an OCI config profile). Do not put credentials in this file.
+# Authentication credentials must NOT appear in this file.
+# For the canonical Cloud Shell workflow, set the non-secret auth selection
+# fields below after creating a SecurityToken profile with:
+#   oci session authenticate --profile-name tradingchassis --region <oci-region>
 #
 # Backend configuration is distinct from Terraform deployment inputs
 # (terraform.tfvars): do not mix compartment, SSH, or Vault values here.
@@ -15,3 +17,8 @@ bucket    = "<existing-state-bucket>"
 namespace = "<object-storage-namespace>"
 region    = "<oci-region>"
 key       = "tradingchassis/production/terraform.tfstate"
+
+# Non-secret auth selection for the native OCI backend (Cloud Shell canonical path).
+# Do not put private keys, tokens, or OCIDs here.
+auth                = "SecurityToken"
+config_file_profile = "tradingchassis"

@@ -38,6 +38,10 @@ tmp/
 crash.log
 crash.*.log
 
+# Operator-local Ansible inventory and private-runtime extra vars (keep examples tracked)
+ansible/inventory/local.yml
+ansible/extra-vars/private-runtime.yml
+
 # Kubernetes local kubeconfig filenames
 kubeconfig
 kubeconfig.*

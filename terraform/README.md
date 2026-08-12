@@ -171,15 +171,19 @@ Still open before collaborative live apply:
 
 ```text
 .terraform.lock.hcl (if still absent)
-approved OCI authentication (Cloud Shell scope)
-plan/review/apply workflow
+SecurityToken/Cloud Shell live authentication proof
+plan/review/apply workflow against the real tenancy
 live provisioning validation
 ```
 
 Remote state is configured via the native OCI Object Storage backend with an
 externally supplied bucket. Live backend connectivity is not yet proven.
 
-The next planned operator-facing scope is OCI Cloud Shell execution readiness,
+Canonical Cloud Shell operator workflow (SecurityToken for backend + provider,
+Terraform→Ansible handoff helper, private-runtime extra-vars file):
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
+
+The next planned operator-facing scope is the first real clean-room deployment,
 not an unrelated Terraform resource expansion.
 
 ## Reference compute profile
@@ -229,9 +233,12 @@ bucket versioning enabled on that bucket (operational prerequisite)
 operator-local backend.hcl (from backend.hcl.example)
 OCI authentication for both the OCI backend and the OCI provider
 local private inputs for required variables (never commit tfvars)
-SSH public key material for instance metadata (ssh_public_key)
+SSH public key content for instance metadata (ssh_public_key literal or TF_VAR_ssh_public_key)
 ```
 
+Canonical Cloud Shell path: paste the public-key line into ignored `terraform.tfvars`,
+or export `TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"`.
+Do not use Terraform functions inside `.tfvars` files.
 Canonical deployment sequence including Ansible handoff:
 [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 

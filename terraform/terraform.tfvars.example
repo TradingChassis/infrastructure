@@ -1,0 +1,46 @@
+# Operator-local Terraform deployment inputs.
+# Copy to terraform.tfvars (gitignored) and replace placeholders.
+# Do not commit terraform.tfvars.
+#
+# Backend location belongs in backend.hcl, not here.
+# Backend region and provider oci_region are distinct inputs even when equal.
+#
+# Variable definition files accept literal values only.
+# Do not use Terraform functions such as file() or pathexpand() here.
+
+# --- Authentication selection (non-secret) ---
+# Canonical Cloud Shell path after:
+#   oci session authenticate --profile-name tradingchassis --region <oci-region>
+oci_auth                = "SecurityToken"
+oci_config_file_profile = "tradingchassis"
+
+# --- Required deployment inputs ---
+oci_region               = "<oci-region>"
+oci_compartment_id       = "<compartment-ocid>"
+oci_tenancy_id           = "<tenancy-ocid>"
+oci_vault_id             = "<vault-ocid>"
+oci_vault_compartment_id = "<vault-compartment-ocid>"
+
+# Cloud Shell public egress IP is dynamic across sessions.
+# Discover the current session public IP, then set a /32 (or justified CIDR).
+# Example discovery (Cloud Shell docs):
+#   curl -s checkip.dyndns.org | sed -e 's/.*Current IP Address: //' -e 's/<.*$//'
+ssh_ingress_cidr = "<cloud-shell-or-operator-cidr>"
+
+# Public key CONTENT only (literal string). Not a filesystem path and not a
+# Terraform function. Paste the single line from ~/.ssh/tradingchassis.pub, or
+# omit this assignment and export instead:
+#   export TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"
+ssh_public_key = "<contents-of-~/.ssh/tradingchassis.pub>"
+
+# --- Optional sizing / naming (repository defaults shown) ---
+# name_prefix                 = "tradingchassis"
+# vcn_cidr                    = "10.0.0.0/16"
+# subnet_cidr                 = "10.0.1.0/24"
+# compute_ocpus               = 4
+# compute_memory_gbs          = 24
+# boot_volume_size_gbs        = 50
+# scratch_volume_size_gbs     = 150
+# instance_hostname_label     = "tcnode"
+# compute_operating_system    = "Canonical Ubuntu"
+# compute_operating_system_version = "24.04"

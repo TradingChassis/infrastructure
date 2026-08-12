@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Local/static Cloud Shell execution-readiness checks.
+# Does not create buckets, mutate IAM, terraform init/plan/apply, SSH, or Ansible.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STRICT=0
+failures=0
+
+usage() {
+  cat <<'EOF'
+Usage: tools/check-cloud-shell-readiness [--strict] [--root DIR]
+
+Checks operator-local prerequisites for the documented Cloud Shell workflow.
+Without --strict, missing operator-local files are reported as WARN.
+With --strict, missing required operator-local files fail the check.
+
+This tool never contacts OCI Object Storage for mutating operations and never
+runs terraform init/plan/apply.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --root)
+      ROOT="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+pass() { printf 'PASS: %s\n' "$1"; }
+warn() { printf 'WARN: %s\n' "$1"; }
+fail() { printf 'FAIL: %s\n' "$1"; failures=$((failures + 1)); }
+
+require_cmd() {
+  if command -v "$1" >/dev/null 2>&1; then
+    pass "command available: $1"
+  else
+    fail "missing command: $1"
+  fi
+}
+
+require_cmd git
+require_cmd python3
+require_cmd ssh
+require_cmd ssh-keygen
+require_cmd curl
+if command -v oci >/dev/null 2>&1; then
+  pass "command available: oci"
+else
+  warn "oci CLI not found (expected in OCI Cloud Shell)"
+fi
+
+if command -v terraform >/dev/null 2>&1; then
+  tf_ver="$(terraform version -json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || true)"
+  if [[ -z "$tf_ver" ]]; then
+    tf_ver="$(terraform version | head -n1 | sed -n 's/^Terraform v//p')"
+  fi
+  # required_version ~> 1.15.0 means >=1.15.0,<1.16.0
+  if python3 - "$tf_ver" <<'PY'
+import sys
+ver = sys.argv[1].strip()
+parts = [int(p) for p in ver.split(".")[:3]]
+while len(parts) < 3:
+    parts.append(0)
+major, minor, patch = parts
+ok = (major, minor, patch) >= (1, 15, 0) and (major, minor) < (1, 16)
+sys.exit(0 if ok else 1)
+PY
+  then
+    pass "terraform version satisfies ~> 1.15.0 (${tf_ver})"
+  else
+    fail "terraform version ${tf_ver:-unknown} does not satisfy ~> 1.15.0"
+  fi
+else
+  fail "missing command: terraform"
+fi
+
+if command -v ansible-playbook >/dev/null 2>&1; then
+  pass "command available: ansible-playbook"
+  ansible-playbook --version | head -n1 || true
+else
+  warn "ansible-playbook not found (install pinned ansible-core in a \$HOME venv for Cloud Shell)"
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "ansible-playbook required in --strict mode"
+  fi
+fi
+
+check_file() {
+  local path="$1"
+  local label="$2"
+  if [[ -f "$path" ]]; then
+    pass "$label exists: $path"
+  else
+    if [[ "$STRICT" -eq 1 ]]; then
+      fail "$label missing: $path"
+    else
+      warn "$label missing: $path"
+    fi
+  fi
+}
+
+check_file "${ROOT}/terraform/backend.hcl.example" "backend example"
+check_file "${ROOT}/terraform/terraform.tfvars.example" "tfvars example"
+check_file "${ROOT}/ansible/extra-vars/private-runtime.yml.example" "private-runtime example"
+check_file "${ROOT}/ansible/requirements.yml" "ansible requirements"
+check_file "${ROOT}/docs/V2_CLEAN_ROOM_DEPLOYMENT.md" "clean-room runbook"
+
+if [[ -f "${ROOT}/terraform/backend.hcl" ]]; then
+  pass "operator backend.hcl present"
+  if grep -E '<|>' "${ROOT}/terraform/backend.hcl" >/dev/null 2>&1; then
+    fail "terraform/backend.hcl still contains placeholders"
+  else
+    pass "terraform/backend.hcl has no angle-bracket placeholders"
+  fi
+  if ! grep -Eq '^[[:space:]]*auth[[:space:]]*=[[:space:]]*"SecurityToken"' "${ROOT}/terraform/backend.hcl"; then
+    warn "backend.hcl does not set auth = \"SecurityToken\" (required for canonical Cloud Shell path)"
+  else
+    pass "backend.hcl selects SecurityToken auth"
+  fi
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "operator backend.hcl missing"
+  else
+    warn "operator backend.hcl missing (copy from backend.hcl.example)"
+  fi
+fi
+
+if [[ -f "${ROOT}/terraform/terraform.tfvars" ]]; then
+  pass "operator terraform.tfvars present"
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "operator terraform.tfvars missing"
+  else
+    warn "operator terraform.tfvars missing (copy from terraform.tfvars.example)"
+  fi
+fi
+
+pub="${HOME}/.ssh/tradingchassis.pub"
+priv="${HOME}/.ssh/tradingchassis"
+if [[ -f "$pub" ]]; then
+  pass "SSH public key present: $pub"
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "SSH public key missing: $pub"
+  else
+    warn "SSH public key missing: $pub"
+  fi
+fi
+if [[ -f "$priv" ]]; then
+  pass "SSH private key present: $priv"
+  mode="$(stat -c '%a' "$priv" 2>/dev/null || stat -f '%Lp' "$priv")"
+  if [[ "$mode" == "600" || "$mode" == "400" ]]; then
+    pass "SSH private key permissions are restrictive (${mode})"
+  else
+    fail "SSH private key permissions should be 600 or 400 (found ${mode})"
+  fi
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "SSH private key missing: $priv"
+  else
+    warn "SSH private key missing: $priv"
+  fi
+fi
+
+# Ensure source contract still points at native OCI backend.
+if grep -Eq 'backend[[:space:]]+"oci"[[:space:]]*\{[[:space:]]*\}' "${ROOT}/terraform/versions.tf"; then
+  pass "native OCI backend declaration present"
+else
+  fail "terraform/versions.tf must declare backend \"oci\" {}"
+fi
+
+if [[ "$failures" -eq 0 ]]; then
+  echo "Summary: PASS (Cloud Shell readiness local checks)"
+  exit 0
+fi
+echo "Summary: FAIL=${failures}"
+exit 1
