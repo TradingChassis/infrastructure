@@ -21,6 +21,6 @@ region    = "<oci-region>"
 key       = "tradingchassis/production/terraform.tfstate"
 
 # Non-secret auth selection for the native OCI backend (Cloud Shell canonical path).
-# Do not put private keys, tokens, fingerprints, or OCIDs here.
+# Do not put private keys, tokens, or OCIDs here.
 auth                = "APIKey"
 config_file_profile = "tradingchassis"
