@@ -171,13 +171,16 @@ Still open before collaborative live apply:
 
 ```text
 .terraform.lock.hcl (if still absent)
-remote state
-approved OCI authentication
+approved OCI authentication (Cloud Shell scope)
 plan/review/apply workflow
 live provisioning validation
 ```
 
-The next planned implementation area after this cloud-side layer is Ansible foundation, not an unrelated Terraform feature expansion.
+Remote state is configured via the native OCI Object Storage backend with an
+externally supplied bucket. Live backend connectivity is not yet proven.
+
+The next planned operator-facing scope is OCI Cloud Shell execution readiness,
+not an unrelated Terraform resource expansion.
 
 ## Reference compute profile
 
@@ -221,7 +224,10 @@ Before `plan` / `apply`, the operator machine needs:
 
 ```text
 Terraform ~> 1.15.0
-OCI authentication supported by the Terraform OCI provider
+an externally pre-existing OCI Object Storage state bucket
+bucket versioning enabled on that bucket (operational prerequisite)
+operator-local backend.hcl (from backend.hcl.example)
+OCI authentication for both the OCI backend and the OCI provider
 local private inputs for required variables (never commit tfvars)
 SSH public key material for instance metadata (ssh_public_key)
 ```
@@ -254,38 +260,172 @@ terraform -chdir=terraform init -backend=false
 terraform -chdir=terraform validate
 ```
 
-`terraform init -backend=false` may download the pinned OCI provider from the public Terraform Registry. That step is networked but non-mutating validation only.
+`terraform init -backend=false` is **CI / static validation mode only**.
+It initializes providers without contacting the OCI state bucket.
+That step may download the pinned OCI provider from the public Terraform Registry
+and is networked but non-mutating validation only.
+
+Operator deployment must **not** use `-backend=false`.
+
 Data sources such as images and availability domains are not resolved by `terraform validate`.
 
 ## Execution model
 
 ```text
-CI:
-fmt / init -backend=false / validate only
+CI / static validation:
+fmt / backend contract checks / init -backend=false / validate only
 
-Future approved operator workflow:
-init
+Operator deployment:
+prepare ignored backend.hcl
+terraform init -backend-config=backend.hcl
 plan
 review
 apply
 ```
 
 Live `plan` / `apply` is intentionally outside automated CI.
-Remote state and authentication must still be decided before collaborative live provisioning.
-Credentials are supplied by the execution environment during approved live operations and are never committed to this repository.
+Credentials are supplied by the execution environment during approved live
+operations and are never committed to this repository.
 
-## State
+## Remote state
 
-The repository currently uses backend-disabled initialization for static validation only.
+### Architecture
 
-For the **initial single-operator clean-room validation**, Terraform state is
-**local** unless the operator explicitly configures otherwise. Local state must
-not be committed (see `.gitignore`) and should be backed up appropriately for
-the proof environment.
+```text
+backend type:      native OCI Object Storage (backend "oci")
+state bucket:      EXTERNAL prerequisite (not Terraform-managed)
+bootstrap state:   NONE
+configuration:     partial backend config via terraform/backend.hcl
+isolation:         unique object key / path-like prefix per environment or fork
+locking:           native OCI backend locking
+```
 
-A shared remote state backend remains a future team-operability improvement and
-is not required by current source for the first solo clean-room proof. Remote
-state must still be selected before collaborative long-lived provisioning.
+Terraform cannot rely on its own remote state to bootstrap the storage location
+for that same state. Therefore the state bucket is intentionally external.
+
+Do **not** create the state bucket with this Terraform root.
+Do **not** introduce a second bootstrap Terraform root or bootstrap state.
+
+### Operator configuration categories
+
+Keep these separate:
+
+```text
+Backend configuration (backend.hcl)
+→ bucket
+→ namespace
+→ region          (region that hosts / accesses the state bucket)
+→ key
+
+Terraform deployment inputs (tfvars / TF_VAR_*)
+→ oci_region      (provider deployment region; may match, but is distinct)
+→ compartment
+→ SSH key
+→ Vault references
+→ sizing and network inputs
+```
+
+Backend `region` is not automatically the provider `var.oci_region`.
+Supply each explicitly even when the values happen to match.
+
+### First-time operator init
+
+```bash
+cd terraform
+cp backend.hcl.example backend.hcl
+# edit backend.hcl: existing bucket, namespace, region, unique key
+
+terraform init -backend-config=backend.hcl
+terraform validate
+terraform plan
+# terraform apply only after explicit plan review
+```
+
+`backend.hcl` is gitignored. Commit only `backend.hcl.example`.
+
+### Object key and fork isolation
+
+OCI Object Storage uses object names / prefixes, not real filesystem directories.
+A path-like key such as `tradingchassis/production/terraform.tfstate` is one
+object name. Multiple independent states may share one bucket when each uses a
+unique key/prefix and IAM allows it.
+
+```text
+Each independent Terraform environment or fork must use a unique state object key.
+```
+
+Reusing the same `bucket + namespace + key` for unrelated clusters causes them to
+operate on the same Terraform state. Forks and independent deployments should
+normally choose their own prefix, for example:
+
+```text
+tradingchassis/production/terraform.tfstate   # example only
+tradingchassis/development/terraform.tfstate  # example only
+my-fork/production/terraform.tfstate          # example only
+```
+
+Terraform workspaces are not used for environment isolation in this repository.
+`workspace_key_prefix` is intentionally unset.
+
+### Fail-closed initialization
+
+A normal operator:
+
+```bash
+terraform init -backend-config=backend.hcl
+```
+
+initializes the configured remote OCI backend. If the bucket does not exist,
+cannot be reached, or authentication/authorization is invalid, initialization
+must fail. There is **no** documented operator fallback to local state and no
+deployment use of `-backend=false`.
+
+CI is the only approved `-backend=false` exception, and only for static validation.
+
+### Bucket versioning
+
+Enable Object Storage bucket versioning on the external state bucket before the
+first live init. This is a required operational prerequisite / recovery control.
+`terraform init` itself does not verify versioning.
+
+### State sensitivity and access
+
+Terraform state can contain sensitive infrastructure data. Restrict Object
+Storage access to the operator identities that need it. Exact IAM policy for the
+bucket is owned outside this Terraform root because the bucket is external.
+
+### Authentication boundary
+
+```text
+Terraform OCI provider authentication
+Terraform OCI backend authentication
+```
+
+Both need valid OCI access, but they are distinct components. Provider
+configuration does not automatically configure the backend. Exact Cloud Shell
+authentication modes are documented in a later execution-readiness scope and are
+not hardcoded here.
+
+### First V2 clean-room state
+
+No V2 Terraform state has been live-applied from this repository.
+No state migration is required for the first V2 clean-room deployment.
+Do not run `terraform init -migrate-state` for that first run.
+
+Future relocation of bucket/namespace/region/key requires deliberate Terraform
+backend reconfiguration/migration and is outside the first-deploy path.
+
+### Evidence status
+
+```text
+Native OCI backend declaration: implemented / statically validated
+Partial backend configuration:  implemented / statically validated
+CI backend isolation:           implemented / statically validated
+Real OCI bucket connectivity:   not live validated
+Remote state creation:          not live validated
+State locking:                  backend capability configured / not live validated
+Bucket versioning:              external prerequisite / not verified by Terraform
+```
 
 ## Outputs used by Ansible
 

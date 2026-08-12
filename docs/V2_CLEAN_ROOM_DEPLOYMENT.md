@@ -41,9 +41,14 @@ Phase-A implementation scopes are merged and live-validated.
 Known remaining blockers at the time this runbook was written:
 
 ```text
-- Terraform remote state in OCI Object Storage is not yet configured.
 - OCI Cloud Shell execution/auth/SSH handoff is not yet validated.
 - First real clean-room deployment has not yet been executed.
+```
+
+Terraform remote state status:
+
+```text
+implemented / statically validated / awaiting first live OCI initialization
 ```
 
 V2 runtime overlay status:
@@ -226,32 +231,49 @@ Prepare **local** variable values (for example a gitignored `*.tfvars` file or
 ## Terraform state model
 
 ```text
-For the initial single-operator clean-room validation,
-Terraform state is local unless the operator explicitly configures otherwise.
+Native OCI Object Storage backend
+→ externally pre-existing state bucket
+→ operator-local backend.hcl (partial configuration)
+→ unique object key per environment or fork
 ```
 
-- Local state must **not** be committed (`.gitignore` covers `terraform.tfstate*`).
-- Back up local state appropriately for the proof environment.
-- A shared remote backend remains a future team-operability improvement and is
-  **not** required by current source for the first solo proof.
-- Do not add remote backend configuration as part of following this runbook.
+- The state bucket is an **external foundation prerequisite**. Terraform does
+  **not** create it and there is **no** bootstrap Terraform state.
+- Enable Object Storage bucket versioning on that bucket before first live init
+  (operational prerequisite / recovery control). `terraform init` does not verify
+  versioning.
+- Copy `terraform/backend.hcl.example` to the ignored `terraform/backend.hcl`
+  and supply `bucket`, `namespace`, `region`, and a unique `key`.
+- Backend authentication is supplied by the operator environment and is distinct
+  from Terraform provider authentication.
+- Local state is **not** an operator deployment fallback. CI may use
+  `terraform init -backend=false` for static validation only.
+- No V2 state migration is required for the first clean-room deployment because
+  no live V2 Terraform state exists yet.
+- Details: [`terraform/README.md`](../terraform/README.md).
 
 ---
 
 ## Terraform execution
 
-From the repository root, review every plan before apply:
+From the repository root, prepare remote state then review every plan before apply:
 
 ```bash
-terraform -chdir=terraform init
-terraform -chdir=terraform plan
-terraform -chdir=terraform apply
+cd terraform
+cp backend.hcl.example backend.hcl
+# edit backend.hcl with the existing bucket/namespace/region/unique key
+
+terraform init -backend-config=backend.hcl
+terraform validate
+terraform plan
+# terraform apply only after explicit plan review
 ```
 
 `terraform plan` must be reviewed before `apply`.
 
-Static CI validates `fmt`, `init -backend=false`, and `validate` only.
-Live `plan` / `apply` are operator actions and are **not** CI-proven.
+Static CI validates `fmt`, backend contract checks, `init -backend=false`, and
+`validate` only. Live backend connectivity, `plan`, and `apply` are operator
+actions and are **not** CI-proven.
 
 ---
 
@@ -659,7 +681,7 @@ document.
 
 | Layer | Evidence today |
 | --- | --- |
-| Terraform fmt / init `-backend=false` / validate | statically validated by CI |
+| Terraform fmt / backend contract / init `-backend=false` / validate | statically validated by CI |
 | Ansible lint / syntax-check | statically validated by CI |
 | Kustomize / Helm GitOps renders / contracts | statically validated by CI |
 | Scratch PVC binding to `/mnt/scratch` | implemented in Git; must be proven live |

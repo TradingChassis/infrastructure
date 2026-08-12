@@ -5,6 +5,11 @@
 terraform {
   required_version = "~> 1.15.0"
 
+  # Native OCI Object Storage remote state.
+  # Location is supplied via partial backend configuration (backend.hcl).
+  # The state bucket is an external prerequisite; Terraform does not create it.
+  backend "oci" {}
+
   required_providers {
     oci = {
       source  = "oracle/oci"

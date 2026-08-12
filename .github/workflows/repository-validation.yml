@@ -76,8 +76,89 @@ jobs:
       - name: Terraform format check
         run: terraform fmt -check -recursive
 
-      - name: Terraform init (backend disabled)
+      - name: Validate OCI remote state backend contract
+        # Static structural checks only. Does not contact OCI Object Storage.
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          versions = Path("terraform/versions.tf").read_text(encoding="utf-8")
+          if not re.search(r'backend\s+"oci"\s*\{\s*\}', versions):
+              raise SystemExit('terraform/versions.tf must declare backend "oci" {}')
+
+          example = Path("terraform/backend.hcl.example")
+          if not example.is_file():
+              raise SystemExit("terraform/backend.hcl.example must exist")
+          example_text = example.read_text(encoding="utf-8")
+          for field in ("bucket", "namespace", "region", "key"):
+              if not re.search(rf'(?m)^\s*{field}\s*=', example_text):
+                  raise SystemExit(f"backend.hcl.example missing required field: {field}")
+
+          forbidden = (
+              "tenancy_ocid",
+              "user_ocid",
+              "fingerprint",
+              "private_key",
+              "security_token",
+              "access_key",
+              "secret_key",
+          )
+          lowered = example_text.lower()
+          for token in forbidden:
+              if token in lowered:
+                  raise SystemExit(
+                      f"backend.hcl.example must not contain credential attribute: {token}"
+                  )
+
+          key_match = re.search(r'(?m)^\s*key\s*=\s*"([^"]+)"\s*$', example_text)
+          if not key_match:
+              raise SystemExit("backend.hcl.example key must be a quoted string")
+          key = key_match.group(1)
+          if not key.endswith("terraform.tfstate"):
+              raise SystemExit("example key must end with terraform.tfstate")
+          if "/" not in key:
+              raise SystemExit("example key must demonstrate a path-like prefix")
+          if "<" in key or ">" in key:
+              raise SystemExit("example key must not leave placeholders in the object key")
+
+          for field in ("bucket", "namespace", "region"):
+              match = re.search(rf'(?m)^\s*{field}\s*=\s*"([^"]+)"\s*$', example_text)
+              if not match:
+                  raise SystemExit(f"backend.hcl.example {field} must be a quoted string")
+              value = match.group(1)
+              if not (value.startswith("<") and value.endswith(">")):
+                  raise SystemExit(
+                      f"backend.hcl.example {field} must remain a placeholder, got {value!r}"
+                  )
+
+          ignored = subprocess.run(
+              ["git", "check-ignore", "-v", "terraform/backend.hcl"],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if ignored.returncode != 0:
+              raise SystemExit("terraform/backend.hcl must be gitignored")
+
+          example_ignored = subprocess.run(
+              ["git", "check-ignore", "-v", "terraform/backend.hcl.example"],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if example_ignored.returncode == 0:
+              raise SystemExit("terraform/backend.hcl.example must not be gitignored")
+
+          print("PASS: OCI remote state backend static contract")
+          PY
+
+      - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
+        # CI/static validation only. Operator deployment always initializes the
+        # native OCI backend with -backend-config=backend.hcl.
         run: terraform init -backend=false
 
       - name: Terraform validate
