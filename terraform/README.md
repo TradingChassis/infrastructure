@@ -233,9 +233,12 @@ bucket versioning enabled on that bucket (operational prerequisite)
 operator-local backend.hcl (from backend.hcl.example)
 OCI authentication for both the OCI backend and the OCI provider
 local private inputs for required variables (never commit tfvars)
-SSH public key material for instance metadata (ssh_public_key)
+SSH public key content for instance metadata (ssh_public_key literal or TF_VAR_ssh_public_key)
 ```
 
+Canonical Cloud Shell path: paste the public-key line into ignored `terraform.tfvars`,
+or export `TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"`.
+Do not use Terraform functions inside `.tfvars` files.
 Canonical deployment sequence including Ansible handoff:
 [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 

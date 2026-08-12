@@ -244,6 +244,63 @@ jobs:
           if 'oci_auth                = "SecurityToken"' not in tfvars:
               raise SystemExit("terraform.tfvars.example must select SecurityToken")
 
+          # Regression: variable definition files cannot call Terraform functions.
+          if re.search(r'(?m)^\s*ssh_public_key\s*=\s*file\s*\(', tfvars):
+              raise SystemExit(
+                  "terraform.tfvars.example must not call file() for ssh_public_key"
+              )
+          if re.search(r'(?m)^\s*ssh_public_key\s*=.*\b(file|pathexpand|templatefile|abspath|dirname)\s*\(', tfvars):
+              raise SystemExit(
+                  "terraform.tfvars.example must not use Terraform functions for ssh_public_key"
+              )
+          if not re.search(
+              r'(?m)^\s*ssh_public_key\s*=\s*"<contents-of-~/\.ssh/tradingchassis\.pub>"\s*$',
+              tfvars,
+          ):
+              raise SystemExit(
+                  "terraform.tfvars.example must use a literal placeholder for ssh_public_key"
+              )
+
+          # Regression: authenticate must use --region, never --region-id.
+          auth_sources = [
+              ("docs/V2_CLEAN_ROOM_DEPLOYMENT.md", runbook),
+              ("terraform/backend.hcl.example", Path("terraform/backend.hcl.example").read_text(encoding="utf-8")),
+              ("terraform/terraform.tfvars.example", tfvars),
+          ]
+          for label, text in auth_sources:
+              if "oci session authenticate" in text and "--region-id" in text:
+                  raise SystemExit(f"{label} must not use --region-id with oci session authenticate")
+          if not re.search(
+              r"oci session authenticate[\s\S]{0,200}--region\b",
+              runbook,
+          ):
+              raise SystemExit("runbook must document oci session authenticate with --region")
+
+          # Regression: Object Storage Terraform-auth preflight must use SecurityToken profile.
+          for needle in (
+              "--profile tradingchassis",
+              "--auth security_token",
+              'oci os ns get',
+              'oci os bucket get',
+          ):
+              if needle not in runbook:
+                  raise SystemExit(
+                      f"runbook Object Storage SecurityToken preflight missing: {needle}"
+                  )
+          # Ensure bucket get documentation includes SecurityToken flags near the command.
+          bucket_block = runbook.split("oci os bucket get", 1)[1].split("```", 1)[0]
+          for needle in ("--profile tradingchassis", "--auth security_token", "--region"):
+              if needle not in bucket_block:
+                  raise SystemExit(
+                      f"oci os bucket get preflight block missing SecurityToken/region flag: {needle}"
+                  )
+          ns_block = runbook.split("oci os ns get", 1)[1].split("```", 1)[0]
+          for needle in ("--profile tradingchassis", "--auth security_token"):
+              if needle not in ns_block:
+                  raise SystemExit(
+                      f"oci os ns get preflight block missing SecurityToken flag: {needle}"
+                  )
+
           prv = Path("ansible/extra-vars/private-runtime.yml.example").read_text(encoding="utf-8")
           if "private_runtime_config_vault_id" not in prv or "private_runtime_config_oci_region" not in prv:
               raise SystemExit("private-runtime.yml.example missing required keys")
@@ -270,6 +327,11 @@ jobs:
 
           print("PASS: Cloud Shell execution-readiness static contract")
           PY
+
+      - name: Run Cloud Shell execution contract unit tests
+        # Static regression only: literal tfvars ssh_public_key, authenticate --region,
+        # and SecurityToken Object Storage preflight. Does not contact OCI.
+        run: ./tests/unit/test_cloud_shell_execution_contracts.sh
 
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform

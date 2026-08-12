@@ -4,9 +4,13 @@
 #
 # Backend location belongs in backend.hcl, not here.
 # Backend region and provider oci_region are distinct inputs even when equal.
+#
+# Variable definition files accept literal values only.
+# Do not use Terraform functions such as file() or pathexpand() here.
 
 # --- Authentication selection (non-secret) ---
-# Canonical Cloud Shell path after: oci session authenticate --profile-name tradingchassis
+# Canonical Cloud Shell path after:
+#   oci session authenticate --profile-name tradingchassis --region <oci-region>
 oci_auth                = "SecurityToken"
 oci_config_file_profile = "tradingchassis"
 
@@ -23,9 +27,11 @@ oci_vault_compartment_id = "<vault-compartment-ocid>"
 #   curl -s checkip.dyndns.org | sed -e 's/.*Current IP Address: //' -e 's/<.*$//'
 ssh_ingress_cidr = "<cloud-shell-or-operator-cidr>"
 
-# Public key only. Prefer file() against an operator-local ed25519 public key.
-# Example path used by the Cloud Shell runbook:
-ssh_public_key = file("${pathexpand("~/.ssh/tradingchassis.pub")}")
+# Public key CONTENT only (literal string). Not a filesystem path and not a
+# Terraform function. Paste the single line from ~/.ssh/tradingchassis.pub, or
+# omit this assignment and export instead:
+#   export TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"
+ssh_public_key = "<contents-of-~/.ssh/tradingchassis.pub>"
 
 # --- Optional sizing / naming (repository defaults shown) ---
 # name_prefix                 = "tradingchassis"

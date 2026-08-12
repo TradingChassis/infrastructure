@@ -4,7 +4,7 @@
 # Authentication credentials must NOT appear in this file.
 # For the canonical Cloud Shell workflow, set the non-secret auth selection
 # fields below after creating a SecurityToken profile with:
-#   oci session authenticate --profile-name tradingchassis --region-id <oci-region>
+#   oci session authenticate --profile-name tradingchassis --region <oci-region>
 #
 # Backend configuration is distinct from Terraform deployment inputs
 # (terraform.tfvars): do not mix compartment, SSH, or Vault values here.

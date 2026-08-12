@@ -193,7 +193,9 @@ OCI CLI config/token    = outside home under /etc/oci (do not modify/copy)
 OCI CLI auth            = instance_obo_user + delegation_token
 OCI CLI profile/region  = follows Console region selected when the shell starts
 Cloud Shell public IP   = dynamic across sessions (stable within one session)
-Public internet access  = depends on Cloud Shell networking/security configuration
+Public internet access  = requires Cloud Shell Public Network (or equivalent);
+                          OCI Service Network alone is insufficient for GitHub,
+                          Terraform Registry, Ansible Galaxy, and public SSH
 ```
 
 Clone and store operator files under `$HOME`, never under ephemeral `/tmp`, so a
@@ -259,14 +261,14 @@ Create/refresh a short-lived session token in the operator home config
 # PREFLIGHT / SAFE TO RUN (creates/refreshes operator SecurityToken profile)
 oci session authenticate \
   --profile-name tradingchassis \
-  --region-id <oci-region>
+  --region <oci-region>
 ```
 
 Validate:
 
 ```bash
 oci iam region list \
-  --config-file ~/.oci/config \
+  --config-file "$HOME/.oci/config" \
   --profile tradingchassis \
   --auth security_token
 ```
@@ -388,14 +390,27 @@ Native OCI Object Storage backend
 These commands are **PREFLIGHT / SAFE TO RUN** metadata checks. They do not create
 buckets, enable versioning, or write objects.
 
+They must use the same SecurityToken profile that Terraform will use.
+Do **not** rely on Cloud Shell's built-in `instance_obo_user` identity for these
+checks; that path does not prove Terraform backend/provider authentication.
+
 ```bash
-# Namespace
-oci os ns get
+# Namespace via SecurityToken profile tradingchassis
+oci os ns get \
+  --config-file "$HOME/.oci/config" \
+  --profile tradingchassis \
+  --auth security_token
 
 # Bucket exists + versioning status (expect versioning = Enabled)
+# Use the backend Object Storage region from backend.hcl, not merely the
+# Cloud Shell Console start region.
 oci os bucket get \
   --namespace-name <object-storage-namespace> \
   --bucket-name <existing-state-bucket> \
+  --region <backend-region> \
+  --config-file "$HOME/.oci/config" \
+  --profile tradingchassis \
+  --auth security_token \
   --query 'data.versioning' \
   --raw-output
 ```
@@ -434,8 +449,16 @@ eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/tradingchassis
 ```
 
-Terraform receives only the public key via `ssh_public_key = file(...)` in
-`terraform.tfvars`. Never commit private keys.
+Terraform receives only the public-key **content** as a literal
+`ssh_public_key` string (variable definition files cannot call `file()` /
+`pathexpand()`). After generating the keypair, either paste the single line from
+`~/.ssh/tradingchassis.pub` into ignored `terraform.tfvars`, or export:
+
+```bash
+export TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"
+```
+
+Never commit private keys. Never put the private key into Terraform inputs.
 
 ### SSH ingress and Cloud Shell egress
 
@@ -455,8 +478,17 @@ curl -s checkip.dyndns.org | sed -e 's/.*Current IP Address: //' -e 's/<.*$//'
 # set ssh_ingress_cidr to that address as /32 (or another justified CIDR)
 ```
 
-Cloud Shell must also have public-network/internet reachability for GitHub,
-provider downloads, Ansible Galaxy, and SSH to the VM public IP.
+Cloud Shell must use **Public Network** (or equivalent public-internet
+connectivity) before this workflow. OCI Service Network alone is not sufficient
+for:
+
+```text
+GitHub clone / pull
+Terraform Registry provider download
+Ansible Galaxy collection install
+SSH to the VM public IP
+public egress IP discovery used for ssh_ingress_cidr
+```
 
 ### First SSH connection
 
@@ -586,16 +618,16 @@ Stages marked `FIRST LIVE DEPLOYMENT` must wait for the dedicated clean-room
 execution and are **not** part of this readiness implementation.
 
 ```text
-1. Open OCI Cloud Shell (Console region chosen intentionally)
+1. Open OCI Cloud Shell (Console region chosen intentionally; enable Public Network)
 2. Confirm public-network/internet reachability for GitHub, registries, and SSH
 3. git clone <repo> under $HOME && cd infrastructure
 4. ./tools/check-cloud-shell-readiness
-5. oci session authenticate --profile-name tradingchassis --region-id <oci-region>
-6. Verify SecurityToken profile (oci iam region list --auth security_token ...)
-7. Verify external state bucket exists and versioning=Enabled (oci os bucket get)
+5. oci session authenticate --profile-name tradingchassis --region <oci-region>
+6. Verify SecurityToken profile (oci iam region list --profile tradingchassis --auth security_token)
+7. Verify external state bucket exists and versioning=Enabled using SecurityToken profile
 8. cp terraform/backend.hcl.example terraform/backend.hcl  # edit location + SecurityToken fields
 9. cp terraform/terraform.tfvars.example terraform/terraform.tfvars  # edit inputs
-10. Create ~/.ssh/tradingchassis ed25519 keypair; ssh-add; set ssh_public_key via file()
+10. Create ~/.ssh/tradingchassis ed25519 keypair; ssh-add; set ssh_public_key literal or TF_VAR_ssh_public_key
 11. Set ssh_ingress_cidr to current Cloud Shell public IP /32
 12. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform init -backend-config=backend.hcl
 13. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform validate
