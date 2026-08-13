@@ -36,11 +36,30 @@ variable "subnet_cidr" {
   default     = "10.0.1.0/24"
 
   validation {
+    # Terraform 1.15 has no cidrcontains. Compare numeric IPv4 first/last
+    # addresses so the entire subnet range must sit inside vcn_cidr.
     condition = (
       can(cidrnetmask(var.subnet_cidr)) &&
       can(cidrnetmask(var.vcn_cidr)) &&
-      cidrcontains(var.vcn_cidr, cidrhost(var.subnet_cidr, 0)) &&
-      cidrcontains(var.vcn_cidr, cidrhost(var.subnet_cidr, -1))
+      try(
+        alltrue([
+          sum([
+            for idx, octet in split(".", cidrhost(var.vcn_cidr, 0)) :
+            tonumber(octet) * [16777216, 65536, 256, 1][idx]
+            ]) <= sum([
+            for idx, octet in split(".", cidrhost(var.subnet_cidr, 0)) :
+            tonumber(octet) * [16777216, 65536, 256, 1][idx]
+          ]),
+          sum([
+            for idx, octet in split(".", cidrhost(var.subnet_cidr, -1)) :
+            tonumber(octet) * [16777216, 65536, 256, 1][idx]
+            ]) <= sum([
+            for idx, octet in split(".", cidrhost(var.vcn_cidr, -1)) :
+            tonumber(octet) * [16777216, 65536, 256, 1][idx]
+          ]),
+        ]),
+        false
+      )
     )
     error_message = "subnet_cidr must be a valid IPv4 CIDR block fully contained within vcn_cidr."
   }

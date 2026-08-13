@@ -275,6 +275,10 @@ It initializes providers without contacting the OCI state bucket.
 That step may download the pinned OCI provider from the public Terraform Registry
 and is networked but non-mutating validation only.
 
+`terraform validate` does not evaluate `subnet_cidr` containment against concrete
+CIDR values. That contract is covered by
+`tests/unit/test_terraform_cidr_validation.sh` using an isolated no-provider fixture.
+
 Operator deployment must **not** use `-backend=false`.
 
 Data sources such as images and availability domains are not resolved by `terraform validate`.

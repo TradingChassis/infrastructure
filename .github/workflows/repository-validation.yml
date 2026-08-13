@@ -340,6 +340,11 @@ jobs:
         # and Object Storage preflight. Does not contact OCI.
         run: ./tests/unit/test_cloud_shell_execution_contracts.sh
 
+      - name: Run Terraform CIDR containment unit tests
+        # Evaluates production vcn_cidr/subnet_cidr validation with concrete values.
+        # Isolated fixture only: no OCI provider, no remote backend, no credentials.
+        run: ./tests/unit/test_terraform_cidr_validation.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the
