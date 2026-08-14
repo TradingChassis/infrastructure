@@ -121,37 +121,9 @@
     comment: TradingChassis SSH host access
   become: true
 
-- name: Allow inbound traffic on the Calico VXLAN interface
-  community.general.ufw:
-    rule: allow
-    interface: vxlan.calico
-    direction: in
-    comment: MicroK8s Calico VXLAN inbound
-  become: true
-
-- name: Allow outbound traffic on the Calico VXLAN interface
-  community.general.ufw:
-    rule: allow
-    interface: vxlan.calico
-    direction: out
-    comment: MicroK8s Calico VXLAN outbound
-  become: true
-
-- name: Allow inbound traffic on Calico virtual ethernet interfaces
-  community.general.ufw:
-    rule: allow
-    interface: cali+
-    direction: in
-    comment: MicroK8s Calico veth inbound
-  become: true
-
-- name: Allow outbound traffic on Calico virtual ethernet interfaces
-  community.general.ufw:
-    rule: allow
-    interface: cali+
-    direction: out
-    comment: MicroK8s Calico veth outbound
-  become: true
+# MicroK8s owns Calico UFW interface exceptions. When kubelite starts and
+# UFW is enabled, it adds allow in/out on vxlan.calico and cali+. Ansible
+# does not mutate those rules; it verifies them after MicroK8s is ready.
 
 - name: Enable UFW with the explicit MicroK8s-compatible host policy
   community.general.ufw:
@@ -253,3 +225,20 @@
       - --wait-ready
   become: true
   changed_when: false
+
+# MicroK8s has started and, with UFW enabled, has had the chance to install
+# its Calico interface allowances. Verify the functional contract only.
+# Run the Git-owned verifier via script so the first post-fix converge does
+# not install a new host file. changed_when: false is valid here because
+# the helper is read-only and does not call ufw.
+- name: Verify MicroK8s-owned Calico UFW interface allowances
+  ansible.builtin.script:
+    executable: "{{ microk8s_python_interpreter }}"
+    cmd: >-
+      {{ role_path }}/files/verify_microk8s_calico_ufw.py
+      --user-rules {{ microk8s_ufw_user_rules_file }}
+      --user6-rules {{ microk8s_ufw_user6_rules_file }}
+  register: microk8s_calico_ufw_verify
+  become: true
+  changed_when: false
+  failed_when: microk8s_calico_ufw_verify.rc != 0

@@ -123,6 +123,8 @@ Do not install CSI Driver / OCI provider with Bash while Argo owns oci-secrets.
 Do not keep Git-owned SecretProviderClass resources and Ansible-owned SPCs
 authoritative for the same objects in steady state.
 Do not let Terraform manage long-lived Kubernetes application manifests.
+Do not let Ansible declaratively rewrite MicroK8s-owned Calico UFW
+interface rules on vxlan.calico and cali+.
 ```
 
 ---
@@ -949,9 +951,9 @@ Both load into the nft-compatible table ahead of UFW.
    whole-table restore. The unit is PartOf=ufw.service and
    WantedBy=ufw.service so a later UFW restart or start re-runs
    the same helper. RequiredBy the MicroK8s snap units so a failed
-   boot reconcile keeps kubelite/containerd from starting. Live
-   reboot proof of that unit is NOT yet established by this
-   repository change.
+   boot reconcile keeps kubelite/containerd from starting. After
+   PR #59 this boot path is live-proven: reboot without Ansible
+   restored the OCI nft contract with the unit active (exited).
 ```
 
 UFW `DEFAULT_FORWARD_POLICY=ACCEPT` and UFW Calico interface allows do not
@@ -970,18 +972,24 @@ REJECT, metrics-server became Ready, and a second Ansible converge reported
 `changed=0`. After that same host rebooted **without** Ansible, persistent
 `rules.v4` still had the contract, but runtime iptables-nft INPUT was UFW-only
 and the metrics API returned ServiceUnavailable. Finding 4 is implemented
-here as `tradingchassis-oci-microk8s-firewall.service` and is **NOT yet**
-live-reboot-proven by this repository change. The first live PR #57
+here as `tradingchassis-oci-microk8s-firewall.service`. The first live PR #57
 converge failed while appending quoted Oracle InstanceServices comments;
 runtime INPUT kept the pod allows and UFW, InstanceServices existed
 empty, and the boot unit was not installed. The first live PR #58 apply
 parsed those quoted comments, resumed the empty chain, and restored the
 full runtime contract. The second PR #58 converge then failed because
 iptables-nft rendered persist `-p udp --dport 123` as
-`-p udp -m udp --dport 123`. Semantic comparison of that redundant
-protocol match is required before second-converge `changed=0` or reboot
-proof. Live successful second converge and reboot proof are **NOT yet**
-proven. The unit uses
+`-p udp -m udp --dport 123`. PR #59 compares that redundant protocol match
+semantically. After PR #59, reboot **without** Ansible restored the full
+OCI nft runtime (INPUT, both pod-host allows, InstanceServices, INPUT
+REJECT) with the boot unit `active (exited)`. The next MicroK8s role
+converge left OCI runtime reconciliation unchanged and reported
+`changed=4` only on the four Calico UFW tasks. MicroK8s boot journals
+showed `daemon-kubelite` itself adding `ufw allow in/out` on
+`vxlan.calico` and `cali+`. Ansible had been a second owner of those
+same functional rules via comments. Ansible now verifies that
+MicroK8s-owned contract after readiness and does not rewrite it.
+Post-fix Ansible `changed=0` is **NOT yet** live-proven. The unit uses
 `PartOf=ufw.service` and `RequiredBy` the MicroK8s snap units. None of
 these current-host observations are clean-room rebuild proof.
 
@@ -1025,7 +1033,8 @@ host baseline contract asserted (Ubuntu 24, ARM64)
 scratch filesystem validated/mounted at /mnt/scratch (when inputs correct)
 scratch workload directories /mnt/scratch/dev and /mnt/scratch/prod present on the mount
 MicroK8s installed (channel 1.29/stable) with required addons
-host UFW policy applied (incoming deny, outgoing allow, routed allow, SSH, Calico)
+host UFW baseline applied (incoming deny, outgoing allow, routed allow, SSH)
+MicroK8s-owned Calico UFW allowances on vxlan.calico and cali+ verified after ready
 OCI cloud-image unconditional IPv4 FORWARD REJECT removed from rules.v4 and nft FORWARD
 OCI INPUT catch-all REJECT retained
 narrow MicroK8s pod CIDR → tcp/16443 and tcp/10250 allows inserted before INPUT REJECT
@@ -1045,10 +1054,11 @@ FORWARD REJECT removal was live-proven after PR #54. The INPUT pod-API allow
 was live-proven on the current host after PR #55. The INPUT pod-kubelet allow
 was live-proven on the current host after PR #56 before reboot. The first
 live PR #58 apply restored the empty InstanceServices chain and the full
-OCI runtime contract. Automatic post-reboot nft reconciliation is **NOT
-yet** live-proven, and the second PR #58 converge is **NOT yet**
-`changed=0` live-proven. None of these current-host observations are
-clean-room rebuild proof.
+OCI runtime contract. Automatic post-reboot nft reconciliation is
+live-proven after PR #59. The remaining post-reboot Ansible drift was
+Calico UFW dual ownership (`vxlan.calico` / `cali+`). Corrected
+post-fix `changed=0` is **NOT yet** live-proven. None of these
+current-host observations are clean-room rebuild proof.
 
 Successful `site.yml` does **not** mean:
 
@@ -1318,9 +1328,12 @@ no Argo CD reinstall churn beyond idempotent module behavior
 
 The second MicroK8s converge must remain idempotent once the OCI FORWARD
 REJECT is gone, both pod → node-local API and kubelet allows already
-precede INPUT REJECT, InstanceServices is present, and the boot firewall
-unit is already enabled. That claim is statically designed and **NOT yet**
-live-proven after a post-fix reboot.
+precede INPUT REJECT, InstanceServices is present, the boot firewall
+unit is already enabled, and MicroK8s-owned Calico UFW allowances on
+`vxlan.calico` and `cali+` already exist. OCI boot/runtime
+reconciliation is live-proven after reboot. Post-fix Ansible
+`changed=0` after removing Calico UFW mutation ownership is **NOT yet**
+live-proven.
 
 The private runtime role is designed for idempotent second runs when inputs are
 unchanged; that design is statically described and **not** live-proven by this

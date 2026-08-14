@@ -23,11 +23,15 @@ Ansible does **not** own:
 OCI network/compute/storage/IAM resources
 long-lived Kubernetes application desired state
 Secrets Store CSI Driver / OCI provider installation
+Calico UFW interface exceptions on vxlan.calico and cali+
 ```
 
 Terraform owns cloud infrastructure.
 Argo CD owns long-lived Kubernetes desired state, including the Secrets Store CSI
 Driver and OCI Vault provider.
+MicroK8s owns its Calico UFW interface exceptions when it detects enabled UFW.
+Ansible verifies that contract after MicroK8s is ready and does not rewrite
+those four rules.
 Ansible may materialize only private-config-dependent Kubernetes objects
 (`tradingchassis-runtime-config` and the three SecretProviderClass resources)
 through an explicit non-default playbook.
@@ -163,7 +167,8 @@ The `microk8s` role:
 * installs MicroK8s from the pinned snap channel `1.29/stable`
 * waits for readiness with `microk8s status --wait-ready`
 * enables only the verified V1-required addons when missing
-* applies an explicit UFW host firewall policy before relying on MicroK8s networking
+* applies an explicit UFW host firewall baseline before relying on MicroK8s networking
+* verifies MicroK8s-owned Calico UFW interface allowances after MicroK8s is ready
 
 Required addons:
 
@@ -195,14 +200,31 @@ Technology choice: **UFW**, using Canonical MicroK8s troubleshooting guidance fo
 Implemented host policy:
 
 ```text
+Ansible-owned UFW baseline:
 default incoming: deny
 default outgoing: allow
 default routed: allow
 allow TCP/22 (SSH)
+UFW enabled
+
+MicroK8s-owned Calico UFW interface exceptions (verified, not mutated):
 allow in/out on vxlan.calico
 allow in/out on cali+
-UFW enabled
 ```
+
+MicroK8s owns those four interface allowances. When `daemon-kubelite` starts
+and UFW is already enabled, MicroK8s adds `ufw allow in/out` on
+`vxlan.calico` and `cali+`. Ansible must not declaratively rewrite the same
+rules with TradingChassis comments. That dual ownership was the live
+post-reboot `changed=4` after PR #57/#58/#59: the OCI nft runtime task was
+unchanged, and only the four Calico UFW tasks reported changed because they
+re-owned already-correct functional rules. Ansible now verifies the
+functional persisted UFW contract after MicroK8s readiness and does not
+require a particular comment. Post-fix Ansible `changed=0` is **not**
+claimed until an operator converge proves it.
+
+Do not create or manage MicroK8s `skip.ufw`. That lock is an internal snap
+implementation detail and would reverse ownership.
 
 Not opened on the host firewall to the Internet / UFW public policy:
 
@@ -354,15 +376,19 @@ contract. The second identical converge then failed because iptables-nft
 `-p udp -m udp --dport 123`, which syntactic argv comparison treated as
 foreign drift. Comparison now uses a narrow semantic key that collapses
 only a redundant `-m tcp`/`-m udp` after a matching `-p`. Execution argv
-is not rewritten. Live second-converge `changed=0` after that comparison
-fix is **not** claimed. PR #57 reboot persistence is therefore still
-**not** proven.
+is not rewritten. After that comparison fix (PR #59), a reboot **without**
+Ansible restored the full OCI INPUT runtime, both pod-host allows,
+InstanceServices, and INPUT REJECT, with the boot unit `active (exited)`
+and ExecStart `status=0/SUCCESS`. The following MicroK8s role converge
+left `Reconcile nft-compatible OCI MicroK8s firewall runtime` unchanged.
+Remaining post-reboot `changed=4` was Calico UFW comment re-ownership,
+not nft drift.
 
 The `microk8s` role still applies the same runtime reconciliation during
 converge. When the unit file changes, enablement uses `force` so the
 `WantedBy=` / `RequiredBy=` aliases are refreshed. The boot unit does
-not replace converge reconciliation. Post-reboot proof of this boot unit
-is **not** claimed by repository tests.
+not replace converge reconciliation. Post-fix Calico UFW ownership
+`changed=0` is **not** claimed by repository tests.
 
 #### Shared safety properties
 
@@ -405,7 +431,8 @@ OCI InstanceServices chain and 169.254.0.0/16 metadata/DNS/DHCP/iSCSI rules
 OUTPUT jump to InstanceServices
 SSH INPUT accept
 UFW incoming deny / outgoing allow / routed allow
-UFW SSH and Calico interface rules
+UFW SSH allow
+MicroK8s-owned Calico UFW interface rules on vxlan.calico and cali+
 ```
 
 ## Argo CD bootstrap
