@@ -451,6 +451,8 @@ The `argocd_bootstrap` role:
 
 * imports `ansible_k8s_runtime` to create `/opt/tradingchassis/ansible-kubernetes`
   (Python 3.12 venv, `kubernetes==29.0.0`, not Ubuntu `python3-kubernetes` 22.6.0)
+* copies repository `files/requirements.txt` to `/opt/tradingchassis/ansible-k8s-runtime/`
+  before remote `pip` (pip runs on the managed node, not the control node)
 * uses that interpreter only for `kubernetes.core` tasks (host roles keep `/usr/bin/python3`)
 * ensures the `argocd` namespace
 * installs Argo CD via the pinned community Helm chart `argo-cd` `8.2.7`

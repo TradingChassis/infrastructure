@@ -20,9 +20,27 @@
     mode: "0755"
   become: true
 
+- name: Ensure managed-node Kubernetes runtime requirements directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_k8s_runtime_requirements_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Materialize pinned Kubernetes runtime requirements
+  ansible.builtin.copy:
+    src: requirements.txt
+    dest: "{{ ansible_k8s_runtime_requirements_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
 - name: Install pinned Kubernetes Python dependencies into the dedicated venv
   ansible.builtin.pip:
-    requirements: "{{ ansible_k8s_runtime_requirements_file }}"
+    requirements: "{{ ansible_k8s_runtime_requirements_path }}"
     virtualenv: "{{ ansible_k8s_runtime_venv }}"
     virtualenv_command: /usr/bin/python3 -m venv
     virtualenv_site_packages: false

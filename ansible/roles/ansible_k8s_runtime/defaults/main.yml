@@ -15,4 +15,9 @@ ansible_k8s_runtime_apt_packages:
 # kubernetes.core 6.5.0 requires kubernetes >= 24.2.0, PyYAML, and jsonpatch.
 # Pin kubernetes 29.0.0 to the MicroK8s 1.29 API line without chasing latest.
 ansible_k8s_runtime_min_kubernetes_version: "24.2.0"
-ansible_k8s_runtime_requirements_file: "{{ role_path }}/files/requirements.txt"
+
+# Repository files/requirements.txt is the source of truth on the control node.
+# ansible.builtin.pip runs on the managed node, so copy the pin file there
+# first. Keep it outside the venv directory Python may recreate.
+ansible_k8s_runtime_requirements_dir: /opt/tradingchassis/ansible-k8s-runtime
+ansible_k8s_runtime_requirements_path: "{{ ansible_k8s_runtime_requirements_dir }}/requirements.txt"

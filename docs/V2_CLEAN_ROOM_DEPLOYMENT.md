@@ -990,7 +990,9 @@ argocd_bootstrap
 
 `argocd_bootstrap` installs Argo CD with Helm timeout `10m` (Helm 3 duration) and
 applies the root Application through `kubernetes.core` using that dedicated
-venv. It does not pip-install into Ubuntu system Python. An existing
+venv. It copies repository-owned `requirements.txt` onto the managed node at
+`/opt/tradingchassis/ansible-k8s-runtime/requirements.txt` before remote pip.
+It does not pip-install into Ubuntu system Python. An existing
 `python3-kubernetes` distro package, if present from a partial bootstrap, is
 left in place and is not the `kubernetes.core` interpreter.
 
