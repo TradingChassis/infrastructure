@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added a minimal Cursor/AI-assisted governance workflow: implementation and independent review rules, plus human-facing `docs/AI_AGENT_WORKFLOW.md`
 - Configured Terraform to use the native OCI Object Storage backend with an externally supplied state bucket and environment-specific object key.
 - Defined the OCI Cloud Shell operator workflow for Terraform authentication, remote-state initialization, and deterministic Terraform-to-Ansible handoff.
 - Activated the V2 runtime overlays for PostgreSQL, MLflow, and Monitoring, removing the active V1 runtime-injection dependency and hardening PostgreSQL bootstrap against delayed secret availability.
@@ -37,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added temporary Argo CD prune protection to the three active V1 SecretProviderClass resources in preparation for the controlled runtime ownership handoff.
 - Added the canonical V2 clean-room deployment runbook and explicit Terraform-to-Ansible bootstrap handoff.
 - Bound scratch Kubernetes workloads to the dedicated OCI-backed `/mnt/scratch` filesystem for V2 clean-room deployments.
+
+### Changed
+
+- Replaced a fixed repository-wide response-language rule with a task-driven contract in `AGENTS.md` and the always-applied foundation rule
+- Documented the current GitHub `main-protection` required checks as present external policy, not future work
+- Documented one explicitly authorized finalization task after PRE-COMMIT review, with stop-on-failure and a mandatory exact-head CI gate
 
 ### Fixed
 

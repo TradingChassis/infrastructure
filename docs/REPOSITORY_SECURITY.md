@@ -171,9 +171,28 @@ settings. This repository's CI does not assume they are enabled and does
 not depend on them. Operators should enable them in GitHub if the plan
 allows it.
 
-After merge, if branch protection is configured manually, add
-**Security validation** to the required checks alongside the existing
-Static, Terraform, Ansible, and GitOps jobs.
+## GitHub required status checks
+
+The active GitHub ruleset `main-protection` currently applies to the
+default branch. Before merge to `main` it requires these status checks:
+
+- Static repository checks
+- Security validation
+- Terraform validation
+- Ansible validation
+- GitOps validation
+
+That ruleset is external GitHub repository configuration. Files in this
+repository document the policy; they do not themselves enforce the GitHub
+setting.
+
+All five checks are currently required. Do not describe adding
+**Security validation** as future work.
+
+The ruleset does not currently require the pull-request branch to be up
+to date with the base branch before merge (strict required-status-check
+policy is off). Operators must still confirm that the required checks
+belong to the exact pull-request head being merged.
 
 ## Local commands
 

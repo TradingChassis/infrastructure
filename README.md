@@ -352,7 +352,7 @@ V2 clean-room status and remaining blockers are listed in [`docs/V2_CLEAN_ROOM_D
 
 ## AI-Assisted Development
 
-This repository includes Cursor and agent guardrails for AI-assisted work. Start at [`AGENTS.md`](AGENTS.md). These guardrails are an additional protection layer; they do not replace OS sandboxing, operating-system permissions, manual confirmation, or Git review.
+This repository includes Cursor and agent guardrails for AI-assisted work. Start at [`AGENTS.md`](AGENTS.md). The human-facing workflow is [`docs/AI_AGENT_WORKFLOW.md`](docs/AI_AGENT_WORKFLOW.md). These guardrails are an additional protection layer; they do not replace OS sandboxing, operating-system permissions, manual confirmation, or Git review.
 
 ## Additional Documentation
 
@@ -362,6 +362,7 @@ This repository includes Cursor and agent guardrails for AI-assisted work. Start
 - `terraform/README.md` / `ansible/README.md` / `argocd/README.md` — layer ownership
 - `VERSION_1_BASELINE.md` for Version 1 ownership, limitations, and Version 2 direction
 - `AGENTS.md` for the cross-agent safety entry point
+- [`docs/AI_AGENT_WORKFLOW.md`](docs/AI_AGENT_WORKFLOW.md) for the Cursor/AI-assisted implementation and review workflow
 - `CONTRIBUTING.md` for contribution workflow
 - `SECURITY.md` for vulnerability reporting and security model
 - `CHANGELOG.md` for tracked changes
