@@ -203,11 +203,14 @@ if 'requirements: "{{ ansible_k8s_runtime_requirements_path }}"' not in pip_inst
 for forbidden in (
     "role_path",
     "playbook_dir",
-    "/home/j_beerhold",
     "ansible/roles/ansible_k8s_runtime/files/requirements.txt",
 ):
     if forbidden in pip_install_block:
         raise SystemExit(f"pip requirements must not reference controller path token {forbidden!r}")
+if re.search(r"/(?:home|Users)/[^/<>\s]+/", pip_install_block):
+    raise SystemExit("pip requirements must not reference an absolute operator home path")
+if re.search(r"(?i)(?:[A-Za-z]:\\|\\\\)Users\\", pip_install_block):
+    raise SystemExit("pip requirements must not reference a Windows user home path")
 if "role_path" in runtime_defaults:
     raise SystemExit("runtime defaults must not point pip at {{ role_path }}")
 if "ansible_k8s_runtime_requirements_file" in runtime_defaults or "ansible_k8s_runtime_requirements_file" in runtime_tasks:

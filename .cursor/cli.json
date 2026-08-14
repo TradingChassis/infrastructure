@@ -20,7 +20,9 @@
       "Shell(./tools/check-agent-safety)",
       "Shell(./tools/check-agent-safety:*)",
       "Shell(./tools/validate-safe)",
-      "Shell(./tools/validate-safe:*)"
+      "Shell(./tools/validate-safe:*)",
+      "Shell(./tools/check-sensitive-metadata)",
+      "Shell(./tools/check-sensitive-metadata:*)"
     ],
     "deny": [
       "Shell(sudo)",

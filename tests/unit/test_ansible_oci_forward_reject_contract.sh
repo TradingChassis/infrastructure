@@ -2345,8 +2345,8 @@ if "ufw disable" in tasks or "state: disabled" in tasks:
     raise SystemExit("role must not disable UFW")
 if "interface: vxlan.calico" in tasks or "interface: cali+" in tasks:
     raise SystemExit("role must not mutate Calico UFW interface rules")
-if "10.152.183.1" in tasks or "10.1.118" in tasks:
-    raise SystemExit("role must not hard-code Kubernetes Service or pod IPs")
+if "10.152.183.1" in tasks:
+    raise SystemExit("role must not hard-code the well-known MicroK8s kubernetes Service IP")
 if "--handle" in tasks or "nft delete" in tasks:
     raise SystemExit("runtime deletion must not use nft handles")
 if "notify: Reload systemd for OCI MicroK8s firewall boot unit" not in tasks:
@@ -2371,8 +2371,8 @@ if "shell=True" in helper_src:
     raise SystemExit("helper must not invoke iptables through a shell")
 if "os.system" in helper_src or "os.popen" in helper_src or "Popen" in helper_src:
     raise SystemExit("helper must not use os.system/os.popen/Popen")
-if "10.152.183.1" in helper_src or "10.1.118" in helper_src:
-    raise SystemExit("helper must not hard-code Kubernetes Service or pod IPs")
+if "10.152.183.1" in helper_src:
+    raise SystemExit("helper must not hard-code the well-known MicroK8s kubernetes Service IP")
 if "10.1.0.0/16" in helper_src:
     raise SystemExit("helper must take pod CIDR as input, not hard-code it")
 if '"-F", "-X", "--flush"' not in helper_src and "'-F', '-X', '--flush'" not in helper_src:
@@ -2541,13 +2541,8 @@ print("PASS: CI enforces the OCI firewall contract")
 
 implementation_files = (TASKS, HELPER, README, V2_DOC, DEFAULTS, UNIT, HANDLERS)
 forbidden_live = (
-    "10.0.1.31",
     "10.152.183.1",
-    "10.1.118",
-    "frt2nffgchiv",
     "BEGIN PRIVATE KEY",
-    "130.61.",
-    "132.145.",
 )
 for path in implementation_files:
     text = read(path)

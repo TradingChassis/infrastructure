@@ -186,8 +186,6 @@ def main() -> None:
     print("PASS: external state-bucket bootstrap contract is documented")
 
     forbidden_live = (
-        "frt2nffgchiv",
-        "j_beerhold",
         "BEGIN PRIVATE KEY",
         "BEGIN RSA PRIVATE KEY",
     )

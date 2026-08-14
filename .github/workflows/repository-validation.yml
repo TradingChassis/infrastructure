@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,6 +56,113 @@ jobs:
           echo "Running ShellCheck on ${#files[@]} tracked shell file(s):"
           printf '  %s\n' "${files[@]}"
           shellcheck "${files[@]}"
+
+  security:
+    name: Security validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        # fetch-depth 0 is required so Gitleaks git mode can see the configured
+        # commit range (PR) or reachable history (main). This is not a shallow
+        # tree-only checkout.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install pinned Gitleaks CLI
+        # Official upstream CLI from GitHub Releases, checksum-verified.
+        # gitleaks-action is not used because organization repos require a
+        # GITLEAKS_LICENSE; CI must not depend on that unverified plan feature.
+        run: |
+          set -euo pipefail
+          pin_file="tools/gitleaks.pin"
+          # shellcheck disable=SC1090
+          source "${pin_file}"
+          test -n "${VERSION}"
+          test -n "${ARCHIVE}"
+          test -n "${SHA256}"
+          test -n "${RELEASE_URL}"
+          test -n "${CHECKSUMS_URL}"
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "${tmpdir}"' EXIT
+          archive="${tmpdir}/${ARCHIVE}"
+          checksums="${tmpdir}/checksums.txt"
+
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+            "${CHECKSUMS_URL}" -o "${checksums}"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+            "${RELEASE_URL}" -o "${archive}"
+
+          echo "${SHA256}  ${archive}" | sha256sum -c -
+          checksum_line="$(grep -E " ${ARCHIVE}\$" "${checksums}" || true)"
+          if [ -z "${checksum_line}" ]; then
+            echo "FAIL: ${CHECKSUMS_URL} has no checksum line for ${ARCHIVE}"
+            exit 1
+          fi
+          printf '%s\n' "${checksum_line}" | (
+            cd "${tmpdir}"
+            sha256sum -c -
+          )
+
+          tar -xzf "${archive}" -C "${tmpdir}" gitleaks
+          install -m 0755 "${tmpdir}/gitleaks" "${RUNNER_TEMP}/gitleaks"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/gitleaks" version
+
+      - name: Scan current tree for credentials
+        # Working-tree scan of the checked-out revision. --redact prevents
+        # full secret material from appearing in logs. No report artifact.
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          gitleaks dir \
+            --redact \
+            --verbose \
+            --no-banner \
+            --config .gitleaks.toml \
+            --source .
+
+      - name: Scan Git history for credentials
+        # pull_request: newly introduced commits only (base..head).
+        # main / workflow_dispatch: reachable history of this checkout.
+        # Does not authenticate discovered values to any provider.
+        working-directory: ${{ github.workspace }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${PR_BASE_SHA}" ] || [ -z "${PR_HEAD_SHA}" ]; then
+              echo "FAIL: pull_request scan requires base and head SHAs"
+              exit 1
+            fi
+            git cat-file -e "${PR_BASE_SHA}^{commit}"
+            git cat-file -e "${PR_HEAD_SHA}^{commit}"
+            extra+=(--log-opts "${PR_BASE_SHA}..${PR_HEAD_SHA}")
+            echo "Gitleaks git scope: pull_request ${PR_BASE_SHA}..${PR_HEAD_SHA}"
+          else
+            echo "Gitleaks git scope: reachable history"
+          fi
+          gitleaks git \
+            --redact \
+            --verbose \
+            --no-banner \
+            --config .gitleaks.toml \
+            --source . \
+            "${extra[@]}"
+
+      - name: Check sensitive metadata
+        run: ./tools/check-sensitive-metadata
+
+      - name: Run sensitive metadata contract tests
+        run: ./tests/unit/test_sensitive_metadata_contract.sh
 
   terraform:
     name: Terraform validation

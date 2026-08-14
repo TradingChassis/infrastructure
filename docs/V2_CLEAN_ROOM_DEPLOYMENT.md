@@ -154,51 +154,29 @@ Any historical live V1 cluster is **reference / fallback only** for the clean-ro
 The V2 path must not depend on that cluster.
 Do **not** execute the multi-phase in-place SPC handoff as part of clean-room deployment.
 
-### Live snapshot (2026-08-12) — execution evidence, not architecture
+### Historical live inventory — execution evidence, not architecture
 
-This snapshot is dated operator evidence from the first Cloud Shell
-execution-readiness exercise. It is **not** a permanent architecture
-requirement and is **not** a teardown procedure.
+Dated operator evidence from the first Cloud Shell execution-readiness
+exercise is **not** a permanent architecture requirement and is **not** a
+teardown procedure. Do not copy live display names, OCIDs, namespaces, or
+host identifiers from that exercise into this generic runbook.
 
-Observed historical compute/storage:
+Observed historical compute and attached storage from that exercise were
+already terminated or detached. Remaining pre-existing tenancy network and
+IAM objects that are **not** named by Version 2 Terraform must not be
+deleted as part of this workflow. Confirm there is no name collision with
+the Terraform-owned dynamic group and policy
+(`tradingchassis-instance-principal` /
+`tradingchassis-vault-secret-bundles`).
 
-```text
-instance-vps-argocd          TERMINATED
-historical boot volume       TERMINATED
-historical scratch volume    TERMINATED
-historical VNIC attachment   DETACHED
-```
+Persistent V2 foundation that must **not** be treated as historical
+teardown:
 
-Remaining observed V1-era network names (do not delete in this workflow):
-
-```text
-VCN-ManagedSecrets
-Public-Subnet-ManagedSecrets
-Internet Gateway VCN-ManagedSecrets
-VCN default route table
-VCN default security list
-```
-
-No NSG, NAT gateway, service gateway, reserved public IP, or load balancer was
-observed in that inventory.
-
-Remaining observed V1-era IAM names (no collision with V2 Terraform names
-`tradingchassis-instance-principal` / `tradingchassis-vault-secret-bundles`):
-
-```text
-dynamic group instance-temp-dynamic-group-rule
-policy instance-temp-policy
-```
-
-Persistent V2 foundation that must **not** be treated as V1 teardown:
-
-```text
-compartment ManagedSecrets
-Vault rnd-infra-setup-vault (ACTIVE)
-required Secret names (metadata only; values not recorded here)
-dedicated Terraform state bucket tradingchassis-terraform-state
-  (NoPublicAccess, Versioning Enabled; namespace is tenancy-specific)
-```
+- the externally supplied compartment that will own V2 compute/network
+- the externally supplied OCI Vault referenced by `oci_vault_id`
+- required Vault Secret names (metadata only; values not recorded here)
+- the dedicated Terraform state bucket (NoPublicAccess, Versioning Enabled;
+  namespace is tenancy-specific and must not be committed)
 
 Do not reuse an existing application/`data` bucket as Terraform state.
 
