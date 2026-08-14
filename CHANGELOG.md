@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added a minimal Cursor/AI-assisted governance workflow: implementation and independent review rules, plus human-facing `docs/AI_AGENT_WORKFLOW.md`
 - Configured Terraform to use the native OCI Object Storage backend with an externally supplied state bucket and environment-specific object key.
 - Defined the OCI Cloud Shell operator workflow for Terraform authentication, remote-state initialization, and deterministic Terraform-to-Ansible handoff.
 - Activated the V2 runtime overlays for PostgreSQL, MLflow, and Monitoring, removing the active V1 runtime-injection dependency and hardening PostgreSQL bootstrap against delayed secret availability.
@@ -18,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Local static safety self-check and validation wrappers (`tools/check-agent-safety`, `tools/validate-safe`) with unit tests
 - Agent workflow documentation entry points (`AGENTS.md`, CONTRIBUTING and README notes)
 - GitHub Actions repository validation for agent safety checks, unit tests, safe static validation, and ShellCheck
+- Added a dedicated Security validation CI job with pinned official Gitleaks credential scanning and a repository-owned operator/live-metadata hygiene checker
+- Documented the repository security contract, synthetic fixture rules, and incident response for real credential findings (`docs/REPOSITORY_SECURITY.md`)
 - Added the Terraform foundation for OCI infrastructure ownership and static CI validation
 - Added Terraform-managed OCI network infrastructure for the V2 reference implementation
 - Added Terraform-managed OCI Ampere ARM compute provisioning for the V2 reference implementation
@@ -35,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added temporary Argo CD prune protection to the three active V1 SecretProviderClass resources in preparation for the controlled runtime ownership handoff.
 - Added the canonical V2 clean-room deployment runbook and explicit Terraform-to-Ansible bootstrap handoff.
 - Bound scratch Kubernetes workloads to the dedicated OCI-backed `/mnt/scratch` filesystem for V2 clean-room deployments.
+
+### Changed
+
+- Replaced a fixed repository-wide response-language rule with a task-driven contract in `AGENTS.md` and the always-applied foundation rule
+- Documented the current GitHub `main-protection` required checks as present external policy, not future work
+- Documented one explicitly authorized finalization task after PRE-COMMIT review, with stop-on-failure and a mandatory exact-head CI gate
 
 ### Fixed
 
@@ -56,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Compare Calico UFW IPv6 allowances against `ufw6-user-input` / `ufw6-user-output` instead of the IPv4 `ufw-user-*` names. Live Ubuntu 24 `user6.rules` uses the `ufw6-user-*` namespace. Corrected first/second/post-reboot `changed=0` is not yet live-proven.
 - First live Argo CD bootstrap reached Helm install after a healthy host/scratch/MicroK8s prefix, then failed: `kubernetes.core.helm` passed `wait_timeout: 600`, which Helm 3.9 invoked as `--timeout 600` (`time: missing unit in duration "600"`). The `argocd` namespace remained. Git now uses Helm 3 duration `timeout: "10m"` and keeps integer `wait_timeout` only for `kubernetes.core.k8s`.
 - Ubuntu 24 `python3-kubernetes` 22.6.0 is below `kubernetes.core` 6.5.0 (`kubernetes >= 24.2.0`). Ansible now owns a dedicated venv at `/opt/tradingchassis/ansible-kubernetes` (`kubernetes==29.0.0`) for `kubernetes.core` tasks instead of pip-installing into system Python. Corrected Argo Helm install, root Application creation, child reconciliation, scratch PV/PVC live binding, OCI CSI/provider, private runtime materialization, and secret-dependent workloads are **not yet live proven**.
-- First live run of the dedicated Kubernetes runtime reached `ansible_k8s_runtime` after a healthy host/scratch/MicroK8s prefix, then failed: `ansible.builtin.pip` used the control-node path `{{ role_path }}/files/requirements.txt`, so managed-node pip reported `Could not open requirements file` for `/home/j_beerhold/infrastructure/.../requirements.txt`. Git now copies the repository pin file to `/opt/tradingchassis/ansible-k8s-runtime/requirements.txt` before pip. Dedicated venv package installation, corrected Argo Helm install, root Application, children, scratch live binding, CSI/provider, private runtime, and secret-dependent workloads remain **not yet live proven**.
+- First live run of the dedicated Kubernetes runtime reached `ansible_k8s_runtime` after a healthy host/scratch/MicroK8s prefix, then failed: `ansible.builtin.pip` used the control-node path `{{ role_path }}/files/requirements.txt`, so managed-node pip reported `Could not open requirements file` for a control-node repository path under the operator's home directory. Git now copies the repository pin file to `/opt/tradingchassis/ansible-k8s-runtime/requirements.txt` before pip. Dedicated venv package installation, corrected Argo Helm install, root Application, children, scratch live binding, CSI/provider, private runtime, and secret-dependent workloads remain **not yet live proven**.
+- Removed current-tree concrete operator home-path metadata and generalized regression tests so they assert classes of forbidden data instead of encoding real identities.
 - First live `private-runtime-config.yml` stopped fail-closed (`changed=0`) at Vault OCID shape validation after Argo CD, scratch PV/PVC binding, and the OCI Secrets Store CSI Driver/provider were already healthy. The operator Vault ID had prefix `ocid1.vault.oc1`, length 105, and no whitespace; Git required `ocid1.vault.oc1.<region>.<unique>` and omitted the empty OCI future-use component. Git now validates regional Vault OCIDs as `ocid1.vault.oc1.<region>..<unique>` (optional future-use) and requires the OCID region component to equal `private_runtime_config_oci_region`. Private-runtime materialization, Instance Principal secret retrieval, generated Kubernetes Secrets, Postgres/MLflow/Monitoring health, and second-converge idempotency remain **not yet live proven**.
 
 ## [0.1.0] - 2026-07-30

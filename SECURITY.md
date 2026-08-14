@@ -82,6 +82,22 @@ Users are responsible for:
 
 This repository is provided as infrastructure automation and makes no guarantees regarding security compliance for regulated or production-critical workloads.
 
+## Repository security CI
+
+Tracked Git content is gated by the **Security validation** job in addition
+to Static, Terraform, Ansible, and GitOps checks.
+
+- Gitleaks detects credential classes (tokens, private keys, cloud keys).
+- `tools/check-sensitive-metadata` detects operator/live metadata that is
+  not a secret (concrete home paths, live-looking OCIDs, likely public IPs).
+- Tests must use synthetic fixtures. Never copy a real secret, OCID, or
+  operator identity into a regression denylist.
+
+If a real credential is found in Git, assume compromise, rotate or revoke
+first, then clean the repository. Do not merely delete it from `HEAD`.
+
+Details: [`docs/REPOSITORY_SECURITY.md`](docs/REPOSITORY_SECURITY.md).
+
 ## Disclosure Policy
 
 Please allow reasonable time for investigation and remediation before public disclosure of any reported vulnerabilities.

@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHECKER="${ROOT}/tools/check-agent-safety"
 UNIT_TEST="${ROOT}/tests/unit/test_agent_safety.sh"
+METADATA_CHECKER="${ROOT}/tools/check-sensitive-metadata"
+METADATA_UNIT_TEST="${ROOT}/tests/unit/test_sensitive_metadata_contract.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -38,6 +40,15 @@ run_checker() {
   fi
 }
 
+run_metadata_checker() {
+  echo "==> Running tools/check-sensitive-metadata"
+  if "$METADATA_CHECKER"; then
+    pass "check-sensitive-metadata"
+  else
+    fail "check-sensitive-metadata"
+  fi
+}
+
 syntax_check_file() {
   local file="$1"
   if bash -n "$file"; then
@@ -59,6 +70,14 @@ run_syntax_checks() {
   syntax_check_file "$CHECKER"
   syntax_check_file "${ROOT}/tools/validate-safe"
   syntax_check_file "$UNIT_TEST"
+  syntax_check_file "$METADATA_UNIT_TEST"
+
+  echo "==> python3 compile for metadata checker"
+  if python3 -m py_compile "$METADATA_CHECKER"; then
+    pass "python3 -m py_compile tools/check-sensitive-metadata"
+  else
+    fail "python3 -m py_compile tools/check-sensitive-metadata"
+  fi
 }
 
 run_unit_test() {
@@ -68,6 +87,13 @@ run_unit_test() {
     pass "tests/unit/test_agent_safety.sh"
   else
     fail "tests/unit/test_agent_safety.sh"
+  fi
+
+  echo "==> Running sensitive-metadata unit test"
+  if "$METADATA_UNIT_TEST"; then
+    pass "tests/unit/test_sensitive_metadata_contract.sh"
+  else
+    fail "tests/unit/test_sensitive_metadata_contract.sh"
   fi
 }
 
@@ -85,7 +111,7 @@ run_shellcheck_if_present() {
     targets+=("$file")
   done
   shopt -u nullglob
-  targets+=("$CHECKER" "${ROOT}/tools/validate-safe" "$UNIT_TEST")
+  targets+=("$CHECKER" "${ROOT}/tools/validate-safe" "$UNIT_TEST" "$METADATA_UNIT_TEST")
 
   if shellcheck "${targets[@]}"; then
     pass "shellcheck"
@@ -100,6 +126,7 @@ main() {
   echo
 
   run_checker
+  run_metadata_checker
   run_syntax_checks
   run_unit_test
   run_shellcheck_if_present

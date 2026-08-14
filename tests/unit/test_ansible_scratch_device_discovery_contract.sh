@@ -328,10 +328,6 @@ forbidden_live = (
     "wwn-0x",
     "scsi-0ATA",
     "150G",
-    "130.61.",
-    "132.145.",
-    "10.0.1.31",
-    "frt2nffgchiv",
     "BEGIN PRIVATE KEY",
 )
 for path in implementation_files:

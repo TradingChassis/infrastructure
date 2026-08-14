@@ -69,6 +69,40 @@ alwaysApply: true
 
 # Safe Infrastructure Development
 Verify first. Fix only if confirmed.
+- Respond in the language explicitly requested by the current task or prompt.
+- If no response language is specified, use the language of the user's current request.
+- Keep repository content in English unless the task explicitly requires otherwise.
+EOF
+
+  write_file "${root}/.cursor/rules/implementation-workflow.mdc" <<'EOF'
+---
+description: "How Cursor performs implementation tasks in this repository"
+alwaysApply: true
+---
+
+# Implementation workflow
+Verify the reported problem before patching.
+Do not commit automatically.
+An implementation task is not permission to commit.
+Require independent PRE-COMMIT review of the staged diff before commit.
+EOF
+
+  write_file "${root}/.cursor/rules/review-workflow.mdc" <<'EOF'
+---
+description: "Independent read-only PRE-COMMIT and POST-CI review for this repository"
+alwaysApply: true
+---
+
+# Independent review workflow
+Use this rule when the current task is an independent review.
+During an independent review task:
+This review is read-only.
+Make no edits.
+Do not commit.
+Inspect credentials, tokens, private keys, home paths, and live-looking OCIDs.
+Severity: BLOCKER, HIGH, MEDIUM, LOW
+PRE-COMMIT review inspects the staged diff.
+POST-CI review inspects the exact pushed head after CI evidence exists.
 EOF
 
   write_file "${root}/.cursor/permissions.json" <<'EOF'
@@ -218,7 +252,9 @@ EOF
 
   write_file "${root}/.cursor/BUGBOT.md" <<'EOF'
 # Bugbot review focus
+Bugbot must not autofix, commit, push, or merge.
 - Secrets, credentials, private keys, Terraform state, and real OCIDs
+- Operator/live metadata leakage and personal home paths
 - Terraform / Ansible / Argo CD ownership conflicts
 - Destructive storage, firewall, network and host operations
 - Terraform provider, module and Actions pinning
@@ -226,6 +262,7 @@ EOF
 - Kubernetes RBAC, security contexts, NodePorts, mutable images and Secret handling
 - Unsafe GitHub Actions permissions and pull_request_target
 - Execution of live infrastructure commands from CI
+- CI or security-check bypasses and fail-open behavior
 - Weakening or bypassing Safety files and tests
 - Claims that exceed static or CI evidence
 EOF
@@ -260,13 +297,32 @@ EOF
   write_file "${root}/AGENTS.md" <<'EOF'
 # Agent entry point
 See .cursor/rules/safe-infrastructure-development.mdc
+See .cursor/rules/implementation-workflow.mdc
+See .cursor/rules/review-workflow.mdc
 Verify first. Fix only if confirmed.
+Respond in the language explicitly requested by the current task or prompt.
+If no response language is specified, use the language of the user's current request.
+Keep repository content in English unless the task explicitly requires otherwise.
+Do not perform live OCI, Terraform, Ansible, or Kubernetes operations.
+An implementation task is not permission to commit.
+EOF
+
+  write_file "${root}/docs/AI_AGENT_WORKFLOW.md" <<'EOF'
+# AI agent workflow
+PRE-COMMIT review inspects the staged diff.
+POST-CI review inspects the exact pushed head.
+An explicitly authorized finalization task may commit, push, and merge.
+The finalization task must STOP and must not self-repair if a required gate fails.
+Verify the exact-head CI gate before merge.
+Merge requires explicit authorization from the current task.
+Required checks include Static repository checks.
+ChatGPT prompt libraries are NOT stored here.
 EOF
 
   mkdir -p "${root}/tools" "${root}/tests/unit"
   # Minimal non-executing placeholders that still satisfy existence checks.
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'echo fixture-check' >"${root}/tools/check-agent-safety"
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'echo fixture-validate' >"${root}/tools/validate-safe"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'echo fixture-validate' '# check-sensitive-metadata remains part of safe validation' >"${root}/tools/validate-safe"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'echo fixture-test' >"${root}/tests/unit/test_agent_safety.sh"
   chmod +x "${root}/tools/check-agent-safety" "${root}/tools/validate-safe" "${root}/tests/unit/test_agent_safety.sh"
 }
@@ -639,6 +695,112 @@ json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
 PY
   echo "==> Safe IDE allowlist entries still pass"
   assert_success "safe IDE allowlist entries pass" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-implementation-workflow"
+  seed_valid_fixture "$fixture"
+  rm -f "${fixture}/.cursor/rules/implementation-workflow.mdc"
+  echo "==> Missing implementation workflow fails"
+  assert_failure "missing implementation workflow fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-review-workflow"
+  seed_valid_fixture "$fixture"
+  rm -f "${fixture}/.cursor/rules/review-workflow.mdc"
+  echo "==> Missing review workflow fails"
+  assert_failure "missing review workflow fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/fixed-response-language"
+  seed_valid_fixture "$fixture"
+  synthetic_lang="ExampleLanguage"
+  write_file "${fixture}/AGENTS.md" <<EOF
+# Agent entry point
+See .cursor/rules/safe-infrastructure-development.mdc
+See .cursor/rules/implementation-workflow.mdc
+See .cursor/rules/review-workflow.mdc
+Communicate with the user in ${synthetic_lang}.
+Keep repository content in English unless the task explicitly requires otherwise.
+Do not perform live OCI, Terraform, Ansible, or Kubernetes operations.
+An implementation task is not permission to commit.
+EOF
+  echo "==> Fixed repository-wide response language fails"
+  assert_failure "fixed repository-wide response language fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/missing-language-contract"
+  seed_valid_fixture "$fixture"
+  write_file "${fixture}/AGENTS.md" <<'EOF'
+# Agent entry point
+See .cursor/rules/safe-infrastructure-development.mdc
+See .cursor/rules/implementation-workflow.mdc
+See .cursor/rules/review-workflow.mdc
+Do not perform live OCI, Terraform, Ansible, or Kubernetes operations.
+An implementation task is not permission to commit.
+EOF
+  echo "==> Missing generic language contract fails"
+  assert_failure "missing generic language contract fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/implementation-auto-commit"
+  seed_valid_fixture "$fixture"
+  write_file "${fixture}/.cursor/rules/implementation-workflow.mdc" <<'EOF'
+---
+description: "How Cursor performs implementation tasks in this repository"
+alwaysApply: true
+---
+
+# Implementation workflow
+Verify the reported problem before patching.
+Commit automatically after tests pass.
+EOF
+  echo "==> Implementation workflow with automatic commit fails"
+  assert_failure "implementation automatic commit fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/review-not-readonly"
+  seed_valid_fixture "$fixture"
+  write_file "${fixture}/.cursor/rules/review-workflow.mdc" <<'EOF'
+---
+description: "Independent review"
+alwaysApply: true
+---
+
+# Review workflow
+Edit files to apply review feedback.
+Severity: LOW only
+EOF
+  echo "==> Review workflow without read-only BLOCKER/HIGH/MEDIUM gate fails"
+  assert_failure "review workflow missing read-only gate fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/validate-safe-drops-metadata"
+  seed_valid_fixture "$fixture"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'echo fixture-validate' >"${fixture}/tools/validate-safe"
+  echo "==> validate-safe without sensitive-metadata checker fails"
+  assert_failure "validate-safe missing metadata checker fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/stale-required-checks-doc"
+  seed_valid_fixture "$fixture"
+  write_file "${fixture}/docs/REPOSITORY_SECURITY.md" <<'EOF'
+# Repository security contract
+After merge, if branch protection is configured manually, add
+**Security validation** to the required checks.
+EOF
+  echo "==> Stale required-checks documentation fails"
+  assert_failure "stale required-checks documentation fails" "$CHECKER" --root "$fixture"
+
+  fixture="${TMP_ROOT}/review-not-task-qualified"
+  seed_valid_fixture "$fixture"
+  write_file "${fixture}/.cursor/rules/review-workflow.mdc" <<'EOF'
+---
+description: "Independent review"
+alwaysApply: true
+---
+
+# Review workflow
+This review is read-only.
+Make no edits.
+Severity: BLOCKER, HIGH, MEDIUM
+PRE-COMMIT review inspects the staged diff.
+POST-CI review inspects the exact pushed head.
+Inspect credentials, tokens, private keys, home paths, and OCIDs.
+EOF
+  echo "==> Review workflow without task-qualified no-edit rules fails"
+  assert_failure "review workflow missing task-qualified no-edit rules fails" "$CHECKER" --root "$fixture"
 
   echo
   echo "Summary: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"

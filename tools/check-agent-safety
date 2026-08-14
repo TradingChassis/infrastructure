@@ -91,11 +91,14 @@ PY
 check_required_files() {
   local required=(
     ".cursor/rules/safe-infrastructure-development.mdc"
+    ".cursor/rules/implementation-workflow.mdc"
+    ".cursor/rules/review-workflow.mdc"
     ".cursor/permissions.json"
     ".cursor/cli.json"
     ".cursor/BUGBOT.md"
     ".cursorignore"
     "AGENTS.md"
+    "docs/AI_AGENT_WORKFLOW.md"
     "tools/check-agent-safety"
     "tools/validate-safe"
     "tests/unit/test_agent_safety.sh"
@@ -630,6 +633,21 @@ check_agents_md() {
   else
     fail "AGENTS.md must reference safe-infrastructure-development.mdc"
   fi
+  if file_contains "$file" 'implementation-workflow\.mdc' && file_contains "$file" 'review-workflow\.mdc'; then
+    pass "AGENTS.md references implementation and review workflow rules"
+  else
+    fail "AGENTS.md must reference implementation-workflow.mdc and review-workflow.mdc"
+  fi
+  if file_contains "$file" 'Do not perform live'; then
+    pass "AGENTS.md forbids live infrastructure operations"
+  else
+    fail "AGENTS.md must forbid live infrastructure operations"
+  fi
+  if file_contains "$file" 'not permission to commit'; then
+    pass "AGENTS.md does not treat implementation as commit authorization"
+  else
+    fail "AGENTS.md must state that an implementation task is not permission to commit"
+  fi
 }
 
 check_bugbot_md() {
@@ -650,11 +668,193 @@ check_bugbot_md() {
   file_contains "$file" '[Ll]ive' || missing+=("live-infra")
   file_contains "$file" '[Ss]afety' || missing+=("safety-bypass")
   file_contains "$file" 'evidence|static|CI' || missing+=("evidence")
+  file_contains "$file" 'metadata|operator username|home path' || missing+=("metadata")
+  file_contains "$file" 'fail-open|bypass' || missing+=("fail-open")
+  file_contains "$file" 'must not autofix|not autofix|must not commit' || missing+=("no-autofix")
 
   if [[ "${#missing[@]}" -eq 0 ]]; then
     pass "BUGBOT.md contains critical review categories"
   else
     fail "BUGBOT.md missing review categories: ${missing[*]}"
+  fi
+}
+
+fixed_response_language_directive() {
+  local file="$1"
+  # Class of repository-wide fixed user-facing response-language directives.
+  # A capitalized language token after these phrases is a policy violation
+  # for any language. This is not a denylist of language names.
+  file_contains "$file" 'Communicate with the user in [[:upper:]][[:alpha:]]+' \
+    || file_contains "$file" 'User-facing communication is in [[:upper:]][[:alpha:]]+'
+}
+
+check_language_contract() {
+  local agents="${ROOT}/AGENTS.md"
+  local foundation="${ROOT}/.cursor/rules/safe-infrastructure-development.mdc"
+  local file
+  local fixed_language_hits=()
+
+  for file in \
+    "$agents" \
+    "$foundation" \
+    "${ROOT}/.cursor/rules/implementation-workflow.mdc" \
+    "${ROOT}/.cursor/rules/review-workflow.mdc" \
+    "${ROOT}/docs/AI_AGENT_WORKFLOW.md" \
+    "${ROOT}/CONTRIBUTING.md" \
+    "${ROOT}/README.md"
+  do
+    if file_exists "$file" && fixed_response_language_directive "$file"; then
+      fixed_language_hits+=("${file#"$ROOT"/}")
+    fi
+  done
+
+  if [[ "${#fixed_language_hits[@]}" -eq 0 ]]; then
+    pass "no fixed repository-wide response language remains"
+  else
+    fail "fixed repository-wide response language remains in: ${fixed_language_hits[*]}"
+  fi
+
+  local missing=()
+  if ! file_exists "$agents"; then
+    fail "AGENTS.md missing"
+    return
+  fi
+  file_contains "$agents" 'language explicitly requested' || missing+=("agents-requested")
+  file_contains "$agents" "language of the user's current request" || missing+=("agents-request-language")
+  file_contains "$agents" 'repository content in English' || missing+=("agents-english")
+
+  if file_exists "$foundation"; then
+    file_contains "$foundation" 'language explicitly requested' || missing+=("foundation-requested")
+    file_contains "$foundation" "language of the user's current request" || missing+=("foundation-request-language")
+    file_contains "$foundation" 'repository content in English' || missing+=("foundation-english")
+  fi
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass "generic task-driven language contract is present"
+  else
+    fail "language contract missing anchors: ${missing[*]}"
+  fi
+}
+
+require_always_apply() {
+  local file="$1"
+  local label="$2"
+  if ! file_exists "$file"; then
+    fail "${label} missing"
+    return 1
+  fi
+  if file_contains "$file" 'alwaysApply:[[:space:]]*true'; then
+    pass "${label} sets alwaysApply: true"
+    return 0
+  fi
+  fail "${label} must contain alwaysApply: true"
+  return 1
+}
+
+check_implementation_workflow() {
+  local file="${ROOT}/.cursor/rules/implementation-workflow.mdc"
+  require_always_apply "$file" "implementation workflow" || return
+
+  local missing=()
+  file_contains "$file" '[Dd]o not commit automatically' || missing+=("no-automatic-commit")
+  file_contains "$file" 'PRE-COMMIT' || missing+=("pre-commit-review")
+  file_contains "$file" '[Ii]ndependent' || missing+=("independent-review")
+  file_contains "$file" 'not permission to commit' || missing+=("no-implied-commit")
+  file_contains "$file" '[Vv]erify' || missing+=("verify-first")
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass "implementation workflow forbids automatic commit and requires independent PRE-COMMIT review"
+  else
+    fail "implementation workflow missing anchors: ${missing[*]}"
+  fi
+}
+
+check_review_workflow() {
+  local file="${ROOT}/.cursor/rules/review-workflow.mdc"
+  require_always_apply "$file" "review workflow" || return
+
+  local missing=()
+  file_contains "$file" 'read-only' || missing+=("read-only")
+  file_contains "$file" 'During an independent review task' || missing+=("task-qualified")
+  file_contains "$file" '[Nn]o edits|Make no edits' || missing+=("no-edits")
+  file_contains "$file" 'BLOCKER' || missing+=("BLOCKER")
+  file_contains "$file" 'HIGH' || missing+=("HIGH")
+  file_contains "$file" 'MEDIUM' || missing+=("MEDIUM")
+  file_contains "$file" 'PRE-COMMIT' || missing+=("pre-commit")
+  file_contains "$file" 'POST-CI' || missing+=("post-ci")
+  file_contains "$file" 'credential|token|private key|home path|OCID' || missing+=("hygiene")
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass "review workflow is read-only and defines the BLOCKER/HIGH/MEDIUM gate"
+  else
+    fail "review workflow missing anchors: ${missing[*]}"
+  fi
+}
+
+check_workflow_document() {
+  local file="${ROOT}/docs/AI_AGENT_WORKFLOW.md"
+  if ! file_exists "$file"; then
+    fail "docs/AI_AGENT_WORKFLOW.md missing"
+    return
+  fi
+
+  local missing=()
+  file_contains "$file" 'PRE-COMMIT' || missing+=("pre-commit")
+  file_contains "$file" 'POST-CI' || missing+=("post-ci")
+  file_contains "$file" 'finalization task' || missing+=("finalization-task")
+  file_contains "$file" 'must STOP|must \*\*STOP\*\*' || missing+=("stop-on-failure")
+  file_contains "$file" 'self-repair|edit implementation to repair' || missing+=("no-self-repair")
+  file_contains "$file" 'exact-head|exact current PR head|exact head SHA' || missing+=("exact-head-gate")
+  file_contains "$file" 'Merge requires explicit authorization' || missing+=("explicit-merge")
+  file_contains "$file" 'ChatGPT' || missing+=("chatgpt-boundary")
+  file_contains "$file" 'Static repository checks' || missing+=("required-checks")
+  file_contains "$file" 'not stored here|NOT stored here|are \*\*not\*\* stored here' || missing+=("out-of-repo")
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass "AI agent workflow document contains required human-facing anchors"
+  else
+    fail "docs/AI_AGENT_WORKFLOW.md missing anchors: ${missing[*]}"
+  fi
+}
+
+check_security_required_checks_doc() {
+  local file="${ROOT}/docs/REPOSITORY_SECURITY.md"
+  if ! file_exists "$file"; then
+    return
+  fi
+
+  if file_contains "$file" 'if branch protection is configured manually' \
+    || file_contains "$file" 'add[[:space:]]+\*\*Security validation\*\* to the required checks'; then
+    fail "security documentation must not describe required checks as future work"
+    return
+  fi
+
+  local missing=()
+  file_contains "$file" 'main-protection' || missing+=("ruleset-name")
+  file_contains "$file" 'Static repository checks' || missing+=("static")
+  file_contains "$file" 'Security validation' || missing+=("security")
+  file_contains "$file" 'Terraform validation' || missing+=("terraform")
+  file_contains "$file" 'Ansible validation' || missing+=("ansible")
+  file_contains "$file" 'GitOps validation' || missing+=("gitops")
+  file_contains "$file" 'do not themselves enforce' || missing+=("external-enforcement")
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    pass "security documentation describes current required checks as present external policy"
+  else
+    fail "security documentation missing required-check anchors: ${missing[*]}"
+  fi
+}
+
+check_validate_safe_metadata() {
+  local file="${ROOT}/tools/validate-safe"
+  if ! file_exists "$file"; then
+    fail "validate-safe missing"
+    return
+  fi
+  if file_contains "$file" 'check-sensitive-metadata'; then
+    pass "sensitive-metadata checker remains part of safe validation"
+  else
+    fail "validate-safe must invoke check-sensitive-metadata"
   fi
 }
 
@@ -700,7 +900,13 @@ main() {
   check_cli_denies
   check_cursorignore
   check_agents_md
+  check_language_contract
+  check_implementation_workflow
+  check_review_workflow
+  check_workflow_document
+  check_security_required_checks_doc
   check_bugbot_md
+  check_validate_safe_metadata
   check_wrappers_safe
 
   echo

@@ -1,0 +1,54 @@
+---
+description: "How Cursor performs implementation tasks in this repository"
+alwaysApply: true
+---
+
+# Implementation workflow
+
+Use this rule when the current task is implementation (code, tests, docs, or tooling).
+Do not treat this file as independent review, commit, push, pull-request, or merge authorization.
+
+Verify first. Fix only if confirmed.
+
+## Before changing code
+
+1. Verify the reported problem against the current checkout.
+2. Inspect the current branch, base, and working tree. Do not work on `main`.
+3. Reconstruct the actual control flow when behavior or ownership is in doubt.
+4. Classify evidence (`confirmed`, `partially confirmed`, `not confirmed`, `insufficient evidence`).
+5. Define scope. Identify invariants that must not change.
+6. Do not implement speculative fixes.
+
+## While changing code
+
+- Prefer the smallest root-cause fix that addresses a confirmed problem.
+- Do not include unrelated refactors, formatting sweeps, or drive-by cleanups.
+- Do not use broad error suppression (`ignore_errors`, catch-all rescues) without justification in the same scope.
+- Add or adjust regression tests for the confirmed problem.
+- Run only permitted safe local validation (`./tools/check-agent-safety`, `./tools/validate-safe`, and related repository wrappers). Review wrapper contents when they change.
+- Classify validation evidence honestly. Do not present static checks as live or CI evidence.
+- Do not run live Terraform, Ansible, Kubernetes, or host operations.
+
+## Repository hygiene
+
+Every repository change must consider:
+
+- credentials, tokens, private keys, and real secret values
+- real operator usernames, personal absolute home paths, and copied shell prompts containing identities
+- live-looking OCIDs, unnecessary live environment identifiers, and likely copied public host IPs
+- tests that preserve exact real values as denylist fixtures
+
+Tests must describe classes of forbidden data using synthetic fixtures. See `docs/REPOSITORY_SECURITY.md`.
+
+Do not build a universal human-name detector. Do not treat declarative architecture identifiers, legitimate Kubernetes namespaces, every OCI name, or every private CIDR as personal metadata.
+
+## After changing code
+
+1. Review the complete final diff before staging.
+2. Stage only the intended implementation files when the current task asks for a pre-commit review handoff.
+3. Do not commit automatically.
+4. An implementation task is not permission to commit, push, create a pull request, or merge.
+5. Require an independent PRE-COMMIT review of the staged diff before commit, unless the current task explicitly defines another reviewed workflow.
+6. The implementation agent must not review its own report and treat that as independent approval.
+
+If a later independent review reports `BLOCKER`, `HIGH`, or `MEDIUM` findings, correct the implementation and request review again before commit. `LOW` findings may be accepted explicitly when proportional.
