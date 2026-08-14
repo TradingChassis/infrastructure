@@ -28,6 +28,9 @@ Runtime contract:
   deleted. Unexpected extra InstanceServices rules fail closed with no
   mutations. iptables-save quoted arguments are parsed with shlex, not
   whitespace split, so Oracle comment strings remain one argv element.
+  Membership and idempotency compare a narrow semantic key so a redundant
+  `-m tcp`/`-m udp` inserted by iptables-nft -S after `-p tcp`/`-p udp`
+  does not look like foreign drift. Execution argv is not rewritten.
 
 It refuses to modify an unexpected/non-OCI firewall file.
 It does not create a rules file when the path is absent.
@@ -386,8 +389,46 @@ def _spec_tokens(append_line: str) -> tuple[str, ...]:
     return parts
 
 
+_PROTOCOL_MATCH_MODULES = frozenset({"tcp", "udp"})
+
+
+def _spec_semantic_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Drop redundant -m tcp/-m udp after a matching already-declared -p.
+
+    iptables-nft -S may render `-p udp --dport 123` as
+    `-p udp -m udp --dport 123`. That explicit protocol match is the same
+    rule, not foreign drift. Other modules (comment, owner, state) stay.
+    """
+    canonical: list[str] = []
+    protocol: str | None = None
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-p" and index + 1 < len(tokens):
+            protocol = tokens[index + 1]
+            canonical.append(token)
+            canonical.append(protocol)
+            index += 2
+            continue
+        if (
+            token == "-m"
+            and index + 1 < len(tokens)
+            and protocol in _PROTOCOL_MATCH_MODULES
+            and tokens[index + 1] == protocol
+        ):
+            index += 2
+            continue
+        canonical.append(token)
+        index += 1
+    return tuple(canonical)
+
+
+def _spec_semantic_key(append_line: str) -> tuple[str, ...]:
+    return _spec_semantic_tokens(_spec_tokens(append_line))
+
+
 def _spec_key(append_line: str) -> tuple[str, ...]:
-    return _spec_tokens(append_line)
+    return _spec_semantic_key(append_line)
 
 
 def _spec_argv(append_line: str, action: str) -> tuple[str, ...]:

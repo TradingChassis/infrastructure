@@ -50,7 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Inserted a narrow MicroK8s pod-CIDR INPUT allow for the node-local kubelet port before the retained OCI catch-all INPUT REJECT so metrics-server scraping is not dropped.
 - Reconcile the normalized OCI / MicroK8s nft-compatible host firewall at boot after UFW initializes, because persistent `rules.v4` survived reboot while runtime iptables-nft did not.
 - Rebuild the owned INPUT prefix so required ACCEPT rules exist before the OCI catch-all REJECT is installed, retrigger that oneshot after `ufw.service` restarts or starts (`PartOf=` and `WantedBy=ufw.service`), and keep MicroK8s containerd/kubelite from starting when boot reconciliation fails (`RequiredBy`).
-- Parse quoted OCI iptables-save comment arguments as a single argv element so runtime InstanceServices reconciliation does not fail on Oracle CLOUD_IMG comments; live apply of this tokenizer fix is not yet proven.
+- Parse quoted OCI iptables-save comment arguments as a single argv element so runtime InstanceServices reconciliation does not fail on Oracle CLOUD_IMG comments. The first live apply reconstructed the empty InstanceServices chain; the second converge then failed because iptables-nft rendered implicit UDP matches as explicit `-m udp`.
+- Compare OCI iptables rules with a narrow semantic key so `-p udp --dport 123` and `-p udp -m udp --dport 123` are treated as the same owned rule. Live second-converge `changed=0` after this comparison fix is not yet proven.
 
 ## [0.1.0] - 2026-07-30
 

@@ -347,9 +347,16 @@ never flushes that chain. Unexpected extra InstanceServices rules still
 fail closed with no nft mutations. iptables-save quoted `--comment`
 values are parsed as a single argv element; whitespace split of those
 Oracle comments is the live PR #57 apply failure and is not used.
-An existing empty InstanceServices chain is resumable. Live successful
-apply of this quoted-token fix is **not** claimed. PR #57 reboot
-persistence is therefore still **not** proven.
+An existing empty InstanceServices chain is resumable. The first live
+PR #58 apply reconstructed that empty chain and the full OCI runtime
+contract. The second identical converge then failed because iptables-nft
+`-S` rendered the persist NTP rule `-p udp --dport 123` as
+`-p udp -m udp --dport 123`, which syntactic argv comparison treated as
+foreign drift. Comparison now uses a narrow semantic key that collapses
+only a redundant `-m tcp`/`-m udp` after a matching `-p`. Execution argv
+is not rewritten. Live second-converge `changed=0` after that comparison
+fix is **not** claimed. PR #57 reboot persistence is therefore still
+**not** proven.
 
 The `microk8s` role still applies the same runtime reconciliation during
 converge. When the unit file changes, enablement uses `force` so the
@@ -367,7 +374,9 @@ chains the boot path also sees.
 `--apply-runtime` uses `/usr/sbin/iptables-nft` with exact argv specs. It
 never flushes INPUT/OUTPUT/FORWARD, never calls iptables-legacy, and never
 restores a whole table. Quoted iptables-save arguments are parsed with
-`shlex`, not `str.split()`. Owned INPUT rules from the normalized persistent
+`shlex`, not `str.split()`. Rule membership uses a semantic argv key, not
+raw token equality, so iptables-nft's explicit `-m udp`/`-m tcp` rendering
+does not look like drift. Owned INPUT rules from the normalized persistent
 file are placed as a contiguous prefix ahead of later UFW jumps. The exact
 OCI FORWARD REJECT is deleted when present. The OUTPUT InstanceServices
 jump and InstanceServices chain rules are restored from that same

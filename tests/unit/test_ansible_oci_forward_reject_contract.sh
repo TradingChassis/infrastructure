@@ -98,6 +98,68 @@ QUOTED_IS_RULES = (
     IS_TCP_REJECT_COMMENT,
     IS_UDP_REJECT_COMMENT,
 )
+CLOUD_IMG_IS_RULES = (
+    oracle_is_rule(
+        "-d 169.254.0.2/32 -p tcp -m owner --uid-owner 0 -m tcp --dport 3260",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.2.0/24 -p tcp -m owner --uid-owner 0 -m tcp --dport 3260",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.4.0/24 -p tcp -m owner --uid-owner 0 -m tcp --dport 3260",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.5.0/24 -p tcp -m owner --uid-owner 0 -m tcp --dport 3260",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule("-d 169.254.0.2/32 -p tcp -m tcp --dport 80", "-j ACCEPT"),
+    oracle_is_rule(
+        "-d 169.254.169.254/32 -p udp -m udp --dport 53",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.169.254/32 -p tcp -m tcp --dport 53",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.0.3/32 -p tcp -m owner --uid-owner 0 -m tcp --dport 80",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule("-d 169.254.0.4/32 -p tcp -m tcp --dport 80", "-j ACCEPT"),
+    oracle_is_rule(
+        "-d 169.254.169.254/32 -p tcp -m tcp --dport 80",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.169.254/32 -p udp -m udp --dport 67",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule(
+        "-d 169.254.169.254/32 -p udp -m udp --dport 69",
+        "-j ACCEPT",
+    ),
+    oracle_is_rule("-d 169.254.169.254/32 -p udp --dport 123", "-j ACCEPT"),
+    oracle_is_rule(
+        "-d 169.254.0.0/16 -p tcp -m tcp",
+        "-j REJECT --reject-with tcp-reset",
+    ),
+    oracle_is_rule(
+        "-d 169.254.0.0/16 -p udp -m udp",
+        "-j REJECT --reject-with icmp-port-unreachable",
+    ),
+)
+IS_NTP_IMPLICIT = CLOUD_IMG_IS_RULES[12]
+IS_NTP_EXPLICIT = oracle_is_rule(
+    "-d 169.254.169.254/32 -p udp -m udp --dport 123",
+    "-j ACCEPT",
+)
+IS_TCP_80_IMPLICIT = oracle_is_rule(
+    "-d 169.254.169.254/32 -p tcp --dport 80",
+    "-j ACCEPT",
+)
 API_ALLOW = (
     f"-A INPUT -s {POD_CIDR} -p tcp -m tcp --dport {API_PORT} -j ACCEPT"
 )
@@ -180,18 +242,30 @@ def oci_rules(
     )
 
 
-def oci_quoted_rules() -> str:
-    unquoted_is = (
+def oci_baseline_is_block() -> str:
+    return (
         f"{INSTANCE_SERVICES_RULE}\n"
         "-A InstanceServices -d 169.254.169.254/32 -p udp -m udp --dport 53 "
         "-j ACCEPT\n"
     )
+
+
+def oci_quoted_rules() -> str:
     quoted_is = "".join(rule + "\n" for rule in QUOTED_IS_RULES)
     return oci_rules(
         include_forward_reject=False,
         api_allows=("before",),
         kubelet_allows=("before",),
-    ).replace(unquoted_is, quoted_is)
+    ).replace(oci_baseline_is_block(), quoted_is)
+
+
+def oci_cloud_img_rules() -> str:
+    quoted_is = "".join(rule + "\n" for rule in CLOUD_IMG_IS_RULES)
+    return oci_rules(
+        include_forward_reject=False,
+        api_allows=("before",),
+        kubelet_allows=("before",),
+    ).replace(oci_baseline_is_block(), quoted_is)
 
 
 def unexpected_rules() -> str:
@@ -912,6 +986,43 @@ def render_chain(state: dict[str, object], chain: str) -> str | None:
     return "\n".join(headers + rules) + "\n"
 
 
+def simulate_iptables_nft_s_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Insert redundant -m tcp/-m udp the way iptables-nft -S renders ports."""
+    rendered = list(tokens)
+    protocol: str | None = None
+    protocol_at: int | None = None
+    has_match = False
+    has_port = False
+    index = 0
+    while index < len(rendered):
+        token = rendered[index]
+        if (
+            token == "-p"
+            and index + 1 < len(rendered)
+            and rendered[index + 1] in {"tcp", "udp"}
+        ):
+            protocol = rendered[index + 1]
+            protocol_at = index
+            index += 2
+            continue
+        if (
+            protocol is not None
+            and token == "-m"
+            and index + 1 < len(rendered)
+            and rendered[index + 1] == protocol
+        ):
+            has_match = True
+            index += 2
+            continue
+        if token in {"--dport", "--sport"}:
+            has_port = True
+        index += 1
+    if protocol is not None and protocol_at is not None and has_port and not has_match:
+        insert_at = protocol_at + 2
+        rendered[insert_at:insert_at] = ["-m", protocol]
+    return tuple(rendered)
+
+
 def apply_ops(
     input_save: str,
     forward_save: str,
@@ -948,14 +1059,17 @@ def apply_ops(
             continue
         if action == "-I" and len(op) > 2 and op[2].isdigit():
             insert_at = int(op[2]) - 1
-            spec_line = helper.format_spec_line(("-A", chain, *op[3:]))
+            spec_line = helper.format_spec_line(
+                simulate_iptables_nft_s_tokens(("-A", chain, *op[3:]))
+            )
             if insert_at < 0 or insert_at > len(rules):
                 raise SystemExit(f"simulate: invalid insert index {op}")
             rules.insert(insert_at, spec_line)
             states[chain]["rules"] = rules
             continue
-        spec_key = ("-A", *op[1:])
-        spec_line = helper.format_spec_line(spec_key)
+        argv_spec = ("-A", *op[1:])
+        spec_key = helper._spec_semantic_tokens(argv_spec)
+        spec_line = helper.format_spec_line(simulate_iptables_nft_s_tokens(argv_spec))
         if action == "-D":
             found = next(
                 (
@@ -1949,6 +2063,163 @@ except helper.NormalizeError as exc:
 else:
     raise SystemExit("foreign InstanceServices rule must emit zero mutations")
 print("PASS: foreign InstanceServices rules still cause zero nft mutations")
+
+# --- semantic protocol-match canonicalization (live PR #58 second converge) ---
+
+if len(CLOUD_IMG_IS_RULES) != 15:
+    raise SystemExit(f"CLOUD_IMG fixture must have 15 IS rules, got {len(CLOUD_IMG_IS_RULES)}")
+if "-m udp" in IS_NTP_IMPLICIT.split(" --dport ", 1)[0]:
+    raise SystemExit("persist NTP rule must omit redundant -m udp before --dport")
+if "-m udp" not in IS_NTP_EXPLICIT:
+    raise SystemExit("live NTP rule must include explicit -m udp")
+
+ntp_persist_tokens = helper._spec_tokens(IS_NTP_IMPLICIT)
+ntp_live_tokens = helper._spec_tokens(IS_NTP_EXPLICIT)
+if ntp_persist_tokens == ntp_live_tokens:
+    raise SystemExit("persist vs live NTP tokens must differ syntactically")
+if "udp" not in ntp_persist_tokens or "--dport" not in ntp_persist_tokens:
+    raise SystemExit("persist NTP tokens missing protocol/port")
+if ntp_persist_tokens.count("-m") != 1 or ntp_live_tokens.count("-m") != 2:
+    raise SystemExit("live NTP must add exactly one redundant -m udp module")
+if helper._spec_semantic_key(IS_NTP_IMPLICIT) != helper._spec_semantic_key(IS_NTP_EXPLICIT):
+    raise SystemExit("implicit and explicit UDP NTP rules must share a semantic key")
+if helper._spec_semantic_key(IS_TCP_80_IMPLICIT) != helper._spec_semantic_key(IS_TCP_80_COMMENT):
+    raise SystemExit("implicit and explicit TCP dport rules must share a semantic key")
+if helper._spec_semantic_key(IS_NTP_EXPLICIT) != helper._spec_semantic_key(IS_NTP_EXPLICIT):
+    raise SystemExit("explicit UDP both sides must remain equal")
+
+ntp_argv = helper._spec_argv(IS_NTP_IMPLICIT, "-A")
+if ntp_argv != (
+    "-A",
+    "InstanceServices",
+    "-d",
+    "169.254.169.254/32",
+    "-p",
+    "udp",
+    "--dport",
+    "123",
+    "-m",
+    "comment",
+    "--comment",
+    ORACLE_IS_COMMENT,
+    "-j",
+    "ACCEPT",
+):
+    raise SystemExit(f"persist NTP execution argv was rewritten: {ntp_argv}")
+if ntp_argv[5:7] == ("udp", "-m"):
+    raise SystemExit("execution argv must not insert -m udp")
+
+if helper._spec_semantic_key(IS_NTP_IMPLICIT) == helper._spec_semantic_key(IS_TCP_80_COMMENT):
+    raise SystemExit("UDP and TCP dport rules must not be semantically equal")
+udp_sport = oracle_is_rule(
+    "-d 169.254.169.254/32 -p udp --sport 123",
+    "-j ACCEPT",
+)
+if helper._spec_semantic_key(IS_NTP_IMPLICIT) == helper._spec_semantic_key(udp_sport):
+    raise SystemExit("sport and dport rules must not be semantically equal")
+udp_other_port = oracle_is_rule(
+    "-d 169.254.169.254/32 -p udp --dport 53",
+    "-j ACCEPT",
+)
+if helper._spec_semantic_key(IS_NTP_IMPLICIT) == helper._spec_semantic_key(udp_other_port):
+    raise SystemExit("different UDP ports must not be semantically equal")
+udp_other_dest = oracle_is_rule(
+    "-d 169.254.0.2/32 -p udp --dport 123",
+    "-j ACCEPT",
+)
+if helper._spec_semantic_key(IS_NTP_IMPLICIT) == helper._spec_semantic_key(udp_other_dest):
+    raise SystemExit("different destinations must not be semantically equal")
+udp_other_comment = IS_NTP_IMPLICIT.replace(ORACLE_IS_COMMENT, "other comment")
+if helper._spec_semantic_key(IS_NTP_IMPLICIT) == helper._spec_semantic_key(udp_other_comment):
+    raise SystemExit("different comments must not be semantically equal")
+if helper._spec_semantic_key(IS_TCP_OWNER_3260) == helper._spec_semantic_key(
+    oracle_is_rule("-d 169.254.0.2/32 -p tcp -m tcp --dport 3260", "-j ACCEPT")
+):
+    raise SystemExit("owner match must not be normalized away")
+print("PASS: quoted Oracle protocol-match syntax is semantically equivalent")
+
+CLOUD_IMG_PERSIST = oci_cloud_img_rules()
+cloud_input, cloud_output, cloud_is = helper.desired_runtime_contract(
+    CLOUD_IMG_PERSIST, POD_CIDR, API_PORT, KUBELET_PORT
+)
+if cloud_is != list(CLOUD_IMG_IS_RULES):
+    raise SystemExit("CLOUD_IMG persist InstanceServices contract mismatch")
+if cloud_is.count(IS_NTP_IMPLICIT) != 1:
+    raise SystemExit("CLOUD_IMG persist must keep implicit NTP rule")
+
+cloud_live_is = []
+for rule in cloud_is:
+    cloud_live_is.append(
+        helper.format_spec_line(simulate_iptables_nft_s_tokens(helper._spec_tokens(rule)))
+    )
+if len(cloud_live_is) != 15:
+    raise SystemExit("live CLOUD_IMG InstanceServices dump must have 15 rules")
+if cloud_live_is.count(IS_NTP_EXPLICIT) != 1:
+    raise SystemExit("simulated live NTP rule must be explicit -m udp form")
+if [helper._spec_tokens(line) for line in cloud_live_is] == [
+    helper._spec_tokens(line) for line in cloud_is
+]:
+    raise SystemExit("simulated first apply must change NTP syntax before second compare")
+
+cloud_canonical_input = (
+    "-P INPUT DROP\n" + "".join(line + "\n" for line in cloud_input) + UFW_INPUT
+)
+cloud_output_save = "-P OUTPUT ACCEPT\n" + cloud_output + "\n" + UFW_OUTPUT
+expect_filter(
+    "PR58 live second converge 15-rule NTP canonicalization",
+    CLOUD_IMG_PERSIST,
+    cloud_canonical_input,
+    ufw_only_forward(with_microk8s=True),
+    cloud_output_save,
+    is_dump(cloud_live_is),
+    want_action="unchanged",
+)
+assert_contract(
+    "PR58 live second converge 15-rule NTP canonicalization",
+    cloud_canonical_input,
+    ufw_only_forward(with_microk8s=True),
+    cloud_output_save,
+    is_dump(cloud_live_is),
+    persist=CLOUD_IMG_PERSIST,
+)
+
+updated = expect_filter(
+    "PR58 first apply then canonicalized second run",
+    CLOUD_IMG_PERSIST,
+    pr57_failed_input,
+    ufw_only_forward(),
+    ufw_only_output(),
+    is_dump([]),
+    want_action="changed",
+)
+live_after_first = helper._chain_append_lines(updated[3] or "", "InstanceServices")
+if IS_NTP_EXPLICIT not in live_after_first:
+    raise SystemExit(
+        "simulated iptables-nft -S after first apply must emit explicit NTP -m udp"
+    )
+if IS_NTP_IMPLICIT in live_after_first:
+    raise SystemExit("simulated live dump must not keep persist NTP syntax unchanged")
+second_action, second_ops = plan_filter(CLOUD_IMG_PERSIST, *updated)
+if second_action != "unchanged" or second_ops:
+    raise SystemExit(
+        f"canonicalized second run expected unchanged, got {second_action} {second_ops}"
+    )
+print("PASS: exact PR #58 15-rule live NTP normalization is unchanged")
+
+try:
+    plan_filter(
+        CLOUD_IMG_PERSIST,
+        cloud_canonical_input,
+        ufw_only_forward(with_microk8s=True),
+        cloud_output_save,
+        is_dump(cloud_live_is[:-1] + ["-A InstanceServices -p tcp -m ttl --ttl-eq 1 -j ACCEPT"]),
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"unknown module expected rc 2: {exc}")
+else:
+    raise SystemExit("unknown InstanceServices module must remain foreign")
+print("PASS: unknown protocol-match modules remain fail-closed")
 print("PASS: nft filter runtime planner contract")
 
 
@@ -2116,6 +2387,10 @@ if "append_line.split(" in helper_src:
     raise SystemExit("iptables specs must not be tokenized with str.split")
 if "shlex.split" not in helper_src:
     raise SystemExit("iptables specs must preserve quoted comment arguments")
+if "def _spec_semantic_key" not in helper_src:
+    raise SystemExit("comparison must use a semantic spec key")
+if "parts = _spec_tokens(append_line)" not in helper_src:
+    raise SystemExit("execution argv must keep parsed persist tokens")
 if "eval(" in helper_src:
     raise SystemExit("helper must not eval")
 if "reversed(required_input)" in helper_src:
