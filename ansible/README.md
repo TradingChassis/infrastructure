@@ -505,7 +505,8 @@ kubeconfigs from the workspace, or discover secrets automatically.
 
 The `private_runtime_config` role:
 
-* fail-closed validates Vault OCID shape (`ocid1.vault...`) and OCI region shape
+* fail-closed validates regional Vault OCID shape (`ocid1.vault.oc1.<region>..<unique>`) and OCI region shape
+* requires the Vault OCID region component to equal `private_runtime_config_oci_region`
 * imports the same `ansible_k8s_runtime` used by `argocd_bootstrap` before any `kubernetes.core` task
 * performs bounded, condition-based waits for Argo-owned OCI secrets platform readiness:
   * SecretProviderClass CRD
@@ -680,13 +681,14 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook --syntax-check \
   -i ansible/inventory/example.yml \
-  -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   -e private_runtime_config_oci_region=eu-test-1 \
   ansible/playbooks/private-runtime-config.yml
 ./tests/unit/test_ansible_scratch_device_discovery_contract.sh
 ./tests/unit/test_ansible_oci_forward_reject_contract.sh
 ./tests/unit/test_ansible_microk8s_calico_ufw_ownership.sh
 ./tests/unit/test_ansible_k8s_runtime_contract.sh
+./tests/unit/test_private_runtime_vault_ocid_contract.sh
 ```
 
 Pinned collections:
