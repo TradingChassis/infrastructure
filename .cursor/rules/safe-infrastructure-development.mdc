@@ -1,5 +1,5 @@
 ---
-description: "Safety and workflow rules for TradingChassis infrastructure development"
+description: "Durable safety invariants for TradingChassis infrastructure development"
 alwaysApply: true
 ---
 
@@ -7,12 +7,15 @@ alwaysApply: true
 
 Verify first. Fix only if confirmed.
 
-These repository guardrails are an additional protection layer. They do not replace OS sandboxing, operating-system permissions, manual confirmation, or Git review.
+These repository guardrails are an additional protection layer. They do not replace OS sandboxing, operating-system permissions, manual confirmation, or Git review. They are not a hard sandbox or security boundary.
 
-## Communication
+Implementation steps live in `implementation-workflow.mdc`. Independent review steps live in `review-workflow.mdc`.
 
-- User-facing communication is in German.
-- All repository content is in English (rules, comments, errors, tests, docs, commits, and PR text).
+## Language
+
+- Respond in the language explicitly requested by the current task or prompt.
+- If no response language is specified, use the language of the user's current request.
+- Keep repository content in English unless the task explicitly requires otherwise.
 
 ## Verification
 
@@ -38,13 +41,17 @@ These repository guardrails are an additional protection layer. They do not repl
 - No force push.
 - No rebase, amend, history rewrite, automatic merge, tag mutation, or release mutation without an explicit dedicated scope.
 - One logical change per branch and pull request.
-- Do not commit or push unless the current prompt explicitly authorizes it.
+- Commit, push, pull-request creation, and merge only when the current prompt explicitly authorizes that action.
+- An implementation task is not permission to commit, push, or merge.
 
-## Secrets
+## Secrets and repository hygiene
 
 - Do not read or output real environment files, Terraform state, tfvars, OCI credentials, private keys, kubeconfigs, Ansible Vault content, tokens, or GitHub credentials.
 - Do not copy values from local environments into repository examples.
 - Fake examples must be visibly non-functional (for example `example-not-a-secret`).
+- Do not add real operator usernames, personal absolute home paths, copied shell prompts containing identities, live-looking OCIDs, unnecessary live environment identifiers, or likely copied public host IPs.
+- Tests must describe classes of forbidden data with synthetic fixtures, not the original leaked value.
+- Detector specification: `docs/REPOSITORY_SECURITY.md`. Do not duplicate it here.
 
 ## Terraform ownership
 

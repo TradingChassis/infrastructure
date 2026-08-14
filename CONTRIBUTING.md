@@ -20,10 +20,14 @@ Contributions should preserve clarity, explicitness, and reproducibility.
 
 Verify first. Fix only if confirmed.
 
-- User-facing communication is in German; all repository content must remain in English.
+The standard Cursor/AI-assisted sequence is documented in
+[`docs/AI_AGENT_WORKFLOW.md`](docs/AI_AGENT_WORKFLOW.md). Language behavior
+and Git authorization boundaries are defined in [`AGENTS.md`](AGENTS.md).
+
 - Never work directly on `main`. Use a feature branch and open one logical scope per pull request.
 - Prefer Ask/Plan modes or manually reviewed execution for risky work.
 - Agents must not perform live OCI, Terraform, Ansible, or Kubernetes operations.
+- Implementation, independent PRE-COMMIT review, and an explicitly authorized finalization task are separate authorization boundaries. An implementation or review task is not permission to commit, push, or merge.
 - Use `./tools/check-agent-safety`, `./tools/check-sensitive-metadata`, and `./tools/validate-safe` for local static checks after reviewing wrapper contents when they change.
 - Classify evidence honestly (`live validated`, `CI validated`, `statically validated`, `statically identified`, `not yet validated`, `intentional behavior`, `planned`).
 - Changes to `.cursor/**`, `.cursorignore`, `AGENTS.md`, safety wrappers, or their tests require extra review and a dedicated scope.
@@ -31,10 +35,10 @@ Verify first. Fix only if confirmed.
 
 ## Workflow
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit small, logical changes
-4. Open a pull request with a clear description
+1. Fork the repository or create a feature branch from current `main`
+2. Implement a small, logical change and stage it
+3. Obtain an independent PRE-COMMIT review of the staged diff
+4. After `BLOCKER` / `HIGH` / `MEDIUM` = 0, an explicitly authorized finalization task may commit that reviewed diff, push or update the pull request, wait for the five required checks, apply the exact-head gate, squash-merge, delete the remote feature branch, and verify main CI
 
 ## Commit Style
 

@@ -2,16 +2,28 @@
 
 Verify first. Fix only if confirmed.
 
-This file is the short cross-agent entry point for TradingChassis infrastructure work.
+This file is the short cross-agent entry point for TradingChassis infrastructure
+work. It is not a second copy of the Cursor rules.
 
-## Canonical rule
+## Canonical rules
 
-Follow [`.cursor/rules/safe-infrastructure-development.mdc`](.cursor/rules/safe-infrastructure-development.mdc) for the full safety and workflow rules.
+Durable project invariants:
+[`.cursor/rules/safe-infrastructure-development.mdc`](.cursor/rules/safe-infrastructure-development.mdc)
+
+Implementation tasks:
+[`.cursor/rules/implementation-workflow.mdc`](.cursor/rules/implementation-workflow.mdc)
+
+Independent reviews:
+[`.cursor/rules/review-workflow.mdc`](.cursor/rules/review-workflow.mdc)
+
+Human-facing workflow:
+[`docs/AI_AGENT_WORKFLOW.md`](docs/AI_AGENT_WORKFLOW.md)
 
 ## Language
 
-- Communicate with the user in German.
-- Keep all repository content in English.
+- Respond in the language explicitly requested by the current task or prompt.
+- If no response language is specified, use the language of the user's current request.
+- Keep repository content in English unless the task explicitly requires otherwise.
 
 ## Hard limits
 
@@ -25,6 +37,13 @@ Follow [`.cursor/rules/safe-infrastructure-development.mdc`](.cursor/rules/safe-
 - Ansible owns host configuration, storage, MicroK8s, and initial Argo CD bootstrap.
 - Argo CD owns long-lived Kubernetes resources.
 
+## Git authorization
+
+- Never work directly on `main`.
+- One logical change per branch and pull request.
+- Commit, push, pull-request creation, and merge only when the current task explicitly authorizes that action.
+- An implementation task is not permission to commit, push, or merge.
+
 ## Safe wrappers
 
 - `./tools/check-agent-safety` — local, read-only safety self-check
@@ -33,9 +52,3 @@ Follow [`.cursor/rules/safe-infrastructure-development.mdc`](.cursor/rules/safe-
 
 Credential scanning runs in CI via pinned Gitleaks. See
 [`docs/REPOSITORY_SECURITY.md`](docs/REPOSITORY_SECURITY.md).
-
-## Git workflow
-
-- Never work directly on `main`.
-- One logical change per branch and pull request.
-- Commit or push only when the current prompt explicitly authorizes it.

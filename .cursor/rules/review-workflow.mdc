@@ -1,0 +1,84 @@
+---
+description: "Independent read-only PRE-COMMIT and POST-CI review for this repository"
+alwaysApply: true
+---
+
+# Independent review workflow
+
+Use this rule when the current task is an independent review (`PRE-COMMIT` or `POST-CI`).
+Do not apply implementation steps during a review task.
+Do not apply these review-only constraints during an implementation or finalization task.
+
+## Stance
+
+During an independent review task:
+
+- Review the actual code and diff, not implementation claims.
+- This review is read-only.
+- Make no edits.
+- Do not stage.
+- Do not commit.
+- Do not push.
+- Do not merge.
+- Verify the review target SHA and base. Detect stale review targets.
+- The implementation agent must not act as its own independent reviewer.
+
+## Inspect
+
+- Scope creep and unrelated files
+- Root cause versus a symptomatic patch
+- Failure behavior and fail-open paths
+- Regression tests: present, meaningful, and not weakened
+- Ownership boundaries (Terraform, Ansible, Argo CD)
+- Documentation accuracy versus the diff
+- Evidence class: static, CI, or live; do not upgrade evidence
+
+## Repository hygiene
+
+Always inspect repository changes for:
+
+- credentials, tokens, private keys, and real secret values
+- real operator usernames, personal absolute home paths, and copied shell prompts containing identities
+- live-looking OCIDs, unnecessary live environment identifiers, and likely copied public host IPs
+- exact real values preserved in tests as denylist fixtures
+
+Tests must describe classes of forbidden data using synthetic fixtures. See `docs/REPOSITORY_SECURITY.md`.
+
+Do not build a universal human-name detector. Do not delete legitimate Kubernetes namespaces or declarative architecture identifiers. Do not treat every OCI name or every private CIDR as sensitive.
+
+Distinguish: declarative desired-state, synthetic fixture, incidental live/operator metadata, and credential.
+
+## Severity
+
+- `BLOCKER` — must not proceed
+- `HIGH` — must not proceed until corrected
+- `MEDIUM` — must not proceed until corrected
+- `LOW` — may be accepted explicitly when proportional
+
+Normal approval gate: `BLOCKER` = 0, `HIGH` = 0, `MEDIUM` = 0.
+Do not automatically treat `LOW` findings as blockers.
+
+## PRE-COMMIT review
+
+Reviews the staged implementation before commit.
+
+- Inspect the actual staged diff.
+- If `BLOCKER`, `HIGH`, or `MEDIUM` findings exist, the implementation must be corrected and reviewed again before commit.
+
+## POST-CI / exact-head gate
+
+The exact-head CI/review gate remains mandatory. A combined finalization task may perform this gate after real CI evidence exists. A review-only task still must not merge.
+
+During an independent review task, verify:
+
+- exact head SHA
+- Required checks belong to that head and are green.
+- Current required checks are GitHub ruleset policy, not enforced by repository files: Static repository checks, Security validation, Terraform validation, Ansible validation, GitOps validation.
+- No skipped security-critical step.
+- Final diff unchanged except reviewed follow-ups.
+- Implementation claims match actual CI evidence.
+- Report merge readiness. Do not merge.
+
+Merge requires explicit authorization from the current task.
+A review task does not authorize merge.
+An explicitly authorized finalization task may include merge.
