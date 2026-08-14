@@ -491,6 +491,10 @@ jobs:
         # Static only. Does not SSH, run Helm, or pip-install on a live host.
         run: ./tests/unit/test_ansible_k8s_runtime_contract.sh
 
+      - name: Run Ansible private-runtime Vault OCID contract unit tests
+        # Static/synthetic only. Does not contact OCI or use live Vault OCIDs.
+        run: ./tests/unit/test_private_runtime_vault_ocid_contract.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the
@@ -568,6 +572,10 @@ jobs:
         # Static only. Does not SSH, run Helm, or pip-install on a live host.
         run: ./tests/unit/test_ansible_k8s_runtime_contract.sh
 
+      - name: Run Ansible private-runtime Vault OCID contract unit tests
+        # Static/synthetic only. Does not contact OCI or use live Vault OCIDs.
+        run: ./tests/unit/test_private_runtime_vault_ocid_contract.sh
+
       - name: Ansible playbook syntax check
         env:
           ANSIBLE_CONFIG: ansible/ansible.cfg
@@ -582,7 +590,7 @@ jobs:
           ansible-playbook \
             --syntax-check \
             -i ansible/inventory/example.yml \
-            -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             -e private_runtime_config_oci_region=eu-test-1 \
             ansible/playbooks/private-runtime-config.yml
 

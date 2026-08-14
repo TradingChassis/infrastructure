@@ -41,6 +41,12 @@ private_runtime_config_required_namespaces:
   - mlflow
   - monitoring
 
+# OCI OCID: ocid1.<resource-type>.<realm>.[region][.future-use].<unique-id>
+# This role accepts regional Vault OCIDs in realm oc1 only. Region is required
+# and must match ^[a-z]{2}-[a-z0-9]+-[0-9]+$. The future-use component may be
+# empty (written as a double-dot). Shape validation only; no OCI API lookup.
+private_runtime_config_vault_ocid_pattern: '^ocid1\.vault\.oc1\.[a-z]{2}-[a-z0-9]+-[0-9]+\.[a-z0-9]*\.[a-z0-9]+$'
+
 # Reject obvious placeholders and non-vault OCIDs before any mutation.
 private_runtime_config_forbidden_input_substrings:
   - "xxxxx"

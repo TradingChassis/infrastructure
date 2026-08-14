@@ -29,15 +29,17 @@
 - name: Assert private OCI Vault ID has a vault OCID shape
   ansible.builtin.assert:
     that:
-      - >-
-        private_runtime_config_vault_id is match(
-          '^ocid1\\.vault\\.oc1\\.[a-z0-9-]+\\.[a-z0-9]+$'
-        )
+      - private_runtime_config_vault_id == (private_runtime_config_vault_id | trim)
+      - private_runtime_config_vault_id is match(private_runtime_config_vault_ocid_pattern)
+      - (private_runtime_config_vault_id.split('.'))[1] == "vault"
       - "'vaultsecret' not in (private_runtime_config_vault_id | lower)"
       - private_runtime_config_vault_id is not match('^ocid1\\.vaultsecret\\.')
     fail_msg: >-
-      private_runtime_config_vault_id must be an OCI Vault OCID
-      (ocid1.vault.oc1.<region>.<unique>) and must not be a secret OCID.
+      private_runtime_config_vault_id must be a regional OCI Vault OCID
+      (ocid1.vault.oc1.<region>..<unique>, optional future-use component)
+      and must not be a secret, key, or other non-vault OCID. Surrounding
+      whitespace is rejected. This checks identifier shape only and does
+      not prove that the Vault exists.
     success_msg: Private OCI Vault ID matches the expected vault OCID shape.
   no_log: true
 
@@ -75,6 +77,17 @@
       private_runtime_config_oci_region must look like an OCI region identifier
       (for example eu-frankfurt-1).
     success_msg: Private OCI region matches the expected identifier shape.
+  no_log: true
+
+- name: Assert Vault OCID region matches operator OCI region
+  ansible.builtin.assert:
+    that:
+      - (private_runtime_config_vault_id.split('.'))[3] == private_runtime_config_oci_region
+    fail_msg: >-
+      The region component of private_runtime_config_vault_id must equal
+      private_runtime_config_oci_region. This checks identifier consistency
+      only and does not prove Vault existence or Instance Principal access.
+    success_msg: Vault OCID region component matches the operator OCI region.
   no_log: true
 
 - name: Assert SecretProviderClass contract list has exactly three entries
