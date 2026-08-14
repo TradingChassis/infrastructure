@@ -8,10 +8,18 @@ ordering from a supplied `iptables-nft -S INPUT` dump.
 Persistent file contract:
 
   1. Remove the exact OCI cloud-image FORWARD REJECT, if present:
-       -A FORWARD -j REJECT --reject-with icmp-host-prohibited
-  2. Insert exactly one MicroK8s pod → node-local API allow immediately
-     before the OCI catch-all INPUT REJECT.
+     -A FORWARD -j REJECT --reject-with icmp-host-prohibited
+  2. Insert exactly one MicroK8s pod → node-local API allow and exactly
+     one MicroK8s pod → node-local kubelet allow immediately before the
+     OCI catch-all INPUT REJECT, in that canonical order.
   3. Preserve that INPUT REJECT, InstanceServices, SSH, and unrelated lines.
+
+Runtime planner contract:
+
+  Each required pod → host TCP allow must exist exactly once and, when the
+  OCI INPUT REJECT is present, appear before it. Relative order of the two
+  allows is not a runtime correctness requirement, so sequential `-I INPUT`
+  cannot create a reordering loop.
 
 It refuses to modify an unexpected/non-OCI firewall file.
 It does not create a rules file when the path is absent.
@@ -79,27 +87,47 @@ def validate_pod_cidr(value: str) -> str:
     return str(network)
 
 
-def validate_apiserver_port(value: str) -> str:
+def validate_tcp_port(value: str, label: str) -> str:
     raw = value.strip()
     if not raw.isdigit():
         raise NormalizeError(
-            f"error: invalid MicroK8s API port {value!r}",
+            f"error: invalid MicroK8s {label} port {value!r}",
             EXIT_USAGE,
         )
     port = int(raw)
     if port < 1 or port > 65535:
         raise NormalizeError(
-            f"error: invalid MicroK8s API port {value!r}",
+            f"error: invalid MicroK8s {label} port {value!r}",
             EXIT_USAGE,
         )
     return str(port)
 
 
-def build_allow_line(pod_cidr: str, apiserver_port: str) -> str:
+def host_tcp_ports(apiserver_port: str, kubelet_port: str) -> tuple[str, str]:
+    api = validate_tcp_port(apiserver_port, "API")
+    kubelet = validate_tcp_port(kubelet_port, "kubelet")
+    if api == kubelet:
+        raise NormalizeError(
+            "error: MicroK8s API and kubelet ports must be distinct",
+            EXIT_USAGE,
+        )
+    return api, kubelet
+
+
+def build_allow_line(pod_cidr: str, port: str) -> str:
     cidr = validate_pod_cidr(pod_cidr)
-    port = validate_apiserver_port(apiserver_port)
+    validated_port = validate_tcp_port(port, "host TCP")
+    return f"-A INPUT -s {cidr} -p tcp -m tcp --dport {validated_port} -j ACCEPT"
+
+
+def build_allow_lines(
+    pod_cidr: str, apiserver_port: str, kubelet_port: str
+) -> tuple[str, str]:
+    cidr = validate_pod_cidr(pod_cidr)
+    api, kubelet = host_tcp_ports(apiserver_port, kubelet_port)
     return (
-        f"-A INPUT -s {cidr} -p tcp -m tcp --dport {port} -j ACCEPT"
+        f"-A INPUT -s {cidr} -p tcp -m tcp --dport {api} -j ACCEPT",
+        f"-A INPUT -s {cidr} -p tcp -m tcp --dport {kubelet} -j ACCEPT",
     )
 
 
@@ -130,7 +158,7 @@ def is_supported_oci_cloud_image_rules(text: str) -> tuple[bool, str]:
 
 
 def normalize_rules_text(
-    text: str, pod_cidr: str, apiserver_port: str
+    text: str, pod_cidr: str, apiserver_port: str, kubelet_port: str
 ) -> tuple[str, str]:
     supported, reason = is_supported_oci_cloud_image_rules(text)
     if not supported:
@@ -139,7 +167,8 @@ def normalize_rules_text(
             f"({reason})",
             EXIT_UNEXPECTED,
         )
-    allow = build_allow_line(pod_cidr, apiserver_port)
+    allows = build_allow_lines(pod_cidr, apiserver_port, kubelet_port)
+    allow_set = set(allows)
     original_lines = split_lines(text)
     reject_count = sum(
         1
@@ -156,10 +185,10 @@ def normalize_rules_text(
     for line in original_lines:
         if line != "" and stripped(line) == FORWARD_REJECT:
             continue
-        if line != "" and stripped(line) == allow:
+        if line != "" and stripped(line) in allow_set:
             continue
         if line != "" and stripped(line) == INPUT_REJECT:
-            rebuilt.append(allow)
+            rebuilt.extend(allows)
             rebuilt.append(line)
             continue
         rebuilt.append(line)
@@ -170,7 +199,11 @@ def normalize_rules_text(
 
 
 def normalize_rules_file(
-    path: Path, pod_cidr: str, apiserver_port: str, write: bool
+    path: Path,
+    pod_cidr: str,
+    apiserver_port: str,
+    kubelet_port: str,
+    write: bool,
 ) -> str:
     if not path.exists():
         return "absent"
@@ -182,7 +215,9 @@ def normalize_rules_file(
             EXIT_USAGE,
         ) from exc
 
-    new_text, action = normalize_rules_text(text, pod_cidr, apiserver_port)
+    new_text, action = normalize_rules_text(
+        text, pod_cidr, apiserver_port, kubelet_port
+    )
     if action == "unchanged":
         return "unchanged"
     if not write:
@@ -215,22 +250,51 @@ def _input_append_lines(save_text: str) -> list[str]:
     return lines
 
 
-def plan_input_runtime(save_text: str, pod_cidr: str, apiserver_port: str) -> str:
-    allow = build_allow_line(pod_cidr, apiserver_port)
+def _allow_is_correct(
+    rules: list[str], allow: str, reject_idx: int | None
+) -> bool:
+    allow_idxs = [i for i, line in enumerate(rules) if line == allow]
+    if len(allow_idxs) != 1:
+        return False
+    if reject_idx is None:
+        return True
+    return allow_idxs[0] < reject_idx
+
+
+def plan_input_runtime(
+    save_text: str,
+    pod_cidr: str,
+    apiserver_port: str,
+    kubelet_port: str,
+) -> tuple[str, tuple[str, ...]]:
+    api, kubelet = host_tcp_ports(apiserver_port, kubelet_port)
+    api_allow, kubelet_allow = build_allow_lines(
+        pod_cidr, apiserver_port, kubelet_port
+    )
     rules = _input_append_lines(save_text)
     reject_idxs = [i for i, line in enumerate(rules) if line == INPUT_REJECT]
-    allow_idxs = [i for i, line in enumerate(rules) if line == allow]
     if len(reject_idxs) > 1:
         raise NormalizeError(
             "error: refusing runtime INPUT plan with "
             f"{len(reject_idxs)} catch-all INPUT REJECT rules",
             EXIT_UNEXPECTED,
         )
-    if len(allow_idxs) == 1 and (
-        not reject_idxs or allow_idxs[0] < reject_idxs[0]
-    ):
-        return "unchanged"
-    return "ensure"
+    reject_idx = reject_idxs[0] if reject_idxs else None
+    # Insert with iptables-nft -I INPUT (prepend). When both allows are
+    # missing, insert kubelet first then API so the live-proven API allow
+    # remains at INPUT position 1.
+    insert_order = (
+        (kubelet, kubelet_allow),
+        (api, api_allow),
+    )
+    needed = tuple(
+        port
+        for port, allow in insert_order
+        if not _allow_is_correct(rules, allow, reject_idx)
+    )
+    if not needed:
+        return "unchanged", ()
+    return "ensure", needed
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -249,7 +313,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Read iptables-nft -S INPUT from stdin and print unchanged "
-            "or ensure. Does not execute iptables."
+            "or ensure plus host TCP ports to insert. Does not execute iptables."
         ),
     )
     parser.add_argument(
@@ -263,11 +327,22 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="MicroK8s Kubernetes API server TCP port.",
     )
     parser.add_argument(
+        "--kubelet-port",
+        required=True,
+        help="MicroK8s kubelet TCP port.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Inspect and report without writing the file.",
     )
     return parser.parse_args(argv)
+
+
+def render_plan(action: str, ports: tuple[str, ...]) -> str:
+    if action == "unchanged":
+        return "unchanged"
+    return "ensure\n" + "\n".join(ports)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,22 +354,27 @@ def main(argv: list[str] | None = None) -> int:
                     "error: --plan-input-runtime does not take --rules-file",
                     EXIT_USAGE,
                 )
-            action = plan_input_runtime(
-                sys.stdin.read(), args.pod_cidr, args.apiserver_port
-            )
-        else:
-            if not args.rules_file:
-                raise NormalizeError(
-                    "error: --rules-file is required unless "
-                    "--plan-input-runtime is set",
-                    EXIT_USAGE,
-                )
-            action = normalize_rules_file(
-                Path(args.rules_file),
+            action, ports = plan_input_runtime(
+                sys.stdin.read(),
                 args.pod_cidr,
                 args.apiserver_port,
-                write=not args.dry_run,
+                args.kubelet_port,
             )
+            print(render_plan(action, ports))
+            return EXIT_OK
+        if not args.rules_file:
+            raise NormalizeError(
+                "error: --rules-file is required unless "
+                "--plan-input-runtime is set",
+                EXIT_USAGE,
+            )
+        action = normalize_rules_file(
+            Path(args.rules_file),
+            args.pod_cidr,
+            args.apiserver_port,
+            args.kubelet_port,
+            write=not args.dry_run,
+        )
     except NormalizeError as exc:
         print(str(exc), file=sys.stderr)
         return exc.code

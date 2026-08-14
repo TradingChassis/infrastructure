@@ -25,8 +25,9 @@
 # OCI Ubuntu cloud images persist an unconditional IPv4 FORWARD REJECT and
 # an INPUT catch-all REJECT in /etc/iptables/rules.v4. Those rules load into
 # the nft-compatible table ahead of UFW. FORWARD REJECT is removed. INPUT
-# REJECT is retained, with a narrow MicroK8s pod → node-local API allow
-# inserted immediately before it. Normalize before MicroK8s installation.
+# REJECT is retained, with narrow MicroK8s pod → node-local API (16443) and
+# kubelet (10250) allows inserted immediately before it. Normalize before
+# MicroK8s installation.
 - name: Copy OCI MicroK8s firewall normalization helper
   ansible.builtin.copy:
     src: normalize_oci_microk8s_firewall.py
@@ -34,16 +35,20 @@
     mode: "0600"
   become: true
 
-- name: Assert MicroK8s pod CIDR and API port are present
+- name: Assert MicroK8s pod CIDR and host TCP ports are present
   ansible.builtin.assert:
     that:
       - (microk8s_pod_cidr | trim | length) > 0
       - (microk8s_apiserver_port | trim | length) > 0
+      - (microk8s_kubelet_port | trim | length) > 0
+      - (microk8s_apiserver_port | trim) != (microk8s_kubelet_port | trim)
     fail_msg: >-
-      microk8s_pod_cidr and microk8s_apiserver_port must be set. The
-      supported contract is the MicroK8s 1.29/stable Calico pod CIDR and
-      kube-apiserver port, not a live Pod, Service, or node address.
-    success_msg: MicroK8s pod CIDR and API port are present.
+      microk8s_pod_cidr, microk8s_apiserver_port, and
+      microk8s_kubelet_port must be set and the two ports must differ.
+      The supported contract is the MicroK8s 1.29/stable Calico pod CIDR
+      plus kube-apiserver and kubelet ports, not a live Pod, Service, or
+      node address.
+    success_msg: MicroK8s pod CIDR and host TCP ports are present.
 
 - name: Normalize persistent OCI cloud-image IPv4 firewall for MicroK8s
   ansible.builtin.command:
@@ -56,6 +61,8 @@
       - "{{ microk8s_pod_cidr | trim }}"
       - --apiserver-port
       - "{{ microk8s_apiserver_port | trim }}"
+      - --kubelet-port
+      - "{{ microk8s_kubelet_port | trim }}"
   register: microk8s_oci_firewall_file
   become: true
   changed_when: (microk8s_oci_firewall_file.stdout | trim) == "changed"
@@ -110,7 +117,7 @@
   changed_when: microk8s_oci_forward_reject_delete.rc == 0
   failed_when: microk8s_oci_forward_reject_delete.rc != 0
 
-- name: Save nft-compatible INPUT chain for MicroK8s API allow planning
+- name: Save nft-compatible INPUT chain for MicroK8s pod-host allow planning
   ansible.builtin.command:
     argv:
       - /usr/sbin/iptables-nft
@@ -121,7 +128,7 @@
   changed_when: false
   failed_when: microk8s_oci_input_save.rc != 0
 
-- name: Plan nft-compatible INPUT pod-API allow ordering
+- name: Plan nft-compatible INPUT pod-host allow ordering
   ansible.builtin.command:
     argv:
       - python3
@@ -131,16 +138,63 @@
       - "{{ microk8s_pod_cidr | trim }}"
       - --apiserver-port
       - "{{ microk8s_apiserver_port | trim }}"
+      - --kubelet-port
+      - "{{ microk8s_kubelet_port | trim }}"
     stdin: "{{ microk8s_oci_input_save.stdout }}"
   register: microk8s_oci_input_plan
   become: true
   changed_when: false
-  failed_when: >-
-    microk8s_oci_input_plan.rc != 0
-    or (microk8s_oci_input_plan.stdout | trim) not in ['unchanged', 'ensure']
+  failed_when: microk8s_oci_input_plan.rc != 0
+
+- name: Record nft-compatible INPUT pod-host allow plan
+  ansible.builtin.set_fact:
+    microk8s_oci_input_plan_action: "{{ microk8s_oci_input_plan.stdout_lines[0] | default('') | trim }}"
+    microk8s_oci_input_plan_ports: "{{ microk8s_oci_input_plan.stdout_lines[1:] | map('trim') | reject('equalto', '') | list }}"
+  changed_when: false
+
+- name: Assert nft-compatible INPUT pod-host allow plan is well-formed
+  ansible.builtin.assert:
+    that:
+      - microk8s_oci_input_plan_action in ['unchanged', 'ensure']
+      - microk8s_oci_input_plan_action != 'unchanged' or (microk8s_oci_input_plan_ports | length) == 0
+      - microk8s_oci_input_plan_action != 'ensure' or (microk8s_oci_input_plan_ports | length) > 0
+      - (microk8s_oci_input_plan_ports | difference([microk8s_apiserver_port | trim, microk8s_kubelet_port | trim]) | length) == 0
+    fail_msg: >-
+      INPUT pod-host allow plan must be unchanged with no ports, or ensure
+      with only the role API and kubelet ports.
+    success_msg: INPUT pod-host allow plan is well-formed.
+
+- name: Delete misplaced nft-compatible INPUT pod-kubelet allow copies
+  when:
+    - microk8s_oci_input_plan_action == 'ensure'
+    - (microk8s_kubelet_port | trim) in microk8s_oci_input_plan_ports
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -D
+      - INPUT
+      - -s
+      - "{{ microk8s_pod_cidr | trim }}"
+      - -p
+      - tcp
+      - -m
+      - tcp
+      - --dport
+      - "{{ microk8s_kubelet_port | trim }}"
+      - -j
+      - ACCEPT
+  register: microk8s_oci_input_kubelet_allow_delete
+  become: true
+  retries: 8
+  delay: 0
+  until: microk8s_oci_input_kubelet_allow_delete.rc != 0
+  failed_when: microk8s_oci_input_kubelet_allow_delete.rc not in [0, 1]
+  changed_when: (microk8s_oci_input_kubelet_allow_delete.attempts | default(1)) > 1
 
 - name: Delete misplaced nft-compatible INPUT pod-API allow copies
-  when: (microk8s_oci_input_plan.stdout | trim) == "ensure"
+  when:
+    - microk8s_oci_input_plan_action == 'ensure'
+    - (microk8s_apiserver_port | trim) in microk8s_oci_input_plan_ports
   ansible.builtin.command:
     argv:
       - /usr/sbin/iptables-nft
@@ -156,16 +210,44 @@
       - "{{ microk8s_apiserver_port | trim }}"
       - -j
       - ACCEPT
-  register: microk8s_oci_input_allow_delete
+  register: microk8s_oci_input_api_allow_delete
   become: true
   retries: 8
   delay: 0
-  until: microk8s_oci_input_allow_delete.rc != 0
-  failed_when: microk8s_oci_input_allow_delete.rc not in [0, 1]
-  changed_when: (microk8s_oci_input_allow_delete.attempts | default(1)) > 1
+  until: microk8s_oci_input_api_allow_delete.rc != 0
+  failed_when: microk8s_oci_input_api_allow_delete.rc not in [0, 1]
+  changed_when: (microk8s_oci_input_api_allow_delete.attempts | default(1)) > 1
+
+# Insert kubelet first, then API. Sequential iptables-nft -I INPUT prepends,
+# so a greenfield ensure of both leaves the API allow at INPUT position 1.
+- name: Insert nft-compatible INPUT pod-kubelet allow before later INPUT rules
+  when:
+    - microk8s_oci_input_plan_action == 'ensure'
+    - (microk8s_kubelet_port | trim) in microk8s_oci_input_plan_ports
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -I
+      - INPUT
+      - -s
+      - "{{ microk8s_pod_cidr | trim }}"
+      - -p
+      - tcp
+      - -m
+      - tcp
+      - --dport
+      - "{{ microk8s_kubelet_port | trim }}"
+      - -j
+      - ACCEPT
+  become: true
+  register: microk8s_oci_input_kubelet_allow_insert
+  changed_when: microk8s_oci_input_kubelet_allow_insert.rc == 0
+  failed_when: microk8s_oci_input_kubelet_allow_insert.rc != 0
 
 - name: Insert nft-compatible INPUT pod-API allow before later INPUT rules
-  when: (microk8s_oci_input_plan.stdout | trim) == "ensure"
+  when:
+    - microk8s_oci_input_plan_action == 'ensure'
+    - (microk8s_apiserver_port | trim) in microk8s_oci_input_plan_ports
   ansible.builtin.command:
     argv:
       - /usr/sbin/iptables-nft
@@ -182,9 +264,9 @@
       - -j
       - ACCEPT
   become: true
-  register: microk8s_oci_input_allow_insert
-  changed_when: microk8s_oci_input_allow_insert.rc == 0
-  failed_when: microk8s_oci_input_allow_insert.rc != 0
+  register: microk8s_oci_input_api_allow_insert
+  changed_when: microk8s_oci_input_api_allow_insert.rc == 0
+  failed_when: microk8s_oci_input_api_allow_insert.rc != 0
 
 - name: Set UFW default incoming policy to deny
   community.general.ufw:

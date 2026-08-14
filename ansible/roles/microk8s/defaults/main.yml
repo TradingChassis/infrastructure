@@ -21,3 +21,8 @@ microk8s_pod_cidr: "10.1.0.0/16"
 # MicroK8s kube-apiserver secure port. Not opened on UFW or OCI NSGs for
 # the Internet. nft INPUT allows this port only from microk8s_pod_cidr.
 microk8s_apiserver_port: "16443"
+
+# MicroK8s kubelet/kubelite port. Not opened on UFW or OCI NSGs for the
+# Internet. nft INPUT allows this port only from microk8s_pod_cidr so
+# metrics-server can scrape node-local kubelet.
+microk8s_kubelet_port: "10250"
