@@ -189,13 +189,10 @@
     mode: "0644"
   become: true
   register: microk8s_oci_firewall_unit
+  notify: Reload systemd for OCI MicroK8s firewall boot unit
 
-- name: Reload systemd when the OCI MicroK8s firewall boot unit changes
-  ansible.builtin.systemd_service:
-    name: "{{ microk8s_firewall_unit_name }}"
-    daemon_reload: true
-  become: true
-  when: microk8s_oci_firewall_unit is changed
+- name: Flush systemd reload before enabling the firewall boot unit
+  ansible.builtin.meta: flush_handlers
 
 - name: Enable OCI MicroK8s firewall boot reconciliation unit
   ansible.builtin.systemd_service:

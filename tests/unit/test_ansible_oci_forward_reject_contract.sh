@@ -1227,10 +1227,12 @@ UNIT = (
     ROOT
     / "ansible/roles/microk8s/templates/tradingchassis-oci-microk8s-firewall.service.j2"
 )
+HANDLERS = ROOT / "ansible/roles/microk8s/handlers/main.yml"
 tasks = read(TASKS)
 defaults = read(DEFAULTS)
 helper_src = read(HELPER)
 unit_src = read(UNIT)
+handlers = read(HANDLERS)
 
 if "normalize_oci_microk8s_firewall.py" not in tasks:
     raise SystemExit("microk8s role must invoke the firewall helper")
@@ -1296,7 +1298,7 @@ ufw_idx = tasks.find("Enable UFW with the explicit MicroK8s-compatible host poli
 helper_idx = tasks.find("Normalize persistent OCI cloud-image IPv4 firewall for MicroK8s")
 apply_idx = tasks.find("Reconcile nft-compatible OCI MicroK8s firewall runtime")
 unit_idx = tasks.find("Install OCI MicroK8s firewall boot reconciliation unit")
-reload_idx = tasks.find("Reload systemd when the OCI MicroK8s firewall boot unit changes")
+flush_idx = tasks.find("Flush systemd reload before enabling the firewall boot unit")
 enable_idx = tasks.find("Enable OCI MicroK8s firewall boot reconciliation unit")
 if min(
     install_idx,
@@ -1305,7 +1307,7 @@ if min(
     helper_idx,
     apply_idx,
     unit_idx,
-    reload_idx,
+    flush_idx,
     enable_idx,
 ) < 0:
     raise SystemExit("microk8s role is missing required firewall/MicroK8s tasks")
@@ -1314,7 +1316,7 @@ if not (
     < ufw_idx
     < apply_idx
     < unit_idx
-    < reload_idx
+    < flush_idx
     < enable_idx
     < install_idx
     < ready_idx
@@ -1335,10 +1337,14 @@ if "10.152.183.1" in tasks or "10.1.118" in tasks:
     raise SystemExit("role must not hard-code Kubernetes Service or pod IPs")
 if "--handle" in tasks or "nft delete" in tasks:
     raise SystemExit("runtime deletion must not use nft handles")
-if "when: microk8s_oci_firewall_unit is changed" not in tasks:
-    raise SystemExit("systemd daemon reload must run only when the unit file changes")
-if "daemon_reload: true" not in tasks:
-    raise SystemExit("unit file changes must trigger systemd daemon_reload")
+if "notify: Reload systemd for OCI MicroK8s firewall boot unit" not in tasks:
+    raise SystemExit("unit file changes must notify the systemd daemon-reload handler")
+if "meta: flush_handlers" not in tasks:
+    raise SystemExit("systemd daemon-reload handler must flush before unit enablement")
+if "daemon_reload: true" not in handlers:
+    raise SystemExit("firewall boot unit handler must daemon-reload systemd")
+if "when: microk8s_oci_firewall_unit is changed" in tasks:
+    raise SystemExit("daemon reload must be a handler, not an inline when: changed task")
 if "changed_when: (microk8s_oci_firewall_runtime.stdout | trim) == \"changed\"" not in tasks:
     raise SystemExit("runtime apply must report changed only when the helper says changed")
 print("PASS: Ansible task ordering and semantic nft contract")
@@ -1454,7 +1460,7 @@ if "test_ansible_oci_forward_reject_contract.sh" not in workflow:
     raise SystemExit("CI must run the OCI firewall contract test")
 print("PASS: CI enforces the OCI firewall contract")
 
-implementation_files = (TASKS, HELPER, README, V2_DOC, DEFAULTS, UNIT)
+implementation_files = (TASKS, HELPER, README, V2_DOC, DEFAULTS, UNIT, HANDLERS)
 forbidden_live = (
     "10.0.1.31",
     "10.152.183.1",
