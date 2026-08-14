@@ -18,9 +18,13 @@ Runtime contract:
   calls iptables-legacy, and never restores a whole table.
 
   Owned INPUT rules from the normalized persistent file are placed as a
-  contiguous prefix ahead of later UFW jumps. The exact OCI FORWARD REJECT
+  contiguous prefix ahead of later UFW jumps. Required INPUT ACCEPT rules
+  are inserted before the OCI catch-all REJECT so a partial apply cannot
+  leave REJECT ahead of every SSH/UFW path. The exact OCI FORWARD REJECT
   is deleted when present. The OUTPUT InstanceServices jump and
-  InstanceServices chain rules are restored when missing.
+  InstanceServices chain rules are restored when missing. Missing
+  InstanceServices rules are appended before owned duplicates are deleted.
+  Unexpected extra InstanceServices rules fail closed with no mutations.
 
 It refuses to modify an unexpected/non-OCI firewall file.
 It does not create a rules file when the path is absent.
@@ -346,6 +350,22 @@ def _spec_argv(append_line: str, action: str) -> tuple[str, ...]:
     return (action, parts[1], *parts[2:])
 
 
+def input_ssh_path_intact(rules: list[str], required_input: list[str]) -> bool:
+    """True when OCI REJECT cannot hide SSH: absent, or RELATED/SSH/UFW precede it."""
+    if INPUT_REJECT not in rules:
+        return True
+    before = rules[: rules.index(INPUT_REJECT)]
+    if any(line.startswith("-A INPUT -j ufw-") for line in before):
+        return True
+    ssh_relevant = [
+        line
+        for line in required_input
+        if line != INPUT_REJECT
+        and ("RELATED,ESTABLISHED" in line or "--dport 22" in line)
+    ]
+    return any(line in before for line in ssh_relevant)
+
+
 def desired_runtime_contract(
     persistent_text: str, pod_cidr: str, apiserver_port: str, kubelet_port: str
 ) -> tuple[list[str], str, list[str]]:
@@ -388,6 +408,81 @@ def desired_runtime_contract(
     return input_rules, output_jumps[0], is_rules
 
 
+def _reject_insert_argv(position: int) -> tuple[str, ...]:
+    reject_argv = _spec_argv(INPUT_REJECT, "-I")
+    return (reject_argv[0], reject_argv[1], str(position), *reject_argv[2:])
+
+
+def _assert_ssh_path(rules: list[str], required_input: list[str]) -> None:
+    if not input_ssh_path_intact(rules, required_input):
+        raise NormalizeError(
+            "error: refusing INPUT plan that would block SSH",
+            EXIT_UNEXPECTED,
+        )
+
+
+def _delete_owned_input_after_prefix(
+    ops: list[tuple[str, ...]],
+    simulated: list[str],
+    required_input: list[str],
+    owned_input: set[str],
+) -> None:
+    prefix_len = len(required_input)
+    for index in range(len(simulated) - 1, prefix_len - 1, -1):
+        if simulated[index] not in owned_input:
+            continue
+        ops.append(("-D", "INPUT", str(index + 1)))
+        simulated.pop(index)
+        _assert_ssh_path(simulated, required_input)
+
+
+def _plan_input_runtime(
+    ops: list[tuple[str, ...]],
+    live_input: list[str],
+    required_input: list[str],
+    owned_input: set[str],
+) -> None:
+    accepts = [line for line in required_input if line != INPUT_REJECT]
+    if not accepts or required_input[-1] != INPUT_REJECT:
+        raise NormalizeError(
+            "error: refusing INPUT plan without ACCEPT prefix plus REJECT",
+            EXIT_UNEXPECTED,
+        )
+    simulated = list(live_input)
+    prefix_len = len(required_input)
+    if simulated[:prefix_len] == required_input:
+        _delete_owned_input_after_prefix(
+            ops, simulated, required_input, owned_input
+        )
+        return
+
+    # Remove catch-all REJECT copies first so an existing UFW SSH path
+    # is usable before any later REJECT insert. Do not insert REJECT
+    # until the required ACCEPT prefix is in place.
+    for line in live_input:
+        if line == INPUT_REJECT:
+            ops.append(_spec_argv(line, "-D"))
+    simulated = [line for line in simulated if line != INPUT_REJECT]
+    _assert_ssh_path(simulated, required_input)
+
+    for line in reversed(accepts):
+        ops.append(_spec_argv(line, "-I"))
+        simulated.insert(0, line)
+        _assert_ssh_path(simulated, required_input)
+
+    ops.append(_reject_insert_argv(len(accepts) + 1))
+    simulated.insert(len(accepts), INPUT_REJECT)
+    _assert_ssh_path(simulated, required_input)
+    if simulated[:prefix_len] != required_input:
+        raise NormalizeError(
+            "error: refusing INPUT plan that did not establish the owned prefix",
+            EXIT_UNEXPECTED,
+        )
+    _delete_owned_input_after_prefix(
+        ops, simulated, required_input, owned_input
+    )
+
+
 def plan_filter_runtime(
     persistent_text: str,
     pod_cidr: str,
@@ -411,8 +506,7 @@ def plan_filter_runtime(
     expected_is = set(required_is)
     if instanceservices_save is None:
         ops.append(("-N", "InstanceServices"))
-        for line in required_is:
-            ops.append(_spec_argv(line, "-A"))
+        live_is: list[str] = []
     else:
         live_is = _chain_append_lines(instanceservices_save, "InstanceServices")
         unexpected = [line for line in live_is if line not in expected_is]
@@ -422,11 +516,25 @@ def plan_filter_runtime(
                 "InstanceServices rules",
                 EXIT_UNEXPECTED,
             )
+    if live_is != required_is:
+        for line in required_is:
+            if live_is.count(line) == 0:
+                ops.append(_spec_argv(line, "-A"))
+                live_is.append(line)
         if live_is != required_is:
-            for line in live_is:
-                ops.append(_spec_argv(line, "-D"))
             for line in required_is:
                 ops.append(_spec_argv(line, "-A"))
+                live_is.append(line)
+            while live_is != required_is:
+                if not live_is:
+                    raise NormalizeError(
+                        "error: refusing InstanceServices plan that would "
+                        "empty the chain",
+                        EXIT_UNEXPECTED,
+                    )
+                victim = live_is[0]
+                ops.append(_spec_argv(victim, "-D"))
+                live_is.pop(0)
 
     live_is_jumps = [
         line for line in live_output if line.endswith("-j InstanceServices")
@@ -450,11 +558,7 @@ def plan_filter_runtime(
         and all(line not in owned_input for line in live_input[prefix_len:])
     )
     if not input_ok:
-        for line in live_input:
-            if line in owned_input:
-                ops.append(_spec_argv(line, "-D"))
-        for line in reversed(required_input):
-            ops.append(_spec_argv(line, "-I"))
+        _plan_input_runtime(ops, live_input, required_input, owned_input)
 
     if FORWARD_REJECT in live_forward:
         ops.append(_spec_argv(FORWARD_REJECT, "-D"))

@@ -198,6 +198,7 @@
   ansible.builtin.systemd_service:
     name: "{{ microk8s_firewall_unit_name }}"
     enabled: true
+    force: "{{ microk8s_oci_firewall_unit is changed }}"
   become: true
   register: microk8s_oci_firewall_unit_enable
 

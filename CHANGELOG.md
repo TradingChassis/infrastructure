@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Inserted a narrow MicroK8s pod-CIDR INPUT allow for the node-local kube-apiserver port before the retained OCI catch-all INPUT REJECT so kube-proxy DNAT traffic is not dropped.
 - Inserted a narrow MicroK8s pod-CIDR INPUT allow for the node-local kubelet port before the retained OCI catch-all INPUT REJECT so metrics-server scraping is not dropped.
 - Reconcile the normalized OCI / MicroK8s nft-compatible host firewall at boot after UFW initializes, because persistent `rules.v4` survived reboot while runtime iptables-nft did not.
+- Rebuild the owned INPUT prefix so required ACCEPT rules exist before the OCI catch-all REJECT is installed, retrigger that oneshot after `ufw.service` restarts or starts (`PartOf=` and `WantedBy=ufw.service`), and keep MicroK8s containerd/kubelite from starting when boot reconciliation fails (`RequiredBy`).
 
 ## [0.1.0] - 2026-07-30
 

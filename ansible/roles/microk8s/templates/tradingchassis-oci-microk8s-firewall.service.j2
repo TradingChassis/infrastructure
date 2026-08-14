@@ -4,6 +4,7 @@ Documentation=man:ufw(8)
 DefaultDependencies=no
 After=local-fs.target ufw.service
 Wants=ufw.service network-pre.target
+PartOf=ufw.service
 Before=network-pre.target snap.microk8s.daemon-containerd.service snap.microk8s.daemon-kubelite.service
 
 [Service]
@@ -12,4 +13,5 @@ RemainAfterExit=yes
 ExecStart={{ microk8s_python_interpreter }} {{ microk8s_firewall_helper_path }} --apply-runtime --rules-file {{ microk8s_firewall_rules_file }} --pod-cidr {{ microk8s_pod_cidr | trim }} --apiserver-port {{ microk8s_apiserver_port | trim }} --kubelet-port {{ microk8s_kubelet_port | trim }}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target ufw.service
+RequiredBy=snap.microk8s.daemon-containerd.service snap.microk8s.daemon-kubelite.service

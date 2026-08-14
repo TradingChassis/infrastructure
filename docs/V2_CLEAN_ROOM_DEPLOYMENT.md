@@ -946,8 +946,12 @@ Both load into the nft-compatible table ahead of UFW.
    iptables-persistent/netfilter-persistent are not the owner; UFW is.
    V2 installs tradingchassis-oci-microk8s-firewall.service to
    reconcile the owned contract after ufw.service, without a
-   whole-table restore. Live reboot proof of that unit is NOT yet
-   established by this repository change.
+   whole-table restore. The unit is PartOf=ufw.service and
+   WantedBy=ufw.service so a later UFW restart or start re-runs
+   the same helper. RequiredBy the MicroK8s snap units so a failed
+   boot reconcile keeps kubelite/containerd from starting. Live
+   reboot proof of that unit is NOT yet established by this
+   repository change.
 ```
 
 UFW `DEFAULT_FORWARD_POLICY=ACCEPT` and UFW Calico interface allows do not
@@ -967,8 +971,9 @@ REJECT, metrics-server became Ready, and a second Ansible converge reported
 `rules.v4` still had the contract, but runtime iptables-nft INPUT was UFW-only
 and the metrics API returned ServiceUnavailable. Finding 4 is implemented
 here as `tradingchassis-oci-microk8s-firewall.service` and is **NOT yet**
-live-reboot-proven by this repository change. None of these current-host
-observations are clean-room rebuild proof.
+live-reboot-proven by this repository change. The unit uses
+`PartOf=ufw.service` and `RequiredBy` the MicroK8s snap units. None of
+these current-host observations are clean-room rebuild proof.
 
 ### Example first converge
 

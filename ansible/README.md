@@ -330,9 +330,27 @@ OCI/MicroK8s nft contract (INPUT prefix, FORWARD REJECT absence,
 InstanceServices). It does not flush tables and does not restore a whole
 table.
 
+The unit is `PartOf=ufw.service` so a later `systemctl restart ufw`
+re-runs reconciliation after UFW has rebuilt nft. `[Install]` also
+`WantedBy=ufw.service`, so `systemctl start ufw` after a stop pulls the
+oneshot in again without editing the vendor `ufw.service` file. It does
+not use `BindsTo=`. `[Install] RequiredBy=` the
+MicroK8s containerd/kubelite units so a failed boot reconciliation keeps
+those units from starting. The firewall unit does not `Requires=` the
+snap units.
+
+`--apply-runtime` inserts the owned INPUT ACCEPT prefix first and only
+then places the OCI catch-all REJECT after that prefix. It does not
+insert REJECT ahead of SSH/UFW as an intermediate step. InstanceServices
+adds missing exact rules before deleting misplaced owned copies and
+never flushes that chain. Unexpected extra InstanceServices rules still
+fail closed with no nft mutations.
+
 The `microk8s` role still applies the same runtime reconciliation during
-converge. The boot unit does not replace that. Post-reboot proof of this
-boot unit is **not** claimed by repository tests.
+converge. When the unit file changes, enablement uses `force` so the
+`WantedBy=` / `RequiredBy=` aliases are refreshed. The boot unit does
+not replace converge reconciliation. Post-reboot proof of this boot unit
+is **not** claimed by repository tests.
 
 #### Shared safety properties
 
