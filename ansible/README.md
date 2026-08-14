@@ -37,7 +37,8 @@ through an explicit non-default playbook.
 ```text
 Host baseline contract validation is implemented.
 Scratch filesystem validation, guarded formatting, and UUID-based mounting are implemented.
-MicroK8s installation, required addons, readiness, and an explicit UFW host firewall policy are implemented.
+MicroK8s installation, required addons, readiness, OCI forwarding-firewall
+normalization, and an explicit UFW host firewall policy are implemented.
 Argo CD bootstrap and the GitOps root Application handoff are implemented.
 Private runtime configuration materialization is implemented as an explicit opt-in playbook only.
 ```
@@ -151,6 +152,7 @@ An existing filesystem of an unexpected type is never overwritten automatically.
 The `microk8s` role:
 
 * ensures `snapd` and `ufw` packages are present
+* normalizes the OCI Ubuntu cloud-image IPv4 FORWARD REJECT before MicroK8s install
 * installs MicroK8s from the pinned snap channel `1.29/stable`
 * waits for readiness with `microk8s status --wait-ready`
 * enables only the verified V1-required addons when missing
@@ -210,6 +212,51 @@ SSH remote source restriction remains the OCI NSG `ssh_ingress_cidr` responsibil
 The host firewall allows TCP/22 for defense in depth without duplicating operator CIDR policy.
 
 UFW is never reset and existing unmanaged rules are not blanket-deleted.
+
+### OCI cloud-image forwarding incompatibility
+
+OCI Ubuntu cloud images can persist an unconditional IPv4 FORWARD REJECT in
+`/etc/iptables/rules.v4` (CLOUD_IMG / Oracle Cloud Infrastructure baseline).
+That rule is loaded into the nft-compatible `FORWARD` chain **ahead of** later
+MicroK8s/Calico ACCEPT rules. Forwarded Pod → Kubernetes Service traffic then
+fails with `no route to host` even when:
+
+```text
+net.ipv4.ip_forward = 1
+UFW DEFAULT_FORWARD_POLICY=ACCEPT (routed default allow)
+the Kubernetes Service ClusterIP and backing endpoint are valid
+```
+
+`DEFAULT_FORWARD_POLICY=ACCEPT` is therefore not sufficient while the earlier
+unconditional FORWARD REJECT remains.
+
+V2 Ansible (microk8s role, before snap install and readiness) normalizes **only**
+the exact incompatible rule:
+
+```text
+-A FORWARD -j REJECT --reject-with icmp-host-prohibited
+```
+
+Preserved on purpose:
+
+```text
+OCI INPUT REJECT
+OCI InstanceServices chain and 169.254.0.0/16 metadata/DNS/DHCP/iSCSI rules
+OUTPUT jump to InstanceServices
+SSH INPUT accept
+UFW incoming deny / outgoing allow / routed allow
+UFW SSH and Calico interface rules
+```
+
+Runtime deletion uses `iptables-nft -C` / `-D` with that exact rule spec. It
+does not use nft handles, FORWARD line numbers, or a full table restore.
+
+Do not flush iptables tables (`iptables -F` / `-X` / nft flush), disable UFW,
+delete `/etc/iptables/rules.v4`, or rewrite InstanceServices from a template.
+Unexpected/non-OCI `rules.v4` files fail closed. An absent `rules.v4` is a
+no-op and does not create an incomplete firewall file.
+
+The second MicroK8s converge must remain idempotent after the rule is gone.
 
 ## Argo CD bootstrap
 
@@ -451,6 +498,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
   -e private_runtime_config_vault_id=ocid1.vault.oc1.eu-test-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   -e private_runtime_config_oci_region=eu-test-1 \
   ansible/playbooks/private-runtime-config.yml
+./tests/unit/test_ansible_scratch_device_discovery_contract.sh
+./tests/unit/test_ansible_oci_forward_reject_contract.sh
 ```
 
 Pinned collections:
