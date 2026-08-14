@@ -87,7 +87,7 @@ Attachment type: `paravirtualized`.
 This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference host and avoids Terraform-managed iSCSI login configuration.
 
 Performance: `vpus_per_gb = 0` (Lower Cost) for a predictable, cost-conscious reference profile.
-In-transit encryption for the paravirtualized attachment is enabled. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
+In-transit encryption for the paravirtualized attachment is enabled. The compute instance must explicitly set `launch_options.is_pv_encryption_in_transit_enabled = true` so OCI accepts that encrypted attachment. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
 
 ### Known V1 storage gap (closed in V2 Git manifests)
 
