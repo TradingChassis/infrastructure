@@ -360,6 +360,10 @@ jobs:
         # Static/synthetic only. Does not probe host block devices, SSH, or OCI.
         run: ./tests/unit/test_ansible_scratch_device_discovery_contract.sh
 
+      - name: Run Ansible OCI FORWARD REJECT contract unit tests
+        # Static/synthetic only. Does not run iptables, nft, ufw, or SSH.
+        run: ./tests/unit/test_ansible_oci_forward_reject_contract.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the
@@ -424,6 +428,10 @@ jobs:
       - name: Run Ansible scratch device discovery contract unit tests
         # Static/synthetic only. Does not connect to hosts or mutate disks.
         run: ./tests/unit/test_ansible_scratch_device_discovery_contract.sh
+
+      - name: Run Ansible OCI FORWARD REJECT contract unit tests
+        # Static/synthetic only. Does not run iptables, nft, ufw, or SSH.
+        run: ./tests/unit/test_ansible_oci_forward_reject_contract.sh
 
       - name: Ansible playbook syntax check
         env:

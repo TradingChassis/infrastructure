@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Documented and validated the external dedicated OCI state-bucket prerequisite (Versioning Enabled, NoPublicAccess) without moving bucket ownership into Terraform.
 - Resolved ShellCheck findings in the agent safety tooling without weakening validation behavior
 - Hardened SPC inspection guidance to avoid exposing private deployment configuration through serialized last-applied annotations.
+- Normalized the OCI Ubuntu cloud-image unconditional IPv4 FORWARD REJECT so MicroK8s pod/service forwarding is not blocked while OCI InstanceServices and INPUT protection remain.
 
 ## [0.1.0] - 2026-07-30
 

@@ -22,6 +22,79 @@
     enabled: true
   become: true
 
+# OCI Ubuntu cloud images persist an unconditional IPv4 FORWARD REJECT in
+# /etc/iptables/rules.v4. That rule is loaded into the nft-compatible table
+# ahead of UFW and MicroK8s/Calico ACCEPT rules and blocks Pod → Service
+# traffic. Normalize only that exact rule before MicroK8s installation.
+- name: Copy OCI FORWARD REJECT normalization helper
+  ansible.builtin.copy:
+    src: normalize_oci_forward_reject.py
+    dest: /tmp/tradingchassis-normalize-oci-forward-reject.py
+    mode: "0600"
+  become: true
+
+- name: Normalize persistent OCI cloud-image IPv4 FORWARD REJECT
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /tmp/tradingchassis-normalize-oci-forward-reject.py
+      - --rules-file
+      - /etc/iptables/rules.v4
+  register: oci_forward_reject_file
+  become: true
+  changed_when: (oci_forward_reject_file.stdout | trim) == "removed"
+  failed_when: oci_forward_reject_file.rc != 0
+
+- name: Stat iptables-nft for runtime FORWARD normalization
+  ansible.builtin.stat:
+    path: /usr/sbin/iptables-nft
+  register: oci_iptables_nft_stat
+
+- name: Assert iptables-nft is present for runtime FORWARD normalization
+  ansible.builtin.assert:
+    that:
+      - oci_iptables_nft_stat.stat.exists
+    fail_msg: >-
+      /usr/sbin/iptables-nft is required to remove the OCI cloud-image
+      unconditional FORWARD REJECT from the nft-compatible table. The
+      supported Ubuntu 24 OCI reference host provides iptables-nft.
+      iptables-legacy Kubernetes rules are not modified.
+    success_msg: iptables-nft is present for semantic FORWARD rule deletion.
+
+# Use the nft-compatible binary by absolute path. Ansible iptables modules
+# follow PATH and can target iptables-legacy, which holds Calico/kube-proxy
+# rules on the OCI Ubuntu host and must not be mutated here.
+- name: Check nft-compatible unconditional IPv4 FORWARD REJECT
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -C
+      - FORWARD
+      - -j
+      - REJECT
+      - --reject-with
+      - icmp-host-prohibited
+  register: oci_forward_reject_check
+  become: true
+  changed_when: false
+  failed_when: oci_forward_reject_check.rc not in [0, 1]
+
+- name: Delete nft-compatible unconditional IPv4 FORWARD REJECT when present
+  when: oci_forward_reject_check.rc == 0
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -D
+      - FORWARD
+      - -j
+      - REJECT
+      - --reject-with
+      - icmp-host-prohibited
+  become: true
+  register: oci_forward_reject_delete
+  changed_when: oci_forward_reject_delete.rc == 0
+  failed_when: oci_forward_reject_delete.rc != 0
+
 - name: Set UFW default incoming policy to deny
   community.general.ufw:
     direction: incoming

@@ -912,6 +912,36 @@ argocd_bootstrap
 
 `private_runtime_config` is **intentionally not** included in `site.yml`.
 
+### OCI cloud-image forwarding firewall
+
+OCI Ubuntu 24.04 cloud images can persist an unconditional IPv4 FORWARD REJECT
+in `/etc/iptables/rules.v4` (CLOUD_IMG / Oracle Cloud Infrastructure baseline):
+
+```text
+-A FORWARD -j REJECT --reject-with icmp-host-prohibited
+```
+
+On the nft-compatible table this rule can precede later MicroK8s/Calico ACCEPT
+rules. Pods then fail to reach the Kubernetes Service with `no route to host`.
+UFW `DEFAULT_FORWARD_POLICY=ACCEPT` (routed default allow) is not sufficient
+while that earlier REJECT remains.
+
+The `microk8s` role normalizes **only** that exact forwarding rule, in both the
+persistent `rules.v4` file and the loaded nft-compatible FORWARD chain, before
+MicroK8s installation and readiness. It preserves:
+
+```text
+OCI INPUT REJECT
+OCI InstanceServices (169.254.0.0/16 metadata, DNS, DHCP, iSCSI)
+SSH access
+UFW incoming deny / outgoing allow / routed allow
+UFW SSH and Calico interface rules
+```
+
+Do not flush iptables tables, disable UFW, delete `rules.v4`, or rewrite
+InstanceServices from a template. Live re-converge after this repository fix
+has **not** been performed yet.
+
 ### Example first converge
 
 Use `ANSIBLE_CONFIG` so paths resolve from `ansible/ansible.cfg`.
@@ -952,10 +982,20 @@ host baseline contract asserted (Ubuntu 24, ARM64)
 scratch filesystem validated/mounted at /mnt/scratch (when inputs correct)
 scratch workload directories /mnt/scratch/dev and /mnt/scratch/prod present on the mount
 MicroK8s installed (channel 1.29/stable) with required addons
-host UFW policy applied
+host UFW policy applied (incoming deny, outgoing allow, routed allow, SSH, Calico)
+OCI cloud-image unconditional IPv4 FORWARD REJECT removed from rules.v4 and nft FORWARD
+SSH retained, UFW active, /mnt/scratch retained
+Kubernetes node Ready
+CoreDNS Ready
+Calico kube-controllers Ready
+metrics-server Ready
 Argo CD installed in namespace argocd
 root Application from argocd/root-app.yaml submitted
 ```
+
+The MicroK8s system-pod Ready state above is the intended first MicroK8s
+converge outcome after the OCI forwarding-firewall normalization. It is
+**not** claimed live-validated by this repository change.
 
 Successful `site.yml` does **not** mean:
 
@@ -1218,8 +1258,14 @@ role supports that claim. Prefer:
 ```text
 no destructive reformatting
 no unintended firewall reset
+no reintroduction of the OCI unconditional IPv4 FORWARD REJECT
 no Argo CD reinstall churn beyond idempotent module behavior
 ```
+
+The second MicroK8s converge must remain idempotent once the OCI forwarding
+rule is gone (persistent file unchanged, nft `-C` already absent so `-D` is
+skipped). That claim is statically designed and **not** live-proven after this
+repository fix.
 
 The private runtime role is designed for idempotent second runs when inputs are
 unchanged; that design is statically described and **not** live-proven by this
