@@ -38,7 +38,8 @@ through an explicit non-default playbook.
 Host baseline contract validation is implemented.
 Scratch filesystem validation, guarded formatting, and UUID-based mounting are implemented.
 MicroK8s installation, required addons, readiness, OCI forwarding-firewall
-normalization, and an explicit UFW host firewall policy are implemented.
+normalization, a narrow pod → node-local API INPUT allow, and an explicit UFW
+host firewall policy are implemented.
 Argo CD bootstrap and the GitOps root Application handoff are implemented.
 Private runtime configuration materialization is implemented as an explicit opt-in playbook only.
 ```
@@ -152,7 +153,8 @@ An existing filesystem of an unexpected type is never overwritten automatically.
 The `microk8s` role:
 
 * ensures `snapd` and `ufw` packages are present
-* normalizes the OCI Ubuntu cloud-image IPv4 FORWARD REJECT before MicroK8s install
+* normalizes the OCI Ubuntu cloud-image IPv4 FORWARD REJECT and inserts a
+  narrow MicroK8s pod → node-local API INPUT allow before the OCI INPUT REJECT
 * installs MicroK8s from the pinned snap channel `1.29/stable`
 * waits for readiness with `microk8s status --wait-ready`
 * enables only the verified V1-required addons when missing
@@ -197,10 +199,10 @@ allow in/out on cali+
 UFW enabled
 ```
 
-Not opened on the host firewall:
+Not opened on the host firewall to the Internet / UFW public policy:
 
 ```text
-Kubernetes API (16443/tcp)
+Kubernetes API (16443/tcp) from non-pod sources
 kubelet
 cluster-agent
 dqlite
@@ -213,13 +215,21 @@ The host firewall allows TCP/22 for defense in depth without duplicating operato
 
 UFW is never reset and existing unmanaged rules are not blanket-deleted.
 
-### OCI cloud-image forwarding incompatibility
+### OCI cloud-image firewall incompatibilities
 
-OCI Ubuntu cloud images can persist an unconditional IPv4 FORWARD REJECT in
+OCI Ubuntu cloud images persist two IPv4 catch-all REJECT rules in
 `/etc/iptables/rules.v4` (CLOUD_IMG / Oracle Cloud Infrastructure baseline).
-That rule is loaded into the nft-compatible `FORWARD` chain **ahead of** later
-MicroK8s/Calico ACCEPT rules. Forwarded Pod → Kubernetes Service traffic then
-fails with `no route to host` even when:
+Both load into the nft-compatible table **ahead of** later UFW chains: an
+unconditional IPv4 FORWARD REJECT and an unconditional IPv4 INPUT REJECT.
+
+#### 1. Unconditional FORWARD REJECT
+
+```text
+-A FORWARD -j REJECT --reject-with icmp-host-prohibited
+```
+
+That rule precedes later MicroK8s/Calico FORWARD ACCEPT rules. Forwarded
+Pod → Kubernetes Service traffic then fails with `no route to host` even when:
 
 ```text
 net.ipv4.ip_forward = 1
@@ -230,12 +240,55 @@ the Kubernetes Service ClusterIP and backing endpoint are valid
 `DEFAULT_FORWARD_POLICY=ACCEPT` is therefore not sufficient while the earlier
 unconditional FORWARD REJECT remains.
 
-V2 Ansible (microk8s role, before snap install and readiness) normalizes **only**
-the exact incompatible rule:
+V2 Ansible **removes only** that exact FORWARD rule.
+
+#### 2. Unconditional INPUT REJECT vs node-local API
+
+The OCI INPUT catch-all is **retained**:
 
 ```text
--A FORWARD -j REJECT --reject-with icmp-host-prohibited
+-A INPUT -j REJECT --reject-with icmp-host-prohibited
 ```
+
+On the single-node MicroK8s cluster, kube-proxy DNAT rewrites Pod connections
+to the Kubernetes Service onto the node-local kube-apiserver port. That packet
+then hits the host **INPUT** chain, not FORWARD. The OCI INPUT REJECT sits
+before UFW, so UFW Calico-interface allows never see the traffic.
+
+V2 Ansible inserts exactly one narrow allow **immediately before** the INPUT
+REJECT:
+
+```text
+-A INPUT -s 10.1.0.0/16 -p tcp -m tcp --dport 16443 -j ACCEPT
+```
+
+`10.1.0.0/16` is the canonical MicroK8s 1.29/stable Calico pod CIDR
+(`microk8s_pod_cidr`). `16443` is the MicroK8s kube-apiserver port
+(`microk8s_apiserver_port`). These are role defaults, not live Pod, Service,
+or node addresses.
+
+The INPUT catch-all REJECT remains for unrelated host traffic. The Kubernetes
+API is still not opened on UFW or OCI NSGs to the Internet.
+
+#### Shared safety properties
+
+Persistent and runtime normalization run in the `microk8s` role before UFW
+enable and MicroK8s install/readiness.
+
+Runtime FORWARD deletion uses `iptables-nft -C` / `-D` with the exact REJECT
+spec. Runtime INPUT reconciliation plans ordering from `iptables-nft -S INPUT`
+and, when required, deletes the allow by spec then `-I INPUT` so it precedes
+the catch-all REJECT. It does not use nft handles, FORWARD/INPUT line-number
+deletion, or a full table restore.
+
+Do not flush iptables tables (`iptables -F` / `-X` / nft flush), disable UFW,
+delete `/etc/iptables/rules.v4`, delete the OCI INPUT REJECT, or rewrite
+InstanceServices from a template. Unexpected/non-OCI `rules.v4` files fail
+closed. Duplicate catch-all INPUT REJECT rules fail closed. An absent
+`rules.v4` is a no-op and does not create an incomplete firewall file.
+
+The second MicroK8s converge must remain idempotent after FORWARD REJECT is
+gone and the pod-API allow already precedes INPUT REJECT.
 
 Preserved on purpose:
 
@@ -247,16 +300,6 @@ SSH INPUT accept
 UFW incoming deny / outgoing allow / routed allow
 UFW SSH and Calico interface rules
 ```
-
-Runtime deletion uses `iptables-nft -C` / `-D` with that exact rule spec. It
-does not use nft handles, FORWARD line numbers, or a full table restore.
-
-Do not flush iptables tables (`iptables -F` / `-X` / nft flush), disable UFW,
-delete `/etc/iptables/rules.v4`, or rewrite InstanceServices from a template.
-Unexpected/non-OCI `rules.v4` files fail closed. An absent `rules.v4` is a
-no-op and does not create an incomplete firewall file.
-
-The second MicroK8s converge must remain idempotent after the rule is gone.
 
 ## Argo CD bootstrap
 

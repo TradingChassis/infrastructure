@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Static and synthetic regression for OCI cloud-image FORWARD REJECT
-# normalization. Never runs iptables, nft, ufw, or SSH. Never contacts OCI.
+# Static and synthetic regression for OCI cloud-image MicroK8s firewall
+# normalization (FORWARD reject removal + INPUT pod-API allow).
+# Never runs iptables, nft, ufw, or SSH. Never contacts OCI.
 set -euo pipefail
 
 export PYTHONDONTWRITEBYTECODE=1
@@ -28,14 +29,17 @@ sys.dont_write_bytecode = True
 ROOT = Path(sys.argv[1]).resolve()
 HELPER = (
     ROOT
-    / "ansible/roles/microk8s/files/normalize_oci_forward_reject.py"
+    / "ansible/roles/microk8s/files/normalize_oci_microk8s_firewall.py"
 )
 TASKS = ROOT / "ansible/roles/microk8s/tasks/main.yml"
+DEFAULTS = ROOT / "ansible/roles/microk8s/defaults/main.yml"
 README = ROOT / "ansible/README.md"
 V2_DOC = ROOT / "docs/V2_CLEAN_ROOM_DEPLOYMENT.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
 WORKFLOW = ROOT / ".github/workflows/repository-validation.yml"
 
+POD_CIDR = "10.1.0.0/16"
+API_PORT = "16443"
 FORWARD_REJECT = "-A FORWARD -j REJECT --reject-with icmp-host-prohibited"
 INPUT_REJECT = "-A INPUT -j REJECT --reject-with icmp-host-prohibited"
 OUTPUT_JUMP = "-A OUTPUT -d 169.254.0.0/16 -j InstanceServices"
@@ -46,14 +50,20 @@ INSTANCE_SERVICES_RULE = (
     "-A InstanceServices -d 169.254.169.254/32 -p tcp -m tcp --dport 80 "
     "-j ACCEPT"
 )
+ALLOW = (
+    f"-A INPUT -s {POD_CIDR} -p tcp -m tcp --dport {API_PORT} -j ACCEPT"
+)
+SIMILAR_ALLOW = (
+    "-A INPUT -s 192.0.2.0/24 -p tcp -m tcp --dport 16443 -j ACCEPT"
+)
 
 
 def load_helper():
     spec = importlib.util.spec_from_file_location(
-        "normalize_oci_forward_reject", HELPER
+        "normalize_oci_microk8s_firewall", HELPER
     )
     if spec is None or spec.loader is None:
-        raise SystemExit("unable to load FORWARD REJECT helper")
+        raise SystemExit("unable to load MicroK8s firewall helper")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -65,13 +75,28 @@ helper = load_helper()
 def oci_rules(
     *,
     include_forward_reject: bool = True,
+    include_allow: bool = False,
+    allow_after_reject: bool = False,
     extra_forward: str | None = None,
+    extra_input_before_reject: str | None = None,
+    duplicate_input_reject: bool = False,
 ) -> str:
     forward_block = ""
     if include_forward_reject:
         forward_block += FORWARD_REJECT + "\n"
     if extra_forward is not None:
         forward_block += extra_forward + "\n"
+    before_reject = ""
+    if include_allow and not allow_after_reject:
+        before_reject += ALLOW + "\n"
+    if extra_input_before_reject is not None:
+        before_reject += extra_input_before_reject + "\n"
+    after_reject = ""
+    if include_allow and allow_after_reject:
+        after_reject += ALLOW + "\n"
+    second_reject = ""
+    if duplicate_input_reject:
+        second_reject = INPUT_REJECT + "\n"
     return (
         "# CLOUD_IMG: This file was created/modified by the Cloud Image "
         "build process\n"
@@ -85,7 +110,10 @@ def oci_rules(
         "-A INPUT -p icmp -j ACCEPT\n"
         "-A INPUT -i lo -j ACCEPT\n"
         "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT\n"
+        f"{before_reject}"
         f"{INPUT_REJECT}\n"
+        f"{second_reject}"
+        f"{after_reject}"
         f"{forward_block}"
         f"{OUTPUT_JUMP}\n"
         f"{INSTANCE_SERVICES_RULE}\n"
@@ -102,20 +130,47 @@ def unexpected_rules() -> str:
         ":FORWARD ACCEPT [0:0]\n"
         ":OUTPUT ACCEPT [0:0]\n"
         f"{FORWARD_REJECT}\n"
+        f"{INPUT_REJECT}\n"
         "COMMIT\n"
     )
 
 
-def run_cli(path: Path, *, dry_run: bool = False) -> subprocess.CompletedProcess[str]:
-    argv = [sys.executable, str(HELPER), "--rules-file", str(path)]
+def run_cli(
+    path: Path | None,
+    *,
+    dry_run: bool = False,
+    plan_text: str | None = None,
+    pod_cidr: str = POD_CIDR,
+    apiserver_port: str = API_PORT,
+) -> subprocess.CompletedProcess[str]:
+    argv = [
+        sys.executable,
+        str(HELPER),
+        "--pod-cidr",
+        pod_cidr,
+        "--apiserver-port",
+        apiserver_port,
+    ]
+    if plan_text is not None:
+        argv.append("--plan-input-runtime")
+        return subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            input=plan_text,
+        )
+    if path is None:
+        raise SystemExit("run_cli requires a path unless planning runtime")
+    argv.extend(["--rules-file", str(path)])
     if dry_run:
         argv.append("--dry-run")
     return subprocess.run(argv, check=False, capture_output=True, text=True)
 
 
-def expect_error(text: str, code: int) -> str:
+def expect_error(text: str, code: int, **kwargs) -> str:
     try:
-        helper.normalize_rules_text(text)
+        helper.normalize_rules_text(text, POD_CIDR, API_PORT, **kwargs)
     except helper.NormalizeError as exc:
         if exc.code != code:
             raise SystemExit(
@@ -125,142 +180,168 @@ def expect_error(text: str, code: int) -> str:
     raise SystemExit("expected NormalizeError")
 
 
-# --- CASE 1: OCI baseline with the exact bad FORWARD REJECT ---
-
-case1 = oci_rules()
-normalized, removed = helper.normalize_rules_text(case1)
-if removed != 1:
-    raise SystemExit(f"CASE 1: expected 1 removal, got {removed}")
-if FORWARD_REJECT in {
-    line.strip() for line in normalized.splitlines()
-}:
-    raise SystemExit("CASE 1: exact FORWARD REJECT still present")
-if INPUT_REJECT not in normalized:
-    raise SystemExit("CASE 1: INPUT REJECT was not preserved")
-if ":InstanceServices" not in normalized:
-    raise SystemExit("CASE 1: InstanceServices chain was not preserved")
-if OUTPUT_JUMP not in normalized:
-    raise SystemExit("CASE 1: OUTPUT jump to InstanceServices was not preserved")
-if INSTANCE_SERVICES_RULE not in normalized:
-    raise SystemExit("CASE 1: InstanceServices rule was not preserved")
-if "# CLOUD_IMG:" not in normalized:
-    raise SystemExit("CASE 1: CLOUD_IMG marker was not preserved")
-if "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT" not in normalized:
-    raise SystemExit("CASE 1: SSH INPUT accept was not preserved")
-if FORWARD_REJECT not in case1:
-    raise SystemExit("CASE 1 fixture must contain the bad rule")
-print("PASS: CASE 1 OCI baseline exact FORWARD REJECT is removed")
+def allow_immediately_before_reject(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    try:
+        idx = lines.index(INPUT_REJECT)
+    except ValueError:
+        return False
+    return idx > 0 and lines[idx - 1] == ALLOW
 
 
-# --- CASE 2: already normalized OCI baseline ---
-
-case2 = oci_rules(include_forward_reject=False)
-normalized2, removed2 = helper.normalize_rules_text(case2)
-if removed2 != 0:
-    raise SystemExit(f"CASE 2: expected no removal, got {removed2}")
-if normalized2 != case2:
-    raise SystemExit("CASE 2: already-normalized file must be byte-identical")
-print("PASS: CASE 2 already-normalized OCI baseline is a no-op")
-
-
-# --- CASE 3: rules.v4 absent ---
-
-with tempfile.TemporaryDirectory() as tmp:
-    missing = Path(tmp) / "rules.v4"
-    action = helper.normalize_rules_file(missing, write=True)
-    if action != "absent":
-        raise SystemExit(f"CASE 3: expected absent, got {action}")
-    if missing.exists():
-        raise SystemExit("CASE 3: absent path must not create a rules file")
-    backup = missing.with_name(missing.name + helper.BACKUP_SUFFIX)
-    if backup.exists():
-        raise SystemExit("CASE 3: absent path must not create a backup")
-    cli = run_cli(missing)
-    if cli.returncode != 0 or cli.stdout.strip() != "absent":
-        raise SystemExit(
-            f"CASE 3 CLI failed: rc={cli.returncode} out={cli.stdout!r} "
-            f"err={cli.stderr!r}"
-        )
-print("PASS: CASE 3 absent rules.v4 is a safe no-op")
+def preserved(text: str) -> None:
+    for needle in (
+        INPUT_REJECT,
+        OUTPUT_JUMP,
+        INSTANCE_SERVICES_RULE,
+        ":InstanceServices - [0:0]",
+        "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT",
+    ):
+        if needle not in text:
+            raise SystemExit(f"missing preserved line: {needle}")
 
 
-# --- CASE 4: unexpected / non-OCI rules.v4 ---
+# --- CASE A: OCI baseline, allow absent, FORWARD reject present ---
 
-message4 = expect_error(unexpected_rules(), helper.EXIT_UNEXPECTED)
-if "refusing to modify unexpected firewall file" not in message4:
-    raise SystemExit(f"CASE 4: missing fail-closed diagnostic: {message4}")
+case_a = oci_rules()
+normalized_a, action_a = helper.normalize_rules_text(case_a, POD_CIDR, API_PORT)
+if action_a != "changed":
+    raise SystemExit(f"CASE A: expected changed, got {action_a}")
+if FORWARD_REJECT in {line.strip() for line in normalized_a.splitlines()}:
+    raise SystemExit("CASE A: exact FORWARD REJECT still present")
+if not allow_immediately_before_reject(normalized_a):
+    raise SystemExit("CASE A: allow is not immediately before INPUT REJECT")
+preserved(normalized_a)
+if "# CLOUD_IMG:" not in normalized_a:
+    raise SystemExit("CASE A: CLOUD_IMG marker was not preserved")
+print("PASS: CASE A OCI baseline inserts allow before INPUT REJECT and drops FORWARD REJECT")
+
+
+# --- CASE B: already fully normalized ---
+
+case_b = oci_rules(include_forward_reject=False, include_allow=True)
+normalized_b, action_b = helper.normalize_rules_text(case_b, POD_CIDR, API_PORT)
+if action_b != "unchanged":
+    raise SystemExit(f"CASE B: expected unchanged, got {action_b}")
+if normalized_b != case_b:
+    raise SystemExit("CASE B: already-normalized file must be byte-identical")
+print("PASS: CASE B already-normalized OCI baseline is a no-op")
+
+
+# --- CASE C: allow exists after reject ---
+
+case_c = oci_rules(
+    include_forward_reject=False,
+    include_allow=True,
+    allow_after_reject=True,
+)
+normalized_c, action_c = helper.normalize_rules_text(case_c, POD_CIDR, API_PORT)
+if action_c != "changed":
+    raise SystemExit("CASE C: allow-after-reject must be corrected")
+if not allow_immediately_before_reject(normalized_c):
+    raise SystemExit("CASE C: allow was not moved before INPUT REJECT")
+if sum(1 for line in normalized_c.splitlines() if line.strip() == ALLOW) != 1:
+    raise SystemExit("CASE C: duplicate allow after reorder")
+preserved(normalized_c)
+print("PASS: CASE C allow-after-reject is reordered before INPUT REJECT")
+
+
+# --- CASE D: non-OCI file ---
+
+message_d = expect_error(unexpected_rules(), helper.EXIT_UNEXPECTED)
+if "refusing to modify unexpected firewall file" not in message_d:
+    raise SystemExit(f"CASE D: missing fail-closed diagnostic: {message_d}")
 with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp) / "rules.v4"
     original = unexpected_rules()
     path.write_text(original, encoding="utf-8")
     cli = run_cli(path)
     if cli.returncode != helper.EXIT_UNEXPECTED:
-        raise SystemExit(f"CASE 4 CLI expected rc 2, got {cli.returncode}")
+        raise SystemExit(f"CASE D CLI expected rc 2, got {cli.returncode}")
     if path.read_text(encoding="utf-8") != original:
-        raise SystemExit("CASE 4: unexpected file must not be rewritten")
-    backup = path.with_name(path.name + helper.BACKUP_SUFFIX)
-    if backup.exists():
-        raise SystemExit("CASE 4: unexpected file must not create a backup")
-print("PASS: CASE 4 unexpected rules.v4 fails closed")
+        raise SystemExit("CASE D: unexpected file must not be rewritten")
+print("PASS: CASE D unexpected rules.v4 fails closed")
 
 
-# --- CASE 5: similarly named but non-exact FORWARD rule ---
+# --- CASE E: rules.v4 absent ---
 
-case5 = oci_rules(include_forward_reject=False, extra_forward=SIMILAR_FORWARD)
-normalized5, removed5 = helper.normalize_rules_text(case5)
-if removed5 != 0:
-    raise SystemExit("CASE 5: non-exact FORWARD REJECT must not be deleted")
-if SIMILAR_FORWARD not in normalized5:
-    raise SystemExit("CASE 5: similar FORWARD rule was lost")
-if normalized5 != case5:
-    raise SystemExit("CASE 5: non-exact file must remain byte-identical")
-
-case5b = oci_rules(include_forward_reject=True, extra_forward=SIMILAR_FORWARD)
-normalized5b, removed5b = helper.normalize_rules_text(case5b)
-if removed5b != 1:
-    raise SystemExit("CASE 5b: only the exact FORWARD REJECT must be removed")
-if SIMILAR_FORWARD not in normalized5b:
-    raise SystemExit("CASE 5b: similar FORWARD rule must be retained")
-if FORWARD_REJECT in {line.strip() for line in normalized5b.splitlines()}:
-    raise SystemExit("CASE 5b: exact FORWARD REJECT still present")
-print("PASS: CASE 5 non-exact FORWARD rules are not deleted")
+with tempfile.TemporaryDirectory() as tmp:
+    missing = Path(tmp) / "rules.v4"
+    action = helper.normalize_rules_file(
+        missing, POD_CIDR, API_PORT, write=True
+    )
+    if action != "absent":
+        raise SystemExit(f"CASE E: expected absent, got {action}")
+    if missing.exists():
+        raise SystemExit("CASE E: absent path must not create a rules file")
+    cli = run_cli(missing)
+    if cli.returncode != 0 or cli.stdout.strip() != "absent":
+        raise SystemExit(
+            f"CASE E CLI failed: rc={cli.returncode} out={cli.stdout!r}"
+        )
+print("PASS: CASE E absent rules.v4 is a safe no-op")
 
 
-# --- CASE 6: preservation of INPUT / InstanceServices / OUTPUT jump ---
+# --- CASE F: duplicate INPUT REJECT ---
 
-preserved_needles = (
-    INPUT_REJECT,
-    OUTPUT_JUMP,
-    INSTANCE_SERVICES_RULE,
-    ":InstanceServices - [0:0]",
-    "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT",
+case_f = oci_rules(duplicate_input_reject=True)
+expect_error(case_f, helper.EXIT_UNEXPECTED)
+print("PASS: CASE F duplicate INPUT REJECT fails closed")
+
+
+# --- CASE G: preservation + similar non-exact rules retained ---
+
+case_g = oci_rules(
+    include_forward_reject=True,
+    extra_forward=SIMILAR_FORWARD,
+    extra_input_before_reject=SIMILAR_ALLOW,
 )
-for needle in preserved_needles:
-    if needle not in normalized:
-        raise SystemExit(f"CASE 6: missing preserved line: {needle}")
-print("PASS: CASE 6 INPUT REJECT, InstanceServices, and OUTPUT jump retained")
+normalized_g, action_g = helper.normalize_rules_text(case_g, POD_CIDR, API_PORT)
+if action_g != "changed":
+    raise SystemExit("CASE G: expected changed")
+if SIMILAR_FORWARD not in normalized_g:
+    raise SystemExit("CASE G: similar FORWARD rule was lost")
+if SIMILAR_ALLOW not in normalized_g:
+    raise SystemExit("CASE G: similar INPUT allow was lost")
+if not allow_immediately_before_reject(normalized_g):
+    raise SystemExit("CASE G: exact allow missing before INPUT REJECT")
+preserved(normalized_g)
+print("PASS: CASE G preservation and non-exact rules retained")
 
 
-# --- CLI write + idempotent second run + stable backup ---
+# --- PR #54 FORWARD-only already gone, allow missing ---
+
+case_forward_gone = oci_rules(include_forward_reject=False, include_allow=False)
+normalized_fg, action_fg = helper.normalize_rules_text(
+    case_forward_gone, POD_CIDR, API_PORT
+)
+if action_fg != "changed":
+    raise SystemExit("FORWARD-gone/allow-missing must insert the allow")
+if FORWARD_REJECT in {line.strip() for line in normalized_fg.splitlines()}:
+    raise SystemExit("FORWARD REJECT must remain absent")
+if not allow_immediately_before_reject(normalized_fg):
+    raise SystemExit("allow missing after FORWARD-only host state")
+print("PASS: post-PR54 file without allow receives INPUT allow only")
+
+
+# --- CLI write + idempotent second run ---
 
 with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp) / "rules.v4"
     original = oci_rules()
     path.write_text(original, encoding="utf-8")
     first = run_cli(path)
-    if first.returncode != 0 or first.stdout.strip() != "removed":
+    if first.returncode != 0 or first.stdout.strip() != "changed":
         raise SystemExit(
             f"CLI write failed: rc={first.returncode} out={first.stdout!r} "
             f"err={first.stderr!r}"
         )
     written = path.read_text(encoding="utf-8")
-    if FORWARD_REJECT in {line.strip() for line in written.splitlines()}:
-        raise SystemExit("CLI write left the exact FORWARD REJECT in place")
+    if not allow_immediately_before_reject(written):
+        raise SystemExit("CLI write did not place allow before INPUT REJECT")
     backup = path.with_name(path.name + helper.BACKUP_SUFFIX)
-    if not backup.exists():
-        raise SystemExit("CLI write must create a one-time backup")
-    if backup.read_text(encoding="utf-8") != original:
-        raise SystemExit("backup must contain the original rules file")
+    if not backup.exists() or backup.read_text(encoding="utf-8") != original:
+        raise SystemExit("CLI write must create a one-time original backup")
     backup_mtime = backup.stat().st_mtime_ns
     second = run_cli(path)
     if second.returncode != 0 or second.stdout.strip() != "unchanged":
@@ -272,13 +353,68 @@ with tempfile.TemporaryDirectory() as tmp:
         raise SystemExit("CLI second run mutated an already-normalized file")
     if backup.stat().st_mtime_ns != backup_mtime:
         raise SystemExit("CLI second run must not rewrite the stable backup")
-    dry = run_cli(Path(tmp) / "rules.v4", dry_run=True)
-    if dry.returncode != 0 or dry.stdout.strip() != "unchanged":
-        raise SystemExit("dry-run of normalized file must report unchanged")
 print("PASS: CLI write, backup, and second-run idempotency")
 
 
-# --- fail-closed variants ---
+# --- runtime planner ---
+
+runtime_baseline = (
+    "-P INPUT ACCEPT\n"
+    "-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"
+    "-A INPUT -p icmp -j ACCEPT\n"
+    "-A INPUT -i lo -j ACCEPT\n"
+    "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT\n"
+    f"{INPUT_REJECT}\n"
+    "-A INPUT -j ufw-before-logging-input\n"
+)
+if helper.plan_input_runtime(runtime_baseline, POD_CIDR, API_PORT) != "ensure":
+    raise SystemExit("runtime plan must ensure when allow is absent")
+
+runtime_ok = runtime_baseline.replace(
+    INPUT_REJECT, ALLOW + "\n" + INPUT_REJECT
+)
+if helper.plan_input_runtime(runtime_ok, POD_CIDR, API_PORT) != "unchanged":
+    raise SystemExit("runtime plan must be unchanged when allow precedes REJECT")
+
+runtime_after = runtime_baseline + ALLOW + "\n"
+if helper.plan_input_runtime(runtime_after, POD_CIDR, API_PORT) != "ensure":
+    raise SystemExit("runtime plan must ensure when allow follows REJECT")
+
+runtime_dup_reject = runtime_baseline + INPUT_REJECT + "\n"
+try:
+    helper.plan_input_runtime(runtime_dup_reject, POD_CIDR, API_PORT)
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"runtime duplicate REJECT expected rc 2: {exc}")
+else:
+    raise SystemExit("runtime duplicate REJECT must fail closed")
+
+plan_cli = run_cli(None, plan_text=runtime_ok)
+if plan_cli.returncode != 0 or plan_cli.stdout.strip() != "unchanged":
+    raise SystemExit(f"runtime plan CLI failed: {plan_cli.stdout!r} {plan_cli.stderr!r}")
+print("PASS: runtime INPUT planner ordering contract")
+
+
+# --- invalid CIDR / port ---
+
+try:
+    helper.build_allow_line("10.1.0.0/32", API_PORT)
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_USAGE:
+        raise SystemExit(f"narrow CIDR expected usage error: {exc}")
+else:
+    raise SystemExit("host-sized CIDR must be rejected")
+try:
+    helper.build_allow_line(POD_CIDR, "not-a-port")
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_USAGE:
+        raise SystemExit(f"bad port expected usage error: {exc}")
+else:
+    raise SystemExit("non-numeric API port must be rejected")
+print("PASS: helper rejects host-sized CIDR and invalid API port")
+
+
+# --- fail-closed lookalikes ---
 
 almost_oci = oci_rules().replace("Oracle Cloud Infrastructure", "Example Cloud")
 expect_error(almost_oci, helper.EXIT_UNEXPECTED)
@@ -294,15 +430,31 @@ def read(path: Path) -> str:
 
 
 tasks = read(TASKS)
+defaults = read(DEFAULTS)
 helper_src = read(HELPER)
 
-if "normalize_oci_forward_reject.py" not in tasks:
-    raise SystemExit("microk8s role must invoke the FORWARD REJECT helper")
+if "normalize_oci_microk8s_firewall.py" not in tasks:
+    raise SystemExit("microk8s role must invoke the firewall helper")
+if 'microk8s_pod_cidr: "10.1.0.0/16"' not in defaults:
+    raise SystemExit("defaults must set canonical MicroK8s 1.29 pod CIDR")
+if 'microk8s_apiserver_port: "16443"' not in defaults:
+    raise SystemExit("defaults must set MicroK8s API port 16443")
+if "microk8s_pod_cidr | trim" not in tasks or "microk8s_apiserver_port | trim" not in tasks:
+    raise SystemExit("tasks must pass pod CIDR and API port from role defaults")
+if tasks.count("10.1.0.0/16") != 0:
+    raise SystemExit("tasks must not hard-code the pod CIDR")
+if re.search(r'(?m)^\s+-\s+"16443"\s*$', tasks):
+    raise SystemExit("tasks must not bury 16443 as a literal argv value")
+
 for register_name in (
-    "microk8s_oci_forward_reject_file",
+    "microk8s_oci_firewall_file",
     "microk8s_iptables_nft_stat",
     "microk8s_oci_forward_reject_check",
     "microk8s_oci_forward_reject_delete",
+    "microk8s_oci_input_save",
+    "microk8s_oci_input_plan",
+    "microk8s_oci_input_allow_delete",
+    "microk8s_oci_input_allow_insert",
 ):
     if f"register: {register_name}" not in tasks:
         raise SystemExit(f"missing role-prefixed register {register_name}")
@@ -310,22 +462,28 @@ for match in re.finditer(r"(?m)^\s+register:\s+(\S+)\s*$", tasks):
     var = match.group(1)
     if not var.startswith("microk8s_"):
         raise SystemExit(f"register {var} must use the microk8s_ role prefix")
+
 if "/etc/iptables/rules.v4" not in tasks:
     raise SystemExit("persistent normalization must target /etc/iptables/rules.v4")
 if "/usr/sbin/iptables-nft" not in tasks:
     raise SystemExit("runtime normalization must use /usr/sbin/iptables-nft")
 if "iptables-legacy" in tasks and "are not modified" not in tasks:
     raise SystemExit("role must not mutate iptables-legacy")
+if " -S " not in tasks and "\n      - -S\n" not in tasks:
+    if "-S" not in tasks:
+        raise SystemExit("runtime INPUT plan must use iptables-nft -S")
 
 install_idx = tasks.find("Install MicroK8s from the pinned snap channel")
 ready_idx = tasks.find("Wait for MicroK8s to become ready")
-helper_idx = tasks.find("Normalize persistent OCI cloud-image IPv4 FORWARD REJECT")
-runtime_idx = tasks.find("Delete nft-compatible unconditional IPv4 FORWARD REJECT")
-if min(install_idx, ready_idx, helper_idx, runtime_idx) < 0:
-    raise SystemExit("microk8s role is missing required FORWARD/MicroK8s tasks")
-if not (helper_idx < runtime_idx < install_idx < ready_idx):
+ufw_idx = tasks.find("Enable UFW with the explicit MicroK8s-compatible host policy")
+helper_idx = tasks.find("Normalize persistent OCI cloud-image IPv4 firewall for MicroK8s")
+forward_idx = tasks.find("Delete nft-compatible unconditional IPv4 FORWARD REJECT")
+input_idx = tasks.find("Insert nft-compatible INPUT pod-API allow")
+if min(install_idx, ready_idx, ufw_idx, helper_idx, forward_idx, input_idx) < 0:
+    raise SystemExit("microk8s role is missing required firewall/MicroK8s tasks")
+if not (helper_idx < forward_idx < input_idx < ufw_idx < install_idx < ready_idx):
     raise SystemExit(
-        "OCI FORWARD normalization must run before MicroK8s install/readiness"
+        "OCI firewall normalization must run before UFW enable and MicroK8s readiness"
     )
 
 if re.search(r'(?m)^\s+-\s+(-n|--line-numbers)\s*$', tasks):
@@ -338,27 +496,26 @@ if "ufw disable" in tasks or "state: disabled" in tasks:
     raise SystemExit("role must not disable UFW")
 if "10.152.183.1" in tasks or "10.1.118" in tasks:
     raise SystemExit("role must not hard-code Kubernetes Service or pod IPs")
+if "--handle" in tasks or "nft delete" in tasks:
+    raise SystemExit("runtime deletion must not use nft handles")
 
-check_spec = (
+for token in (
     "-C",
     "FORWARD",
-    "-j",
-    "REJECT",
-    "--reject-with",
-    "icmp-host-prohibited",
-)
-delete_spec = (
     "-D",
-    "FORWARD",
+    "-I",
+    "INPUT",
     "-j",
     "REJECT",
     "--reject-with",
     "icmp-host-prohibited",
-)
-for token in check_spec + delete_spec:
+    "ACCEPT",
+    "--dport",
+    "--plan-input-runtime",
+):
     if token not in tasks:
         raise SystemExit(f"runtime tasks missing semantic token {token}")
-print("PASS: Ansible task ordering and semantic nft -C/-D contract")
+print("PASS: Ansible task ordering and semantic nft contract")
 
 if re.search(r"\b(subprocess|os\.system|os\.popen|Popen)\b", helper_src):
     raise SystemExit("helper must not spawn processes")
@@ -369,9 +526,13 @@ if re.search(
     raise SystemExit("helper must not invoke firewall binaries")
 if "10.152.183.1" in helper_src or "10.1.118" in helper_src:
     raise SystemExit("helper must not hard-code Kubernetes Service or pod IPs")
+if "10.1.0.0/16" in helper_src:
+    raise SystemExit("helper must take pod CIDR as input, not hard-code it")
 if re.search(r'(?m)^\s+.*\b(-F|--flush)\b', helper_src):
     raise SystemExit("helper must not flush firewall chains")
-print("PASS: helper is file-only and does not call firewall binaries")
+if "INPUT_REJECT" not in helper_src or "FORWARD_REJECT" not in helper_src:
+    raise SystemExit("helper must retain both INPUT and FORWARD contracts")
+print("PASS: helper is file/plan-only and does not call firewall binaries")
 
 readme = read(README)
 for needle in (
@@ -379,39 +540,46 @@ for needle in (
     "DEFAULT_FORWARD_POLICY",
     "InstanceServices",
     "/etc/iptables/rules.v4",
+    "INPUT REJECT",
+    "kube-proxy",
+    "16443",
+    "10.1.0.0/16",
 ):
     if needle not in readme:
         raise SystemExit(f"ansible/README.md missing {needle}")
 if "iptables -F" in readme and "Do not" not in readme:
     raise SystemExit("ansible/README.md must not recommend iptables flushing")
-print("PASS: ansible README documents the OCI FORWARD contract")
+print("PASS: ansible README documents FORWARD and INPUT contracts")
 
 v2 = read(V2_DOC)
 v2_lower = v2.lower()
 for needle in (
     "FORWARD REJECT",
+    "INPUT REJECT",
     "no route to host",
     "CoreDNS",
     "metrics-server",
     "InstanceServices",
     "do not flush",
+    "kube-proxy",
+    "16443",
 ):
     if needle.lower() not in v2_lower:
         raise SystemExit(f"V2 clean-room doc missing {needle}")
-print("PASS: V2 clean-room doc covers expected MicroK8s firewall state")
+print("PASS: V2 clean-room doc covers both OCI firewall problems")
 
 changelog = read(CHANGELOG)
 unreleased = changelog.split("## [0.1.0]", 1)[0]
-if "FORWARD REJECT" not in unreleased and "forwarding firewall" not in unreleased.lower():
-    raise SystemExit("CHANGELOG [Unreleased] must mention the firewall fix")
-print("PASS: CHANGELOG [Unreleased] records the firewall fix")
+if "node-local" not in unreleased.lower() and "INPUT" not in unreleased:
+    raise SystemExit("CHANGELOG [Unreleased] must mention the INPUT/API allow")
+print("PASS: CHANGELOG [Unreleased] records the INPUT allow")
 
 workflow = read(WORKFLOW)
 if "test_ansible_oci_forward_reject_contract.sh" not in workflow:
-    raise SystemExit("CI must run the OCI FORWARD REJECT contract test")
-print("PASS: CI enforces the OCI FORWARD REJECT contract")
+    raise SystemExit("CI must run the OCI firewall contract test")
+print("PASS: CI enforces the OCI firewall contract")
 
-implementation_files = (TASKS, HELPER, README, V2_DOC)
+implementation_files = (TASKS, HELPER, README, V2_DOC, DEFAULTS)
 forbidden_live = (
     "10.0.1.31",
     "10.152.183.1",
@@ -429,6 +597,6 @@ for path in implementation_files:
 print("PASS: implementation files contain no live IP/OCID hard-codes")
 
 compile(HELPER.read_text(encoding="utf-8"), str(HELPER), "exec")
-print("PASS: FORWARD REJECT helper py_compile")
-print("PASS: Ansible OCI FORWARD REJECT contract")
+print("PASS: firewall helper py_compile")
+print("PASS: Ansible OCI MicroK8s firewall contract")
 PY

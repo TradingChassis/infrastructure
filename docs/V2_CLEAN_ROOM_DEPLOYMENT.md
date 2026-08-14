@@ -912,35 +912,37 @@ argocd_bootstrap
 
 `private_runtime_config` is **intentionally not** included in `site.yml`.
 
-### OCI cloud-image forwarding firewall
+### OCI cloud-image firewall (FORWARD + INPUT)
 
-OCI Ubuntu 24.04 cloud images can persist an unconditional IPv4 FORWARD REJECT
-in `/etc/iptables/rules.v4` (CLOUD_IMG / Oracle Cloud Infrastructure baseline):
-
-```text
--A FORWARD -j REJECT --reject-with icmp-host-prohibited
-```
-
-On the nft-compatible table this rule can precede later MicroK8s/Calico ACCEPT
-rules. Pods then fail to reach the Kubernetes Service with `no route to host`.
-UFW `DEFAULT_FORWARD_POLICY=ACCEPT` (routed default allow) is not sufficient
-while that earlier REJECT remains.
-
-The `microk8s` role normalizes **only** that exact forwarding rule, in both the
-persistent `rules.v4` file and the loaded nft-compatible FORWARD chain, before
-MicroK8s installation and readiness. It preserves:
+OCI Ubuntu 24.04 cloud images persist two IPv4 catch-all REJECT rules in
+`/etc/iptables/rules.v4` (CLOUD_IMG / Oracle Cloud Infrastructure baseline).
+Both load into the nft-compatible table ahead of UFW.
 
 ```text
-OCI INPUT REJECT
-OCI InstanceServices (169.254.0.0/16 metadata, DNS, DHCP, iSCSI)
-SSH access
-UFW incoming deny / outgoing allow / routed allow
-UFW SSH and Calico interface rules
+1. FORWARD REJECT
+   -A FORWARD -j REJECT --reject-with icmp-host-prohibited
+   Blocks forwarded Pod → Kubernetes Service traffic.
+   V2 removes this exact rule only.
+
+2. INPUT REJECT (retained)
+   -A INPUT -j REJECT --reject-with icmp-host-prohibited
+   On the single-node cluster, kube-proxy DNAT sends Pod → Kubernetes
+   Service connections to the node-local kube-apiserver (tcp/16443).
+   That packet hits INPUT, not FORWARD, and is rejected before UFW.
+   V2 inserts one allow from microk8s_pod_cidr (10.1.0.0/16) to
+   microk8s_apiserver_port (16443) immediately before this REJECT.
 ```
 
-Do not flush iptables tables, disable UFW, delete `rules.v4`, or rewrite
-InstanceServices from a template. Live re-converge after this repository fix
-has **not** been performed yet.
+UFW `DEFAULT_FORWARD_POLICY=ACCEPT` and UFW Calico interface allows do not
+fix either rule while it still precedes the UFW chains.
+
+Do not flush iptables tables, disable UFW, delete `rules.v4`, delete the OCI
+INPUT REJECT, or rewrite InstanceServices from a template.
+
+Live evidence after PR #54: the FORWARD REJECT is gone, INPUT REJECT remains,
+and Pod → node-local API still failed with `no route to host` until this INPUT
+allow exists. That INPUT allow is implemented here and is **not** claimed
+live-reconciled by this repository change.
 
 ### Example first converge
 
@@ -984,6 +986,8 @@ scratch workload directories /mnt/scratch/dev and /mnt/scratch/prod present on t
 MicroK8s installed (channel 1.29/stable) with required addons
 host UFW policy applied (incoming deny, outgoing allow, routed allow, SSH, Calico)
 OCI cloud-image unconditional IPv4 FORWARD REJECT removed from rules.v4 and nft FORWARD
+OCI INPUT catch-all REJECT retained
+narrow MicroK8s pod CIDR → tcp/16443 allow inserted before INPUT REJECT
 SSH retained, UFW active, /mnt/scratch retained
 Kubernetes node Ready
 CoreDNS Ready
@@ -994,8 +998,9 @@ root Application from argocd/root-app.yaml submitted
 ```
 
 The MicroK8s system-pod Ready state above is the intended first MicroK8s
-converge outcome after the OCI forwarding-firewall normalization. It is
-**not** claimed live-validated by this repository change.
+converge outcome after both OCI FORWARD and INPUT firewall normalizations.
+FORWARD REJECT removal was live-proven after PR #54. The INPUT pod-API allow
+is **not** claimed live-validated by this repository change.
 
 Successful `site.yml` does **not** mean:
 
@@ -1259,13 +1264,15 @@ role supports that claim. Prefer:
 no destructive reformatting
 no unintended firewall reset
 no reintroduction of the OCI unconditional IPv4 FORWARD REJECT
+no deletion of the OCI catch-all INPUT REJECT
 no Argo CD reinstall churn beyond idempotent module behavior
 ```
 
-The second MicroK8s converge must remain idempotent once the OCI forwarding
-rule is gone (persistent file unchanged, nft `-C` already absent so `-D` is
-skipped). That claim is statically designed and **not** live-proven after this
-repository fix.
+The second MicroK8s converge must remain idempotent once the OCI FORWARD
+REJECT is gone and the pod → node-local API allow already precedes INPUT
+REJECT (persistent file unchanged, nft INPUT plan `unchanged` so `-D`/`-I`
+are skipped). That claim is statically designed and **not** live-proven after
+this repository fix.
 
 The private runtime role is designed for idempotent second runs when inputs are
 unchanged; that design is statically described and **not** live-proven by this
