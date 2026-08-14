@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -697,7 +698,834 @@ almost_oci = oci_rules().replace("Oracle Cloud Infrastructure", "Example Cloud")
 expect_error(almost_oci, helper.EXIT_UNEXPECTED)
 expect_error(oci_rules().replace(INPUT_REJECT, ""), helper.EXIT_UNEXPECTED)
 expect_error(oci_rules().replace(OUTPUT_JUMP, "-A OUTPUT -j ACCEPT"), helper.EXIT_UNEXPECTED)
+dup_output_jump = oci_rules().replace(
+    OUTPUT_JUMP, OUTPUT_JUMP + "\n" + OUTPUT_JUMP
+)
+expect_error(dup_output_jump, helper.EXIT_UNEXPECTED)
+no_is_rules = oci_rules().replace(INSTANCE_SERVICES_RULE + "\n", "").replace(
+    "-A InstanceServices -d 169.254.169.254/32 -p udp -m udp --dport 53 "
+    "-j ACCEPT\n",
+    "",
+)
+expect_error(no_is_rules, helper.EXIT_UNEXPECTED)
+dup_is_rules = oci_rules().replace(
+    INSTANCE_SERVICES_RULE, INSTANCE_SERVICES_RULE + "\n" + INSTANCE_SERVICES_RULE
+)
+expect_error(dup_is_rules, helper.EXIT_UNEXPECTED)
 print("PASS: incomplete OCI lookalikes fail closed")
+
+
+# --- nft filter runtime planner (boot/Ansible --apply-runtime) ---
+
+PERSIST = case_d
+required_input, required_output_jump, required_is = helper.desired_runtime_contract(
+    PERSIST, POD_CIDR, API_PORT, KUBELET_PORT
+)
+UFW_INPUT = (
+    "-A INPUT -j ufw-before-logging-input\n"
+    "-A INPUT -j ufw-before-input\n"
+    "-A INPUT -j ufw-after-input\n"
+    "-A INPUT -j ufw-after-logging-input\n"
+    "-A INPUT -j ufw-reject-input\n"
+    "-A INPUT -j ufw-track-input\n"
+)
+UFW_FORWARD = (
+    "-A FORWARD -j ufw-before-logging-forward\n"
+    "-A FORWARD -j ufw-before-forward\n"
+    "-A FORWARD -j ufw-after-forward\n"
+    "-A FORWARD -j ufw-after-logging-forward\n"
+    "-A FORWARD -j ufw-reject-forward\n"
+    "-A FORWARD -j ufw-track-forward\n"
+)
+UFW_OUTPUT = (
+    "-A OUTPUT -j ufw-before-logging-output\n"
+    "-A OUTPUT -j ufw-before-output\n"
+    "-A OUTPUT -j ufw-after-output\n"
+    "-A OUTPUT -j ufw-after-logging-output\n"
+    "-A OUTPUT -j ufw-reject-output\n"
+    "-A OUTPUT -j ufw-track-output\n"
+)
+MICROK8S_FORWARD = f"-A FORWARD -s {POD_CIDR} -j ACCEPT"
+UNRELATED_INPUT = (
+    "-A INPUT -s 192.0.2.0/24 -p tcp -m tcp --dport 16443 -j ACCEPT"
+)
+UNRELATED_FORWARD = "-A FORWARD -s 192.0.2.0/24 -j ACCEPT"
+OCI_INPUT_BASELINE = (
+    "-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"
+    "-A INPUT -p icmp -j ACCEPT\n"
+    "-A INPUT -i lo -j ACCEPT\n"
+    "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT\n"
+)
+
+
+def ufw_only_input() -> str:
+    return "-P INPUT DROP\n" + UFW_INPUT
+
+
+def ufw_only_forward(*, with_microk8s: bool = False, with_oci_reject: bool = False) -> str:
+    extra = ""
+    if with_oci_reject:
+        extra += FORWARD_REJECT + "\n"
+    if with_microk8s:
+        extra += MICROK8S_FORWARD + "\n"
+    return "-P FORWARD DROP\n" + extra + UFW_FORWARD
+
+
+def ufw_only_output(*, with_jump: bool = False) -> str:
+    prefix = ""
+    if with_jump:
+        prefix = required_output_jump + "\n"
+    return "-P OUTPUT ACCEPT\n" + prefix + UFW_OUTPUT
+
+
+def is_dump(rules: list[str] | None) -> str | None:
+    if rules is None:
+        return None
+    return "-N InstanceServices\n" + "".join(rule + "\n" for rule in rules)
+
+
+def canonical_input(*, extra_after: str = "") -> str:
+    body = "".join(line + "\n" for line in required_input)
+    return "-P INPUT DROP\n" + body + extra_after + UFW_INPUT
+
+
+def plan_filter(
+    persist: str,
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    is_save: str | None,
+) -> tuple[str, list[tuple[str, ...]]]:
+    return helper.plan_filter_runtime(
+        persist,
+        POD_CIDR,
+        API_PORT,
+        KUBELET_PORT,
+        input_save=input_save,
+        forward_save=forward_save,
+        output_save=output_save,
+        instanceservices_save=is_save,
+    )
+
+
+def assert_safe_ops(ops: list[tuple[str, ...]], label: str) -> None:
+    for op in ops:
+        if not op:
+            raise SystemExit(f"{label}: empty nft op")
+        if op[0] not in {"-N", "-A", "-D", "-I"}:
+            raise SystemExit(f"{label}: unexpected nft op {op}")
+        if any(part in {"-F", "-X", "--flush"} for part in op):
+            raise SystemExit(f"{label}: flush/delete-chain op {op}")
+        joined = " ".join(op)
+        if "legacy" in joined or "restore" in joined or "iptables-restore" in joined:
+            raise SystemExit(f"{label}: forbidden nft op {op}")
+        if op[0] in {"-I", "-D"} and len(op) > 2 and op[2].isdigit():
+            if int(op[2]) < 1:
+                raise SystemExit(f"{label}: invalid INPUT rule index {op}")
+            if op[0] == "-D" and len(op) != 3:
+                raise SystemExit(f"{label}: numbered delete must be -D CHAIN N {op}")
+        if op[0] == "-N" and op[1:] != ("InstanceServices",):
+            raise SystemExit(f"{label}: refusing to create unexpected chain {op}")
+
+
+def parse_chain(save: str | None, chain: str) -> dict[str, object]:
+    if save is None:
+        return {"exists": False, "headers": [], "rules": []}
+    headers: list[str] = []
+    rules: list[str] = []
+    for raw in save.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("-A "):
+            rules.append(line)
+        else:
+            headers.append(line)
+    return {"exists": True, "headers": headers, "rules": rules}
+
+
+def render_chain(state: dict[str, object], chain: str) -> str | None:
+    if not state["exists"]:
+        return None
+    headers = list(state["headers"])  # type: ignore[arg-type]
+    rules = list(state["rules"])  # type: ignore[arg-type]
+    return "\n".join(headers + rules) + "\n"
+
+
+def apply_ops(
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    is_save: str | None,
+    ops: list[tuple[str, ...]],
+) -> tuple[str, str, str, str | None]:
+    states = {
+        "INPUT": parse_chain(input_save, "INPUT"),
+        "FORWARD": parse_chain(forward_save, "FORWARD"),
+        "OUTPUT": parse_chain(output_save, "OUTPUT"),
+        "InstanceServices": parse_chain(is_save, "InstanceServices"),
+    }
+    for op in ops:
+        action = op[0]
+        if action == "-N":
+            chain = op[1]
+            if states[chain]["exists"]:
+                raise SystemExit(f"simulate: chain {chain} already exists")
+            states[chain] = {
+                "exists": True,
+                "headers": [f"-N {chain}"],
+                "rules": [],
+            }
+            continue
+        chain = op[1]
+        rules = list(states[chain]["rules"])  # type: ignore[arg-type]
+        if action == "-D" and len(op) == 3 and op[2].isdigit():
+            delete_at = int(op[2]) - 1
+            if delete_at < 0 or delete_at >= len(rules):
+                raise SystemExit(f"simulate: invalid delete index {op}")
+            del rules[delete_at]
+            states[chain]["rules"] = rules
+            continue
+        if action == "-I" and len(op) > 2 and op[2].isdigit():
+            insert_at = int(op[2]) - 1
+            spec_line = "-A " + " ".join([chain, *op[3:]])
+            if insert_at < 0 or insert_at > len(rules):
+                raise SystemExit(f"simulate: invalid insert index {op}")
+            rules.insert(insert_at, spec_line)
+            states[chain]["rules"] = rules
+            continue
+        spec_line = "-A " + " ".join(op[1:])
+        if action == "-D":
+            try:
+                rules.remove(spec_line)
+            except ValueError as exc:
+                raise SystemExit(f"simulate: cannot delete {spec_line}") from exc
+        elif action == "-I":
+            rules.insert(0, spec_line)
+        elif action == "-A":
+            rules.append(spec_line)
+        else:
+            raise SystemExit(f"simulate: unknown action {op}")
+        states[chain]["rules"] = rules
+    return (
+        render_chain(states["INPUT"], "INPUT") or "",
+        render_chain(states["FORWARD"], "FORWARD") or "",
+        render_chain(states["OUTPUT"], "OUTPUT") or "",
+        render_chain(states["InstanceServices"], "InstanceServices"),
+    )
+
+
+def is_reject_insert(op: tuple[str, ...]) -> bool:
+    return (
+        op[0] == "-I"
+        and len(op) > 1
+        and op[1] == "INPUT"
+        and "-j" in op
+        and "REJECT" in op
+    )
+
+
+def assert_partial_safety(
+    label: str,
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    is_save: str | None,
+    ops: list[tuple[str, ...]],
+) -> None:
+    current = (input_save, forward_save, output_save, is_save)
+    live_input = helper._chain_append_lines(current[0], "INPUT")
+    if not helper.input_ssh_path_intact(live_input, required_input):
+        # Starting lockout is allowed only when REJECT already precedes SSH/UFW.
+        # The first INPUT mutation must restore a path, not insert another REJECT.
+        pass
+    seen_required_accept_insert = False
+    saw_is_append = False
+    for index, op in enumerate(ops):
+        if is_reject_insert(op):
+            if not op[2].isdigit():
+                raise SystemExit(
+                    f"{label}: INPUT REJECT insert must be indexed, got {op}"
+                )
+            if int(op[2]) != len(
+                [line for line in required_input if line != INPUT_REJECT]
+            ) + 1:
+                raise SystemExit(
+                    f"{label}: INPUT REJECT inserted at {op[2]}, not after accepts: {op}"
+                )
+            if not seen_required_accept_insert:
+                live_before = helper._chain_append_lines(current[0], "INPUT")
+                accepts = [line for line in required_input if line != INPUT_REJECT]
+                if live_before[: len(accepts)] != accepts:
+                    raise SystemExit(
+                        f"{label}: INPUT REJECT inserted before ACCEPT prefix "
+                        f"at op {index}: {op}"
+                    )
+        if (
+            op[0] == "-I"
+            and len(op) > 1
+            and op[1] == "INPUT"
+            and not is_reject_insert(op)
+        ):
+            seen_required_accept_insert = True
+        if len(op) > 1 and op[1] == "InstanceServices" and op[0] == "-A":
+            saw_is_append = True
+        if len(op) > 1 and op[1] == "InstanceServices" and op[0] == "-D":
+            if not saw_is_append and current[3] is not None:
+                live_is = helper._chain_append_lines(current[3], "InstanceServices")
+                if live_is and any(live_is.count(line) == 0 for line in required_is):
+                    raise SystemExit(
+                        f"{label}: InstanceServices deleted before adding missing rules"
+                    )
+        current = apply_ops(*current, [op])
+        live_input = helper._chain_append_lines(current[0], "INPUT")
+        if not helper.input_ssh_path_intact(live_input, required_input):
+            raise SystemExit(
+                f"{label}: SSH lockout after op {index} {op}: {live_input}"
+            )
+        if op[0] in {"-F", "-X", "--flush"}:
+            raise SystemExit(f"{label}: flush after op {index} {op}")
+        if len(op) > 1 and op[1] == "InstanceServices" and op[0] == "-D":
+            if current[3] is None:
+                raise SystemExit(f"{label}: InstanceServices disappeared after {op}")
+            if not helper._chain_append_lines(current[3], "InstanceServices"):
+                raise SystemExit(
+                    f"{label}: InstanceServices emptied after op {index} {op}"
+                )
+
+
+def expect_filter(
+    label: str,
+    persist: str,
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    is_save: str | None,
+    *,
+    want_action: str,
+) -> tuple[str, str, str, str | None]:
+    action, ops = plan_filter(
+        persist, input_save, forward_save, output_save, is_save
+    )
+    if action != want_action:
+        raise SystemExit(f"{label}: expected action {want_action}, got {action} ops={ops}")
+    assert_safe_ops(ops, label)
+    if want_action == "unchanged":
+        if ops:
+            raise SystemExit(f"{label}: unchanged plan emitted ops {ops}")
+        return input_save, forward_save, output_save, is_save
+    assert_partial_safety(label, input_save, forward_save, output_save, is_save, ops)
+    updated = apply_ops(input_save, forward_save, output_save, is_save, ops)
+    second_action, second_ops = plan_filter(persist, *updated)
+    if second_action != "unchanged" or second_ops:
+        raise SystemExit(
+            f"{label}: second pass expected unchanged, got {second_action} {second_ops}"
+        )
+    return updated
+
+
+def assert_contract(label: str, input_save: str, forward_save: str, output_save: str, is_save: str | None) -> None:
+    live_input = helper._chain_append_lines(input_save, "INPUT")
+    prefix_len = len(required_input)
+    if live_input[:prefix_len] != required_input:
+        raise SystemExit(f"{label}: owned INPUT prefix mismatch: {live_input[:prefix_len]}")
+    if any(line in set(required_input) for line in live_input[prefix_len:]):
+        raise SystemExit(f"{label}: owned INPUT rule duplicated after prefix")
+    for jump in helper._chain_append_lines(UFW_INPUT, "INPUT"):
+        if jump not in live_input:
+            raise SystemExit(f"{label}: missing UFW INPUT jump {jump}")
+    if FORWARD_REJECT in helper._chain_append_lines(forward_save, "FORWARD"):
+        raise SystemExit(f"{label}: OCI FORWARD REJECT present at runtime")
+    live_output = helper._chain_append_lines(output_save, "OUTPUT")
+    if sum(1 for line in live_output if line == required_output_jump) != 1:
+        raise SystemExit(f"{label}: OUTPUT InstanceServices jump must exist once")
+    if is_save is None:
+        raise SystemExit(f"{label}: InstanceServices chain missing")
+    if helper._chain_append_lines(is_save, "InstanceServices") != required_is:
+        raise SystemExit(f"{label}: InstanceServices rules mismatch")
+
+
+# 5. UFW-only post-reboot runtime
+updated = expect_filter(
+    "ufw-only post-reboot",
+    PERSIST,
+    ufw_only_input(),
+    ufw_only_forward(),
+    ufw_only_output(),
+    None,
+    want_action="changed",
+)
+assert_contract("ufw-only post-reboot", *updated)
+print("PASS: UFW-only post-reboot runtime is reconciled then unchanged")
+
+# 6. missing all OCI runtime baseline rules (UFW + MicroK8s FORWARD only)
+updated = expect_filter(
+    "missing OCI baseline",
+    PERSIST,
+    ufw_only_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(),
+    None,
+    want_action="changed",
+)
+assert_contract("missing OCI baseline", *updated)
+if MICROK8S_FORWARD not in updated[1]:
+    raise SystemExit("missing OCI baseline: MicroK8s FORWARD rule was lost")
+print("PASS: missing OCI runtime baseline is restored without touching MicroK8s FORWARD")
+
+# 7-8. missing InstanceServices chain / OUTPUT jump with otherwise canonical INPUT
+updated = expect_filter(
+    "missing InstanceServices",
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(),
+    None,
+    want_action="changed",
+)
+assert_contract("missing InstanceServices", *updated)
+print("PASS: missing InstanceServices chain and OUTPUT jump are restored")
+
+updated = expect_filter(
+    "missing OUTPUT jump",
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("missing OUTPUT jump", *updated)
+print("PASS: missing OUTPUT InstanceServices jump is restored")
+
+# 9-11. missing only 16443 / only 10250 / both
+input_no_api = canonical_input().replace(API_ALLOW + "\n", "")
+updated = expect_filter(
+    "missing only 16443",
+    PERSIST,
+    input_no_api,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("missing only 16443", *updated)
+if count_line(updated[0], API_ALLOW) != 1:
+    raise SystemExit("missing only 16443: API allow not restored once")
+print("PASS: missing only 16443 is restored before INPUT REJECT")
+
+input_no_kubelet = canonical_input().replace(KUBELET_ALLOW + "\n", "")
+updated = expect_filter(
+    "missing only 10250",
+    PERSIST,
+    input_no_kubelet,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("missing only 10250", *updated)
+print("PASS: missing only 10250 is restored before INPUT REJECT")
+
+input_no_pods = canonical_input().replace(API_ALLOW + "\n", "").replace(
+    KUBELET_ALLOW + "\n", ""
+)
+updated = expect_filter(
+    "missing both pod allows",
+    PERSIST,
+    input_no_pods,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("missing both pod allows", *updated)
+print("PASS: missing both pod allows are restored before INPUT REJECT")
+
+# 12. duplicate owned rules
+dup_input = canonical_input().replace(
+    API_ALLOW + "\n", API_ALLOW + "\n" + API_ALLOW + "\n"
+)
+updated = expect_filter(
+    "duplicate owned INPUT",
+    PERSIST,
+    dup_input,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("duplicate owned INPUT", *updated)
+print("PASS: duplicate owned INPUT rules are collapsed")
+
+# 13. misplaced owned rules (pod allows after REJECT / UFW)
+misplaced = (
+    "-P INPUT DROP\n"
+    + OCI_INPUT_BASELINE
+    + INPUT_REJECT
+    + "\n"
+    + UFW_INPUT
+    + API_ALLOW
+    + "\n"
+    + KUBELET_ALLOW
+    + "\n"
+)
+updated = expect_filter(
+    "misplaced owned INPUT",
+    PERSIST,
+    misplaced,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("misplaced owned INPUT", *updated)
+print("PASS: misplaced owned INPUT rules are moved before INPUT REJECT")
+
+# 14-16. fully normalized pre-reboot / post-service / second pass
+canonical = (
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+)
+expect_filter("fully normalized", PERSIST, *canonical, want_action="unchanged")
+assert_contract("fully normalized", *canonical)
+print("PASS: fully normalized runtime is unchanged")
+
+# PR #56 live pre-reboot order (10250 then 16443 then OCI baseline) canonicalizes once
+pr56_live_input = (
+    "-P INPUT DROP\n"
+    f"{KUBELET_ALLOW}\n"
+    f"{API_ALLOW}\n"
+    + OCI_INPUT_BASELINE
+    + INPUT_REJECT
+    + "\n"
+    + UFW_INPUT
+)
+updated = expect_filter(
+    "PR56 live INPUT order",
+    PERSIST,
+    pr56_live_input,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("PR56 live INPUT order", *updated)
+print("PASS: pre-reboot PR56 INPUT order canonicalizes once then is unchanged")
+
+# 17-18. UFW chains and unrelated rules preserved
+with_unrelated = canonical_input(extra_after=UNRELATED_INPUT + "\n")
+forward_with_unrelated = (
+    ufw_only_forward(with_microk8s=True).rstrip("\n") + "\n" + UNRELATED_FORWARD + "\n"
+)
+updated = expect_filter(
+    "unrelated INPUT preserved",
+    PERSIST,
+    with_unrelated,
+    forward_with_unrelated,
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="unchanged",
+)
+if UNRELATED_INPUT not in updated[0]:
+    raise SystemExit("unrelated INPUT rule was lost")
+if UNRELATED_FORWARD not in updated[1]:
+    raise SystemExit("unrelated FORWARD rule was lost")
+if MICROK8S_FORWARD not in updated[1]:
+    raise SystemExit("MicroK8s FORWARD rule was lost")
+print("PASS: UFW jumps and unrelated INPUT rules are preserved")
+
+# 19-20. FORWARD MicroK8s preserved; forbidden OCI FORWARD reject removed
+updated = expect_filter(
+    "FORWARD REJECT removal",
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True, with_oci_reject=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+    want_action="changed",
+)
+assert_contract("FORWARD REJECT removal", *updated)
+if MICROK8S_FORWARD not in updated[1]:
+    raise SystemExit("FORWARD REJECT removal deleted MicroK8s FORWARD")
+if FORWARD_REJECT in updated[1]:
+    raise SystemExit("FORWARD REJECT removal left the OCI FORWARD REJECT")
+print("PASS: OCI FORWARD REJECT is deleted; MicroK8s FORWARD is preserved")
+
+# 21. unexpected persistent baseline
+try:
+    plan_filter(
+        unexpected_rules(),
+        ufw_only_input(),
+        ufw_only_forward(),
+        ufw_only_output(),
+        None,
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"unexpected persist expected rc 2: {exc}")
+else:
+    raise SystemExit("unexpected persist must fail closed")
+print("PASS: unexpected persistent baseline fails closed")
+
+# 22-23. malformed / duplicate / unexpected live InstanceServices
+try:
+    plan_filter(
+        PERSIST,
+        canonical_input(),
+        ufw_only_forward(),
+        ufw_only_output(with_jump=True),
+        is_dump(required_is + ["-A InstanceServices -j ACCEPT"]),
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"unexpected IS rule expected rc 2: {exc}")
+else:
+    raise SystemExit("unexpected live InstanceServices rule must fail closed")
+
+try:
+    plan_filter(
+        PERSIST,
+        canonical_input(),
+        ufw_only_forward(),
+        "-P OUTPUT ACCEPT\n-A OUTPUT -d 192.0.2.1 -j InstanceServices\n" + UFW_OUTPUT,
+        is_dump(required_is),
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"unexpected OUTPUT jump expected rc 2: {exc}")
+else:
+    raise SystemExit("unexpected OUTPUT InstanceServices jump must fail closed")
+print("PASS: malformed or unexpected InstanceServices runtime fails closed")
+
+# apply-runtime absent persist fails closed without needing live nft
+with tempfile.TemporaryDirectory() as tmp:
+    missing = Path(tmp) / "rules.v4"
+    try:
+        helper.apply_filter_runtime(
+            missing, POD_CIDR, API_PORT, KUBELET_PORT, execute=True
+        )
+    except helper.NormalizeError as exc:
+        if exc.code != helper.EXIT_UNEXPECTED:
+            raise SystemExit(f"absent apply-runtime expected rc 2: {exc}")
+        if "required for runtime" not in str(exc):
+            raise SystemExit(f"absent apply-runtime diagnostic: {exc}")
+    else:
+        raise SystemExit("absent persist apply-runtime must fail closed")
+print("PASS: apply-runtime fails closed when rules.v4 is absent")
+
+
+def interrupt_each_op(
+    label: str,
+    persist: str,
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    is_save: str | None,
+) -> None:
+    action, ops = plan_filter(
+        persist, input_save, forward_save, output_save, is_save
+    )
+    if action != "changed":
+        raise SystemExit(f"{label}: expected changed plan, got {action} {ops}")
+    assert_safe_ops(ops, label)
+    assert_partial_safety(
+        label, input_save, forward_save, output_save, is_save, ops
+    )
+    input_ops = [op for op in ops if len(op) > 1 and op[1] == "INPUT"]
+    if input_ops and is_reject_insert(input_ops[0]):
+        raise SystemExit(
+            f"{label}: first INPUT mutation inserted REJECT: {input_ops[0]}"
+        )
+    current = (input_save, forward_save, output_save, is_save)
+    for index, op in enumerate(ops):
+        current = apply_ops(*current, [op])
+        live_input = helper._chain_append_lines(current[0], "INPUT")
+        if not helper.input_ssh_path_intact(live_input, required_input):
+            raise SystemExit(
+                f"{label}: interrupt after op {index} {op} blocked SSH: {live_input}"
+            )
+    assert_contract(label + " final", *current)
+    second_action, second_ops = plan_filter(persist, *current)
+    if second_action != "unchanged" or second_ops:
+        raise SystemExit(
+            f"{label}: second pass expected unchanged, got {second_action} {second_ops}"
+        )
+
+
+interrupt_each_op(
+    "UFW-only partial INPUT",
+    PERSIST,
+    ufw_only_input(),
+    ufw_only_forward(),
+    ufw_only_output(),
+    None,
+)
+print("PASS: UFW-only INPUT stays SSH-safe after every planned mutation")
+
+pr56_recovery_input = (
+    "-P INPUT DROP\n"
+    f"{API_ALLOW}\n"
+    f"{KUBELET_ALLOW}\n"
+    + UFW_INPUT
+)
+updated = expect_filter(
+    "PR56 live recovery INPUT",
+    PERSIST,
+    pr56_recovery_input,
+    ufw_only_forward(),
+    ufw_only_output(),
+    None,
+    want_action="changed",
+)
+assert_contract("PR56 live recovery INPUT", *updated)
+if OCI_INPUT_BASELINE.splitlines()[0] not in updated[0]:
+    raise SystemExit("PR56 recovery: OCI RELATED/ESTABLISHED missing")
+if INPUT_REJECT not in updated[0]:
+    raise SystemExit("PR56 recovery: INPUT REJECT missing")
+interrupt_each_op(
+    "PR56 live recovery partial INPUT",
+    PERSIST,
+    pr56_recovery_input,
+    ufw_only_forward(),
+    ufw_only_output(),
+    None,
+)
+print("PASS: exact PR #56 16443+10250+UFW recovery fixture reconciles SSH-safely")
+
+reject_early = "-P INPUT DROP\n" + INPUT_REJECT + "\n" + UFW_INPUT
+interrupt_each_op(
+    "REJECT misplaced early",
+    PERSIST,
+    reject_early,
+    ufw_only_forward(),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+)
+print("PASS: REJECT-before-UFW is restored without an SSH lockout window")
+
+reject_late = "-P INPUT DROP\n" + UFW_INPUT + INPUT_REJECT + "\n"
+interrupt_each_op(
+    "REJECT misplaced late",
+    PERSIST,
+    reject_late,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+)
+print("PASS: REJECT-after-UFW is moved without an SSH lockout window")
+
+interrupt_each_op(
+    "duplicate owned INPUT partial",
+    PERSIST,
+    dup_input,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+)
+interrupt_each_op(
+    "missing only 16443 partial",
+    PERSIST,
+    input_no_api,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+)
+print("PASS: duplicate and single-missing INPUT rebuilds stay SSH-safe")
+
+prefix_plus_extra = canonical_input(extra_after=API_ALLOW + "\n")
+interrupt_each_op(
+    "owned INPUT extra after prefix",
+    PERSIST,
+    prefix_plus_extra,
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(required_is),
+)
+print("PASS: extra owned INPUT after a correct prefix is trimmed without lockout")
+
+# InstanceServices: add missing first, never flush, unknown rules mutate nothing
+missing_one_is = required_is[:1]
+updated = expect_filter(
+    "InstanceServices missing one rule",
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(missing_one_is),
+    want_action="changed",
+)
+assert_contract("InstanceServices missing one rule", *updated)
+action, is_ops = plan_filter(
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(missing_one_is),
+)
+if any(op[0] == "-D" for op in is_ops):
+    raise SystemExit("InstanceServices missing one rule must append, not delete")
+if is_ops[0][0] != "-A" or is_ops[0][1] != "InstanceServices":
+    raise SystemExit(f"InstanceServices missing rule must start with -A: {is_ops}")
+interrupt_each_op(
+    "InstanceServices missing one rule partial",
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(missing_one_is),
+)
+
+reordered_is = list(reversed(required_is))
+action, reorder_ops = plan_filter(
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(reordered_is),
+)
+is_chain_ops = [op for op in reorder_ops if len(op) > 1 and op[1] == "InstanceServices"]
+first_delete = next(
+    (i for i, op in enumerate(is_chain_ops) if op[0] == "-D"),
+    None,
+)
+first_append = next(
+    (i for i, op in enumerate(is_chain_ops) if op[0] == "-A"),
+    None,
+)
+if first_append is None or (first_delete is not None and first_delete < first_append):
+    raise SystemExit(
+        f"InstanceServices reorder must append before deleting: {is_chain_ops}"
+    )
+if any(op[0] in {"-F", "-X"} for op in reorder_ops):
+    raise SystemExit("InstanceServices reorder flushed the chain")
+interrupt_each_op(
+    "InstanceServices reorder partial",
+    PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(reordered_is),
+)
+print("PASS: InstanceServices adds missing rules before destructive cleanup")
+
+try:
+    plan_filter(
+        PERSIST,
+        ufw_only_input(),
+        ufw_only_forward(),
+        ufw_only_output(),
+        is_dump(required_is + ["-A InstanceServices -p tcp -j ACCEPT"]),
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"unknown IS plus UFW-only expected rc 2: {exc}")
+else:
+    raise SystemExit("unknown InstanceServices rule must emit zero mutations")
+print("PASS: unknown InstanceServices rules cause zero nft mutations")
+print("PASS: nft filter runtime planner contract")
 
 
 # --- repository contract ---
@@ -706,9 +1534,16 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+UNIT = (
+    ROOT
+    / "ansible/roles/microk8s/templates/tradingchassis-oci-microk8s-firewall.service.j2"
+)
+HANDLERS = ROOT / "ansible/roles/microk8s/handlers/main.yml"
 tasks = read(TASKS)
 defaults = read(DEFAULTS)
 helper_src = read(HELPER)
+unit_src = read(UNIT)
+handlers = read(HANDLERS)
 
 if "normalize_oci_microk8s_firewall.py" not in tasks:
     raise SystemExit("microk8s role must invoke the firewall helper")
@@ -718,6 +1553,10 @@ if 'microk8s_apiserver_port: "16443"' not in defaults:
     raise SystemExit("defaults must set MicroK8s API port 16443")
 if 'microk8s_kubelet_port: "10250"' not in defaults:
     raise SystemExit("defaults must set MicroK8s kubelet port 10250")
+if "microk8s_firewall_helper_path:" not in defaults:
+    raise SystemExit("defaults must set the installed firewall helper path")
+if "tradingchassis-oci-microk8s-firewall.service" not in defaults:
+    raise SystemExit("defaults must set the repository-owned firewall unit name")
 if "microk8s_pod_cidr | trim" not in tasks:
     raise SystemExit("tasks must pass pod CIDR from role defaults")
 if "microk8s_apiserver_port | trim" not in tasks:
@@ -726,24 +1565,23 @@ if "microk8s_kubelet_port | trim" not in tasks:
     raise SystemExit("tasks must pass kubelet port from role defaults")
 if "--kubelet-port" not in tasks:
     raise SystemExit("tasks must pass --kubelet-port to the helper")
+if "--apply-runtime" not in tasks:
+    raise SystemExit("role must reconcile nft runtime via --apply-runtime")
 if tasks.count("10.1.0.0/16") != 0:
     raise SystemExit("tasks must not hard-code the pod CIDR")
 if re.search(r'(?m)^\s+-\s+"16443"\s*$', tasks):
     raise SystemExit("tasks must not bury 16443 as a literal argv value")
 if re.search(r'(?m)^\s+-\s+"10250"\s*$', tasks):
     raise SystemExit("tasks must not bury 10250 as a literal argv value")
+if "/tmp/tradingchassis-normalize" in tasks:
+    raise SystemExit("firewall helper must not live in /tmp")
 
 for register_name in (
     "microk8s_oci_firewall_file",
     "microk8s_iptables_nft_stat",
-    "microk8s_oci_forward_reject_check",
-    "microk8s_oci_forward_reject_delete",
-    "microk8s_oci_input_save",
-    "microk8s_oci_input_plan",
-    "microk8s_oci_input_kubelet_allow_delete",
-    "microk8s_oci_input_api_allow_delete",
-    "microk8s_oci_input_kubelet_allow_insert",
-    "microk8s_oci_input_api_allow_insert",
+    "microk8s_oci_firewall_runtime",
+    "microk8s_oci_firewall_unit",
+    "microk8s_oci_firewall_unit_enable",
 ):
     if f"register: {register_name}" not in tasks:
         raise SystemExit(f"missing role-prefixed register {register_name}")
@@ -751,60 +1589,62 @@ for match in re.finditer(r"(?m)^\s+register:\s+(\S+)\s*$", tasks):
     var = match.group(1)
     if not var.startswith("microk8s_"):
         raise SystemExit(f"register {var} must use the microk8s_ role prefix")
-if "microk8s_oci_input_plan_action" not in tasks:
-    raise SystemExit("role must record the INPUT plan action")
-if "microk8s_oci_input_plan_ports" not in tasks:
-    raise SystemExit("role must record the INPUT plan ports")
-plan_fact_block = tasks.split(
-    "Record nft-compatible INPUT pod-host allow plan", 1
-)
-if len(plan_fact_block) != 2 or "changed_when: false" not in plan_fact_block[1][:400]:
-    raise SystemExit("INPUT plan set_fact must not report changed")
 
-if "/etc/iptables/rules.v4" not in tasks:
-    raise SystemExit("persistent normalization must target /etc/iptables/rules.v4")
-if "/usr/sbin/iptables-nft" not in tasks:
-    raise SystemExit("runtime normalization must use /usr/sbin/iptables-nft")
+if "microk8s_firewall_rules_file" not in tasks:
+    raise SystemExit("persistent normalization must use the role rules-file default")
+if "microk8s_iptables_nft" not in tasks:
+    raise SystemExit("role must assert the iptables-nft path from defaults")
+if "/usr/sbin/iptables-nft" not in defaults:
+    raise SystemExit("defaults must pin /usr/sbin/iptables-nft")
 if "iptables-legacy" in tasks and "are not modified" not in tasks:
     raise SystemExit("role must not mutate iptables-legacy")
-if "-S" not in tasks:
-    raise SystemExit("runtime INPUT plan must use iptables-nft -S")
+if "iptables-persistent" in tasks or "netfilter-persistent" in tasks:
+    raise SystemExit("role must not install a second full-table firewall manager")
+if "force: \"{{ microk8s_oci_firewall_unit is changed }}\"" not in tasks:
+    raise SystemExit(
+        "unit enablement must refresh [Install] aliases when the unit file changes"
+    )
+if "state: started" in tasks.split("Enable OCI MicroK8s firewall boot reconciliation unit", 1)[-1][:500]:
+    raise SystemExit("boot unit enablement must not start the oneshot during converge")
 
 install_idx = tasks.find("Install MicroK8s from the pinned snap channel")
 ready_idx = tasks.find("Wait for MicroK8s to become ready")
 ufw_idx = tasks.find("Enable UFW with the explicit MicroK8s-compatible host policy")
 helper_idx = tasks.find("Normalize persistent OCI cloud-image IPv4 firewall for MicroK8s")
-forward_idx = tasks.find("Delete nft-compatible unconditional IPv4 FORWARD REJECT")
-kubelet_insert_idx = tasks.find("Insert nft-compatible INPUT pod-kubelet allow")
-api_insert_idx = tasks.find("Insert nft-compatible INPUT pod-API allow")
+apply_idx = tasks.find("Reconcile nft-compatible OCI MicroK8s firewall runtime")
+unit_idx = tasks.find("Install OCI MicroK8s firewall boot reconciliation unit")
+flush_idx = tasks.find("Flush systemd reload before enabling the firewall boot unit")
+enable_idx = tasks.find("Enable OCI MicroK8s firewall boot reconciliation unit")
 if min(
     install_idx,
     ready_idx,
     ufw_idx,
     helper_idx,
-    forward_idx,
-    kubelet_insert_idx,
-    api_insert_idx,
+    apply_idx,
+    unit_idx,
+    flush_idx,
+    enable_idx,
 ) < 0:
     raise SystemExit("microk8s role is missing required firewall/MicroK8s tasks")
 if not (
     helper_idx
-    < forward_idx
-    < kubelet_insert_idx
-    < api_insert_idx
     < ufw_idx
+    < apply_idx
+    < unit_idx
+    < flush_idx
+    < enable_idx
     < install_idx
     < ready_idx
 ):
     raise SystemExit(
-        "OCI firewall normalization must run before UFW enable and MicroK8s readiness"
+        "persist, UFW enable, runtime apply, and boot unit must precede MicroK8s"
     )
 
 if re.search(r'(?m)^\s+-\s+(-n|--line-numbers)\s*$', tasks):
     raise SystemExit("runtime deletion must not use numeric line numbers")
 if re.search(r'(?m)^\s+-\s+(-F|-X|--flush)\s*$', tasks):
     raise SystemExit("role must not flush iptables chains")
-if "iptables-restore" in tasks:
+if "iptables-restore" in tasks or "iptables-nft-restore" in tasks:
     raise SystemExit("role must not restore a full iptables table")
 if "ufw disable" in tasks or "state: disabled" in tasks:
     raise SystemExit("role must not disable UFW")
@@ -812,46 +1652,118 @@ if "10.152.183.1" in tasks or "10.1.118" in tasks:
     raise SystemExit("role must not hard-code Kubernetes Service or pod IPs")
 if "--handle" in tasks or "nft delete" in tasks:
     raise SystemExit("runtime deletion must not use nft handles")
-
-for token in (
-    "-C",
-    "FORWARD",
-    "-D",
-    "-I",
-    "INPUT",
-    "-j",
-    "REJECT",
-    "--reject-with",
-    "icmp-host-prohibited",
-    "ACCEPT",
-    "--dport",
-    "--plan-input-runtime",
-    "--kubelet-port",
-):
-    if token not in tasks:
-        raise SystemExit(f"runtime tasks missing semantic token {token}")
+if "notify: Reload systemd for OCI MicroK8s firewall boot unit" not in tasks:
+    raise SystemExit("unit file changes must notify the systemd daemon-reload handler")
+if "meta: flush_handlers" not in tasks:
+    raise SystemExit("systemd daemon-reload handler must flush before unit enablement")
+if "daemon_reload: true" not in handlers:
+    raise SystemExit("firewall boot unit handler must daemon-reload systemd")
+if "when: microk8s_oci_firewall_unit is changed" in tasks:
+    raise SystemExit("daemon reload must be a handler, not an inline when: changed task")
+if "changed_when: (microk8s_oci_firewall_runtime.stdout | trim) == \"changed\"" not in tasks:
+    raise SystemExit("runtime apply must report changed only when the helper says changed")
 print("PASS: Ansible task ordering and semantic nft contract")
 
-if re.search(r"\b(subprocess|os\.system|os\.popen|Popen)\b", helper_src):
-    raise SystemExit("helper must not spawn processes")
-if re.search(
-    r"""['\"](/sbin/|/usr/sbin/|/usr/bin/)?(iptables|ip6tables|nft|ufw)""",
-    helper_src,
-):
-    raise SystemExit("helper must not invoke firewall binaries")
+if helper.IPTABLES_NFT != "/usr/sbin/iptables-nft":
+    raise SystemExit("helper must pin IPTABLES_NFT to /usr/sbin/iptables-nft")
+if "/sbin/iptables-legacy" in helper_src or "/usr/sbin/iptables-legacy" in helper_src:
+    raise SystemExit("helper must not invoke iptables-legacy")
+if "iptables-restore" in helper_src or "iptables-nft-restore" in helper_src:
+    raise SystemExit("helper must not restore a whole iptables table")
+if "shell=True" in helper_src:
+    raise SystemExit("helper must not invoke iptables through a shell")
+if "os.system" in helper_src or "os.popen" in helper_src or "Popen" in helper_src:
+    raise SystemExit("helper must not use os.system/os.popen/Popen")
 if "10.152.183.1" in helper_src or "10.1.118" in helper_src:
     raise SystemExit("helper must not hard-code Kubernetes Service or pod IPs")
 if "10.1.0.0/16" in helper_src:
     raise SystemExit("helper must take pod CIDR as input, not hard-code it")
-if re.search(r'(?m)^\s+.*\b(-F|--flush)\b', helper_src):
-    raise SystemExit("helper must not flush firewall chains")
+if '"-F", "-X", "--flush"' not in helper_src and "'-F', '-X', '--flush'" not in helper_src:
+    raise SystemExit("helper must refuse flush operations")
 if "INPUT_REJECT" not in helper_src or "FORWARD_REJECT" not in helper_src:
     raise SystemExit("helper must retain both INPUT and FORWARD contracts")
 if "10250" in helper_src:
     raise SystemExit("helper must take kubelet port as input, not hard-code it")
 if "16443" in helper_src:
     raise SystemExit("helper must take API port as input, not hard-code it")
-print("PASS: helper is file/plan-only and does not call firewall binaries")
+if "subprocess.run" not in helper_src:
+    raise SystemExit("apply-runtime must invoke iptables-nft via subprocess.run")
+if "reversed(required_input)" in helper_src:
+    raise SystemExit("must not prepend REJECT by reversing the full INPUT contract")
+if "input_ssh_path_intact" not in helper_src:
+    raise SystemExit("helper must check SSH accessibility while planning INPUT")
+print("PASS: helper apply-runtime uses argv-only iptables-nft without flush/restore")
+
+for needle in (
+    "DefaultDependencies=no",
+    "After=local-fs.target ufw.service",
+    "Wants=ufw.service network-pre.target",
+    "PartOf=ufw.service",
+    "Before=network-pre.target snap.microk8s.daemon-containerd.service snap.microk8s.daemon-kubelite.service",
+    "Type=oneshot",
+    "RemainAfterExit=yes",
+    "WantedBy=multi-user.target ufw.service",
+    "RequiredBy=snap.microk8s.daemon-containerd.service snap.microk8s.daemon-kubelite.service",
+    "--apply-runtime",
+    "{{ microk8s_python_interpreter }}",
+    "{{ microk8s_firewall_helper_path }}",
+    "{{ microk8s_firewall_rules_file }}",
+    "{{ microk8s_pod_cidr | trim }}",
+    "{{ microk8s_apiserver_port | trim }}",
+    "{{ microk8s_kubelet_port | trim }}",
+):
+    if needle not in unit_src:
+        raise SystemExit(f"firewall unit missing {needle}")
+if "Sleep" in unit_src or "sleep" in unit_src:
+    raise SystemExit("firewall unit must not sleep")
+if "network-online" in unit_src:
+    raise SystemExit("firewall unit must not wait for network-online")
+if "iptables-legacy" in unit_src or "iptables-restore" in unit_src:
+    raise SystemExit("firewall unit must not invoke legacy/restore")
+if "10.1.0.0/16" in unit_src or "16443" in unit_src or "10250" in unit_src:
+    raise SystemExit("firewall unit must template CIDR/ports from role defaults")
+if re.search(r"(?m)^Requires=.*snap\.microk8s", unit_src):
+    raise SystemExit("firewall unit must not Require snap units (cycle risk)")
+if "PartOf=snap" in unit_src:
+    raise SystemExit("firewall unit must not be PartOf snap units")
+if re.search(r"(?m)^WantedBy=ufw\.service$", unit_src):
+    raise SystemExit("WantedBy=ufw.service must be combined with multi-user.target")
+if "BindsTo=ufw.service" in unit_src:
+    raise SystemExit("firewall unit must not BindsTo ufw.service")
+print("PASS: systemd boot unit ordering and ExecStart contract")
+
+analyze = shutil.which("systemd-analyze")
+if analyze is not None:
+    rendered = (
+        unit_src.replace("{{ microk8s_python_interpreter }}", "/usr/bin/python3")
+        .replace(
+            "{{ microk8s_firewall_helper_path }}",
+            "/usr/local/lib/tradingchassis/normalize_oci_microk8s_firewall.py",
+        )
+        .replace("{{ microk8s_firewall_rules_file }}", "/etc/iptables/rules.v4")
+        .replace("{{ microk8s_pod_cidr | trim }}", "192.0.2.0/24")
+        .replace("{{ microk8s_apiserver_port | trim }}", "1")
+        .replace("{{ microk8s_kubelet_port | trim }}", "2")
+    )
+    if "{{" in rendered:
+        raise SystemExit("firewall unit still contains unrendered Jinja")
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_path = Path(tmp) / "tradingchassis-oci-microk8s-firewall.service"
+        unit_path.write_text(rendered, encoding="utf-8")
+        proc = subprocess.run(
+            [analyze, "verify", str(unit_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        verify_text = (proc.stdout + proc.stderr).lower()
+        if "cyclic" in verify_text or "ordering cycle" in verify_text:
+            raise SystemExit(
+                f"systemd-analyze verify reported a cycle:\n{proc.stdout}{proc.stderr}"
+            )
+    print("PASS: systemd-analyze verify reported no unit ordering cycle")
+else:
+    print("PASS: systemd-analyze not installed; unit cycle check is static")
 
 readme = read(README)
 for needle in (
@@ -865,12 +1777,19 @@ for needle in (
     "10250",
     "10.1.0.0/16",
     "kubelet",
+    "tradingchassis-oci-microk8s-firewall.service",
+    "UFW boot",
+    "PartOf=ufw.service",
+    "RequiredBy",
+    "WantedBy=ufw.service",
 ):
     if needle not in readme:
         raise SystemExit(f"ansible/README.md missing {needle}")
 if "iptables -F" in readme and "Do not" not in readme:
     raise SystemExit("ansible/README.md must not recommend iptables flushing")
-print("PASS: ansible README documents FORWARD and INPUT contracts")
+if "iptables-persistent" in readme and "Do not" not in readme:
+    raise SystemExit("ansible/README.md must not recommend iptables-persistent")
+print("PASS: ansible README documents FORWARD, INPUT, and boot contracts")
 
 v2 = read(V2_DOC)
 v2_lower = v2.lower()
@@ -886,6 +1805,11 @@ for needle in (
     "16443",
     "10250",
     "kubelet",
+    "tradingchassis-oci-microk8s-firewall.service",
+    "NOT yet",
+    "PartOf=ufw.service",
+    "RequiredBy",
+    "WantedBy=ufw.service",
 ):
     if needle.lower() not in v2_lower:
         raise SystemExit(f"V2 clean-room doc missing {needle}")
@@ -895,14 +1819,16 @@ changelog = read(CHANGELOG)
 unreleased = changelog.split("## [0.1.0]", 1)[0]
 if "10250" not in unreleased and "kubelet" not in unreleased.lower():
     raise SystemExit("CHANGELOG [Unreleased] must mention the kubelet INPUT allow")
-print("PASS: CHANGELOG [Unreleased] records the kubelet allow")
+if "reboot" not in unreleased.lower() and "boot" not in unreleased.lower():
+    raise SystemExit("CHANGELOG [Unreleased] must mention boot/reboot firewall reconciliation")
+print("PASS: CHANGELOG [Unreleased] records the kubelet allow and boot reconcile")
 
 workflow = read(WORKFLOW)
 if "test_ansible_oci_forward_reject_contract.sh" not in workflow:
     raise SystemExit("CI must run the OCI firewall contract test")
 print("PASS: CI enforces the OCI firewall contract")
 
-implementation_files = (TASKS, HELPER, README, V2_DOC, DEFAULTS)
+implementation_files = (TASKS, HELPER, README, V2_DOC, DEFAULTS, UNIT, HANDLERS)
 forbidden_live = (
     "10.0.1.31",
     "10.152.183.1",

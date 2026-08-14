@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """Normalize OCI Ubuntu cloud-image IPv4 filter rules for MicroK8s.
 
-This helper never probes or mutates live kernel firewall tables. It only
-inspects/rewrites a supplied iptables-save file, or plans runtime INPUT
-ordering from a supplied `iptables-nft -S INPUT` dump.
-
 Persistent file contract:
 
   1. Remove the exact OCI cloud-image FORWARD REJECT, if present:
@@ -14,12 +10,21 @@ Persistent file contract:
      OCI catch-all INPUT REJECT, in that canonical order.
   3. Preserve that INPUT REJECT, InstanceServices, SSH, and unrelated lines.
 
-Runtime planner contract:
+Runtime contract:
 
-  Each required pod → host TCP allow must exist exactly once and, when the
-  OCI INPUT REJECT is present, appear before it. Relative order of the two
-  allows is not a runtime correctness requirement, so sequential `-I INPUT`
-  cannot create a reordering loop.
+  Planning from supplied iptables-nft -S dumps never mutates kernel tables.
+  --apply-runtime inspects and mutates only /usr/sbin/iptables-nft using
+  argv-form semantic specs. It never flushes INPUT/OUTPUT/FORWARD, never
+  calls iptables-legacy, and never restores a whole table.
+
+  Owned INPUT rules from the normalized persistent file are placed as a
+  contiguous prefix ahead of later UFW jumps. Required INPUT ACCEPT rules
+  are inserted before the OCI catch-all REJECT so a partial apply cannot
+  leave REJECT ahead of every SSH/UFW path. The exact OCI FORWARD REJECT
+  is deleted when present. The OUTPUT InstanceServices jump and
+  InstanceServices chain rules are restored when missing. Missing
+  InstanceServices rules are appended before owned duplicates are deleted.
+  Unexpected extra InstanceServices rules fail closed with no mutations.
 
 It refuses to modify an unexpected/non-OCI firewall file.
 It does not create a rules file when the path is absent.
@@ -31,6 +36,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,6 +47,7 @@ EXIT_USAGE = 3
 FORWARD_REJECT = "-A FORWARD -j REJECT --reject-with icmp-host-prohibited"
 INPUT_REJECT = "-A INPUT -j REJECT --reject-with icmp-host-prohibited"
 BACKUP_SUFFIX = ".tradingchassis-oci-forward.bak"
+IPTABLES_NFT = "/usr/sbin/iptables-nft"
 
 
 class NormalizeError(Exception):
@@ -181,6 +188,30 @@ def normalize_rules_text(
             f"{reject_count} catch-all INPUT REJECT rules",
             EXIT_UNEXPECTED,
         )
+    is_append = _chain_append_lines(text, "InstanceServices")
+    if not is_append:
+        raise NormalizeError(
+            "error: refusing to modify firewall file with no "
+            "InstanceServices rules",
+            EXIT_UNEXPECTED,
+        )
+    if len(is_append) != len(set(is_append)):
+        raise NormalizeError(
+            "error: refusing to modify firewall file with duplicate "
+            "InstanceServices rules",
+            EXIT_UNEXPECTED,
+        )
+    output_jumps = [
+        line
+        for line in _chain_append_lines(text, "OUTPUT")
+        if line.endswith("-j InstanceServices")
+    ]
+    if len(output_jumps) != 1:
+        raise NormalizeError(
+            "error: refusing to modify firewall file with "
+            f"{len(output_jumps)} OUTPUT InstanceServices jumps",
+            EXIT_UNEXPECTED,
+        )
     rebuilt: list[str] = []
     for line in original_lines:
         if line != "" and stripped(line) == FORWARD_REJECT:
@@ -297,6 +328,330 @@ def plan_input_runtime(
     return "ensure", needed
 
 
+def _chain_append_lines(save_text: str, chain: str) -> list[str]:
+    prefix = f"-A {chain}"
+    lines: list[str] = []
+    for raw in save_text.splitlines():
+        line = stripped(raw)
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(prefix + " ") or line == prefix:
+            lines.append(line)
+    return lines
+
+
+def _spec_argv(append_line: str, action: str) -> tuple[str, ...]:
+    parts = append_line.split()
+    if len(parts) < 3 or parts[0] != "-A":
+        raise NormalizeError(
+            f"error: refusing to parse unexpected iptables spec {append_line!r}",
+            EXIT_UNEXPECTED,
+        )
+    return (action, parts[1], *parts[2:])
+
+
+def input_ssh_path_intact(rules: list[str], required_input: list[str]) -> bool:
+    """True when OCI REJECT cannot hide SSH: absent, or RELATED/SSH/UFW precede it."""
+    if INPUT_REJECT not in rules:
+        return True
+    before = rules[: rules.index(INPUT_REJECT)]
+    if any(line.startswith("-A INPUT -j ufw-") for line in before):
+        return True
+    ssh_relevant = [
+        line
+        for line in required_input
+        if line != INPUT_REJECT
+        and ("RELATED,ESTABLISHED" in line or "--dport 22" in line)
+    ]
+    return any(line in before for line in ssh_relevant)
+
+
+def desired_runtime_contract(
+    persistent_text: str, pod_cidr: str, apiserver_port: str, kubelet_port: str
+) -> tuple[list[str], str, list[str]]:
+    normalized, _action = normalize_rules_text(
+        persistent_text, pod_cidr, apiserver_port, kubelet_port
+    )
+    input_rules = _chain_append_lines(normalized, "INPUT")
+    is_rules = _chain_append_lines(normalized, "InstanceServices")
+    output_jumps = [
+        line
+        for line in _chain_append_lines(normalized, "OUTPUT")
+        if line.endswith("-j InstanceServices")
+    ]
+    if sum(1 for line in input_rules if line == INPUT_REJECT) != 1:
+        raise NormalizeError(
+            "error: refusing runtime plan without exactly one INPUT REJECT",
+            EXIT_UNEXPECTED,
+        )
+    if len(output_jumps) != 1:
+        raise NormalizeError(
+            "error: refusing runtime plan with "
+            f"{len(output_jumps)} OUTPUT InstanceServices jumps",
+            EXIT_UNEXPECTED,
+        )
+    if not is_rules:
+        raise NormalizeError(
+            "error: refusing runtime plan with no InstanceServices rules",
+            EXIT_UNEXPECTED,
+        )
+    if len(input_rules) != len(set(input_rules)):
+        raise NormalizeError(
+            "error: refusing runtime plan with duplicate owned INPUT rules",
+            EXIT_UNEXPECTED,
+        )
+    if len(is_rules) != len(set(is_rules)):
+        raise NormalizeError(
+            "error: refusing runtime plan with duplicate InstanceServices rules",
+            EXIT_UNEXPECTED,
+        )
+    return input_rules, output_jumps[0], is_rules
+
+
+def _reject_insert_argv(position: int) -> tuple[str, ...]:
+    reject_argv = _spec_argv(INPUT_REJECT, "-I")
+    return (reject_argv[0], reject_argv[1], str(position), *reject_argv[2:])
+
+
+def _assert_ssh_path(rules: list[str], required_input: list[str]) -> None:
+    if not input_ssh_path_intact(rules, required_input):
+        raise NormalizeError(
+            "error: refusing INPUT plan that would block SSH",
+            EXIT_UNEXPECTED,
+        )
+
+
+def _delete_owned_input_after_prefix(
+    ops: list[tuple[str, ...]],
+    simulated: list[str],
+    required_input: list[str],
+    owned_input: set[str],
+) -> None:
+    prefix_len = len(required_input)
+    for index in range(len(simulated) - 1, prefix_len - 1, -1):
+        if simulated[index] not in owned_input:
+            continue
+        ops.append(("-D", "INPUT", str(index + 1)))
+        simulated.pop(index)
+        _assert_ssh_path(simulated, required_input)
+
+
+def _plan_input_runtime(
+    ops: list[tuple[str, ...]],
+    live_input: list[str],
+    required_input: list[str],
+    owned_input: set[str],
+) -> None:
+    accepts = [line for line in required_input if line != INPUT_REJECT]
+    if not accepts or required_input[-1] != INPUT_REJECT:
+        raise NormalizeError(
+            "error: refusing INPUT plan without ACCEPT prefix plus REJECT",
+            EXIT_UNEXPECTED,
+        )
+    simulated = list(live_input)
+    prefix_len = len(required_input)
+    if simulated[:prefix_len] == required_input:
+        _delete_owned_input_after_prefix(
+            ops, simulated, required_input, owned_input
+        )
+        return
+
+    # Remove catch-all REJECT copies first so an existing UFW SSH path
+    # is usable before any later REJECT insert. Do not insert REJECT
+    # until the required ACCEPT prefix is in place.
+    for line in live_input:
+        if line == INPUT_REJECT:
+            ops.append(_spec_argv(line, "-D"))
+    simulated = [line for line in simulated if line != INPUT_REJECT]
+    _assert_ssh_path(simulated, required_input)
+
+    for line in reversed(accepts):
+        ops.append(_spec_argv(line, "-I"))
+        simulated.insert(0, line)
+        _assert_ssh_path(simulated, required_input)
+
+    ops.append(_reject_insert_argv(len(accepts) + 1))
+    simulated.insert(len(accepts), INPUT_REJECT)
+    _assert_ssh_path(simulated, required_input)
+    if simulated[:prefix_len] != required_input:
+        raise NormalizeError(
+            "error: refusing INPUT plan that did not establish the owned prefix",
+            EXIT_UNEXPECTED,
+        )
+    _delete_owned_input_after_prefix(
+        ops, simulated, required_input, owned_input
+    )
+
+
+def plan_filter_runtime(
+    persistent_text: str,
+    pod_cidr: str,
+    apiserver_port: str,
+    kubelet_port: str,
+    *,
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    instanceservices_save: str | None,
+) -> tuple[str, list[tuple[str, ...]]]:
+    required_input, output_jump, required_is = desired_runtime_contract(
+        persistent_text, pod_cidr, apiserver_port, kubelet_port
+    )
+    owned_input = set(required_input)
+    live_input = _chain_append_lines(input_save, "INPUT")
+    live_forward = _chain_append_lines(forward_save, "FORWARD")
+    live_output = _chain_append_lines(output_save, "OUTPUT")
+    ops: list[tuple[str, ...]] = []
+
+    expected_is = set(required_is)
+    if instanceservices_save is None:
+        ops.append(("-N", "InstanceServices"))
+        live_is: list[str] = []
+    else:
+        live_is = _chain_append_lines(instanceservices_save, "InstanceServices")
+        unexpected = [line for line in live_is if line not in expected_is]
+        if unexpected:
+            raise NormalizeError(
+                "error: refusing runtime plan with unexpected "
+                "InstanceServices rules",
+                EXIT_UNEXPECTED,
+            )
+    if live_is != required_is:
+        for line in required_is:
+            if live_is.count(line) == 0:
+                ops.append(_spec_argv(line, "-A"))
+                live_is.append(line)
+        if live_is != required_is:
+            for line in required_is:
+                ops.append(_spec_argv(line, "-A"))
+                live_is.append(line)
+            while live_is != required_is:
+                if not live_is:
+                    raise NormalizeError(
+                        "error: refusing InstanceServices plan that would "
+                        "empty the chain",
+                        EXIT_UNEXPECTED,
+                    )
+                victim = live_is[0]
+                ops.append(_spec_argv(victim, "-D"))
+                live_is.pop(0)
+
+    live_is_jumps = [
+        line for line in live_output if line.endswith("-j InstanceServices")
+    ]
+    if any(line != output_jump for line in live_is_jumps):
+        raise NormalizeError(
+            "error: refusing runtime plan with unexpected OUTPUT "
+            "InstanceServices jump",
+            EXIT_UNEXPECTED,
+        )
+    jump_count = sum(1 for line in live_output if line == output_jump)
+    if jump_count == 0:
+        ops.append(_spec_argv(output_jump, "-I"))
+    elif jump_count > 1:
+        for _extra in range(jump_count - 1):
+            ops.append(_spec_argv(output_jump, "-D"))
+
+    prefix_len = len(required_input)
+    input_ok = (
+        live_input[:prefix_len] == required_input
+        and all(line not in owned_input for line in live_input[prefix_len:])
+    )
+    if not input_ok:
+        _plan_input_runtime(ops, live_input, required_input, owned_input)
+
+    if FORWARD_REJECT in live_forward:
+        ops.append(_spec_argv(FORWARD_REJECT, "-D"))
+
+    for op in ops:
+        if op[0] in {"-F", "-X", "--flush"} or "restore" in op[0]:
+            raise NormalizeError(
+                "error: refusing destructive nft filter operation",
+                EXIT_UNEXPECTED,
+            )
+    if not ops:
+        return "unchanged", []
+    return "changed", ops
+
+
+def _nft(args: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [IPTABLES_NFT, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def collect_live_filter_saves() -> tuple[str, str, str, str | None]:
+    input_proc = _nft(("-S", "INPUT"))
+    forward_proc = _nft(("-S", "FORWARD"))
+    output_proc = _nft(("-S", "OUTPUT"))
+    if input_proc.returncode != 0:
+        raise NormalizeError(
+            f"error: cannot inspect nft INPUT: {input_proc.stderr.strip()}",
+            EXIT_USAGE,
+        )
+    if forward_proc.returncode != 0:
+        raise NormalizeError(
+            f"error: cannot inspect nft FORWARD: {forward_proc.stderr.strip()}",
+            EXIT_USAGE,
+        )
+    if output_proc.returncode != 0:
+        raise NormalizeError(
+            f"error: cannot inspect nft OUTPUT: {output_proc.stderr.strip()}",
+            EXIT_USAGE,
+        )
+    is_proc = _nft(("-S", "InstanceServices"))
+    is_save = None if is_proc.returncode != 0 else is_proc.stdout
+    return input_proc.stdout, forward_proc.stdout, output_proc.stdout, is_save
+
+
+def apply_filter_runtime(
+    rules_path: Path,
+    pod_cidr: str,
+    apiserver_port: str,
+    kubelet_port: str,
+    *,
+    execute: bool,
+) -> str:
+    if not rules_path.exists():
+        raise NormalizeError(
+            f"error: {rules_path} is required for runtime firewall reconciliation",
+            EXIT_UNEXPECTED,
+        )
+    try:
+        persistent = rules_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise NormalizeError(
+            f"error: cannot read {rules_path}: {exc}",
+            EXIT_USAGE,
+        ) from exc
+    input_save, forward_save, output_save, is_save = collect_live_filter_saves()
+    action, ops = plan_filter_runtime(
+        persistent,
+        pod_cidr,
+        apiserver_port,
+        kubelet_port,
+        input_save=input_save,
+        forward_save=forward_save,
+        output_save=output_save,
+        instanceservices_save=is_save,
+    )
+    if action == "unchanged" or not execute:
+        return action
+    for op in ops:
+        proc = _nft(op)
+        if proc.returncode != 0:
+            raise NormalizeError(
+                "error: iptables-nft "
+                + " ".join(op)
+                + f" failed: {proc.stderr.strip()}",
+                EXIT_USAGE,
+            )
+    return "changed"
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -306,7 +661,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--rules-file",
-        help="Path to iptables rules.v4. Absent file is a safe no-op.",
+        help=(
+            "Path to iptables rules.v4. Persist mode: absent file is a "
+            "safe no-op. --apply-runtime: absent file fails closed."
+        ),
     )
     parser.add_argument(
         "--plan-input-runtime",
@@ -314,6 +672,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Read iptables-nft -S INPUT from stdin and print unchanged "
             "or ensure plus host TCP ports to insert. Does not execute iptables."
+        ),
+    )
+    parser.add_argument(
+        "--apply-runtime",
+        action="store_true",
+        help=(
+            "Reconcile the nft-compatible filter table from the persistent "
+            "OCI/MicroK8s contract using /usr/sbin/iptables-nft argv specs. "
+            "Does not flush tables or restore a whole table."
         ),
     )
     parser.add_argument(
@@ -348,6 +715,12 @@ def render_plan(action: str, ports: tuple[str, ...]) -> str:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
+        if args.plan_input_runtime and args.apply_runtime:
+            raise NormalizeError(
+                "error: --plan-input-runtime and --apply-runtime are "
+                "mutually exclusive",
+                EXIT_USAGE,
+            )
         if args.plan_input_runtime:
             if args.rules_file:
                 raise NormalizeError(
@@ -368,6 +741,16 @@ def main(argv: list[str] | None = None) -> int:
                 "--plan-input-runtime is set",
                 EXIT_USAGE,
             )
+        if args.apply_runtime:
+            action = apply_filter_runtime(
+                Path(args.rules_file),
+                args.pod_cidr,
+                args.apiserver_port,
+                args.kubelet_port,
+                execute=not args.dry_run,
+            )
+            print(action)
+            return EXIT_OK
         action = normalize_rules_file(
             Path(args.rules_file),
             args.pod_cidr,

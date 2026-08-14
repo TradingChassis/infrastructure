@@ -1,0 +1,6 @@
+---
+- name: Reload systemd for OCI MicroK8s firewall boot unit
+  ansible.builtin.systemd_service:
+    name: "{{ microk8s_firewall_unit_name }}"
+    daemon_reload: true
+  become: true

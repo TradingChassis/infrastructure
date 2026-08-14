@@ -26,3 +26,18 @@ microk8s_apiserver_port: "16443"
 # Internet. nft INPUT allows this port only from microk8s_pod_cidr so
 # metrics-server can scrape node-local kubelet.
 microk8s_kubelet_port: "10250"
+
+# Persistent OCI cloud-image IPv4 filter file. Absent persist normalize is
+# a no-op; boot/runtime reconciliation fails closed if this file is missing.
+microk8s_firewall_rules_file: /etc/iptables/rules.v4
+
+# Helper installed on the host so boot reconciliation does not depend on /tmp.
+microk8s_firewall_helper_dir: /usr/local/lib/tradingchassis
+microk8s_firewall_helper_path: /usr/local/lib/tradingchassis/normalize_oci_microk8s_firewall.py
+microk8s_python_interpreter: /usr/bin/python3
+microk8s_iptables_nft: /usr/sbin/iptables-nft
+
+# Repository-owned oneshot. Reconciles the nft-compatible OCI/MicroK8s
+# contract after UFW initializes and before MicroK8s kubelite needs
+# Pod → host API/kubelet connectivity.
+microk8s_firewall_unit_name: tradingchassis-oci-microk8s-firewall.service
