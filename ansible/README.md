@@ -153,8 +153,9 @@ An existing filesystem of an unexpected type is never overwritten automatically.
 The `microk8s` role:
 
 * ensures `snapd` and `ufw` packages are present
-* normalizes the OCI Ubuntu cloud-image IPv4 FORWARD REJECT and inserts a
-  narrow MicroK8s pod → node-local API INPUT allow before the OCI INPUT REJECT
+* normalizes the OCI Ubuntu cloud-image IPv4 FORWARD REJECT and inserts
+  narrow MicroK8s pod → node-local API and kubelet INPUT allows before the
+  OCI INPUT REJECT
 * installs MicroK8s from the pinned snap channel `1.29/stable`
 * waits for readiness with `microk8s status --wait-ready`
 * enables only the verified V1-required addons when missing
@@ -203,7 +204,7 @@ Not opened on the host firewall to the Internet / UFW public policy:
 
 ```text
 Kubernetes API (16443/tcp) from non-pod sources
-kubelet
+kubelet (10250/tcp) from non-pod sources
 cluster-agent
 dqlite
 Calico VXLAN UDP to the Internet
@@ -255,20 +256,43 @@ to the Kubernetes Service onto the node-local kube-apiserver port. That packet
 then hits the host **INPUT** chain, not FORWARD. The OCI INPUT REJECT sits
 before UFW, so UFW Calico-interface allows never see the traffic.
 
-V2 Ansible inserts exactly one narrow allow **immediately before** the INPUT
-REJECT:
+V2 Ansible inserts a narrow allow **immediately before** the INPUT REJECT:
 
 ```text
 -A INPUT -s 10.1.0.0/16 -p tcp -m tcp --dport 16443 -j ACCEPT
 ```
 
+`16443` is the MicroK8s kube-apiserver port (`microk8s_apiserver_port`).
+
+#### 3. Unconditional INPUT REJECT vs node-local kubelet
+
+The same retained INPUT REJECT also blocks Pod → node-local kubelet traffic.
+metrics-server scrapes `https://<node>:10250/metrics/resource` from a Pod in
+the MicroK8s pod CIDR. That packet is node-local INPUT, not FORWARD, and is
+rejected before UFW.
+
+V2 Ansible inserts a second narrow allow immediately before the INPUT REJECT:
+
+```text
+-A INPUT -s 10.1.0.0/16 -p tcp -m tcp --dport 10250 -j ACCEPT
+```
+
+`10250` is the MicroK8s kubelet/kubelite port (`microk8s_kubelet_port`).
+
+Persistent canonical order immediately before the retained REJECT:
+
+```text
+-A INPUT -s 10.1.0.0/16 -p tcp -m tcp --dport 16443 -j ACCEPT
+-A INPUT -s 10.1.0.0/16 -p tcp -m tcp --dport 10250 -j ACCEPT
+-A INPUT -j REJECT --reject-with icmp-host-prohibited
+```
+
 `10.1.0.0/16` is the canonical MicroK8s 1.29/stable Calico pod CIDR
-(`microk8s_pod_cidr`). `16443` is the MicroK8s kube-apiserver port
-(`microk8s_apiserver_port`). These are role defaults, not live Pod, Service,
-or node addresses.
+(`microk8s_pod_cidr`). These are role defaults, not live Pod, Service, or
+node addresses.
 
 The INPUT catch-all REJECT remains for unrelated host traffic. The Kubernetes
-API is still not opened on UFW or OCI NSGs to the Internet.
+API and kubelet are still not opened on UFW or OCI NSGs to the Internet.
 
 #### Shared safety properties
 
@@ -277,9 +301,11 @@ enable and MicroK8s install/readiness.
 
 Runtime FORWARD deletion uses `iptables-nft -C` / `-D` with the exact REJECT
 spec. Runtime INPUT reconciliation plans ordering from `iptables-nft -S INPUT`
-and, when required, deletes the allow by spec then `-I INPUT` so it precedes
-the catch-all REJECT. It does not use nft handles, FORWARD/INPUT line-number
-deletion, or a full table restore.
+and, when required, deletes a missing or misplaced pod-host allow by spec then
+`-I INPUT` so it precedes the catch-all REJECT. Relative order of the API and
+kubelet allows is not a runtime correctness requirement; each must exist
+exactly once before the REJECT. It does not use nft handles, FORWARD/INPUT
+line-number deletion, or a full table restore.
 
 Do not flush iptables tables (`iptables -F` / `-X` / nft flush), disable UFW,
 delete `/etc/iptables/rules.v4`, delete the OCI INPUT REJECT, or rewrite
@@ -288,7 +314,7 @@ closed. Duplicate catch-all INPUT REJECT rules fail closed. An absent
 `rules.v4` is a no-op and does not create an incomplete firewall file.
 
 The second MicroK8s converge must remain idempotent after FORWARD REJECT is
-gone and the pod-API allow already precedes INPUT REJECT.
+gone and both pod-host allows already precede INPUT REJECT.
 
 Preserved on purpose:
 

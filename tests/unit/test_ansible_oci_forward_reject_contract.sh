@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Static and synthetic regression for OCI cloud-image MicroK8s firewall
-# normalization (FORWARD reject removal + INPUT pod-API allow).
+# normalization (FORWARD reject removal + INPUT pod-host allows).
 # Never runs iptables, nft, ufw, or SSH. Never contacts OCI.
 set -euo pipefail
 
@@ -40,6 +40,7 @@ WORKFLOW = ROOT / ".github/workflows/repository-validation.yml"
 
 POD_CIDR = "10.1.0.0/16"
 API_PORT = "16443"
+KUBELET_PORT = "10250"
 FORWARD_REJECT = "-A FORWARD -j REJECT --reject-with icmp-host-prohibited"
 INPUT_REJECT = "-A INPUT -j REJECT --reject-with icmp-host-prohibited"
 OUTPUT_JUMP = "-A OUTPUT -d 169.254.0.0/16 -j InstanceServices"
@@ -50,8 +51,11 @@ INSTANCE_SERVICES_RULE = (
     "-A InstanceServices -d 169.254.169.254/32 -p tcp -m tcp --dport 80 "
     "-j ACCEPT"
 )
-ALLOW = (
+API_ALLOW = (
     f"-A INPUT -s {POD_CIDR} -p tcp -m tcp --dport {API_PORT} -j ACCEPT"
+)
+KUBELET_ALLOW = (
+    f"-A INPUT -s {POD_CIDR} -p tcp -m tcp --dport {KUBELET_PORT} -j ACCEPT"
 )
 SIMILAR_ALLOW = (
     "-A INPUT -s 192.0.2.0/24 -p tcp -m tcp --dport 16443 -j ACCEPT"
@@ -75,8 +79,8 @@ helper = load_helper()
 def oci_rules(
     *,
     include_forward_reject: bool = True,
-    include_allow: bool = False,
-    allow_after_reject: bool = False,
+    api_allows: tuple[str, ...] = (),
+    kubelet_allows: tuple[str, ...] = (),
     extra_forward: str | None = None,
     extra_input_before_reject: str | None = None,
     duplicate_input_reject: bool = False,
@@ -86,14 +90,17 @@ def oci_rules(
         forward_block += FORWARD_REJECT + "\n"
     if extra_forward is not None:
         forward_block += extra_forward + "\n"
-    before_reject = ""
-    if include_allow and not allow_after_reject:
-        before_reject += ALLOW + "\n"
+
+    def copies(kind: tuple[str, ...], line: str) -> tuple[str, str]:
+        before = "".join(line + "\n" for item in kind if item == "before")
+        after = "".join(line + "\n" for item in kind if item == "after")
+        return before, after
+
+    api_before, api_after = copies(api_allows, API_ALLOW)
+    kubelet_before, kubelet_after = copies(kubelet_allows, KUBELET_ALLOW)
+    extra_before = ""
     if extra_input_before_reject is not None:
-        before_reject += extra_input_before_reject + "\n"
-    after_reject = ""
-    if include_allow and allow_after_reject:
-        after_reject += ALLOW + "\n"
+        extra_before = extra_input_before_reject + "\n"
     second_reject = ""
     if duplicate_input_reject:
         second_reject = INPUT_REJECT + "\n"
@@ -110,10 +117,13 @@ def oci_rules(
         "-A INPUT -p icmp -j ACCEPT\n"
         "-A INPUT -i lo -j ACCEPT\n"
         "-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT\n"
-        f"{before_reject}"
+        f"{api_before}"
+        f"{kubelet_before}"
+        f"{extra_before}"
         f"{INPUT_REJECT}\n"
         f"{second_reject}"
-        f"{after_reject}"
+        f"{api_after}"
+        f"{kubelet_after}"
         f"{forward_block}"
         f"{OUTPUT_JUMP}\n"
         f"{INSTANCE_SERVICES_RULE}\n"
@@ -142,6 +152,7 @@ def run_cli(
     plan_text: str | None = None,
     pod_cidr: str = POD_CIDR,
     apiserver_port: str = API_PORT,
+    kubelet_port: str = KUBELET_PORT,
 ) -> subprocess.CompletedProcess[str]:
     argv = [
         sys.executable,
@@ -150,6 +161,8 @@ def run_cli(
         pod_cidr,
         "--apiserver-port",
         apiserver_port,
+        "--kubelet-port",
+        kubelet_port,
     ]
     if plan_text is not None:
         argv.append("--plan-input-runtime")
@@ -168,9 +181,11 @@ def run_cli(
     return subprocess.run(argv, check=False, capture_output=True, text=True)
 
 
-def expect_error(text: str, code: int, **kwargs) -> str:
+def expect_error(text: str, code: int) -> str:
     try:
-        helper.normalize_rules_text(text, POD_CIDR, API_PORT, **kwargs)
+        helper.normalize_rules_text(
+            text, POD_CIDR, API_PORT, KUBELET_PORT
+        )
     except helper.NormalizeError as exc:
         if exc.code != code:
             raise SystemExit(
@@ -180,13 +195,21 @@ def expect_error(text: str, code: int, **kwargs) -> str:
     raise SystemExit("expected NormalizeError")
 
 
-def allow_immediately_before_reject(text: str) -> bool:
+def host_allows_immediately_before_reject(text: str) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     try:
         idx = lines.index(INPUT_REJECT)
     except ValueError:
         return False
-    return idx > 0 and lines[idx - 1] == ALLOW
+    return (
+        idx >= 2
+        and lines[idx - 2] == API_ALLOW
+        and lines[idx - 1] == KUBELET_ALLOW
+    )
+
+
+def count_line(text: str, needle: str) -> int:
+    return sum(1 for line in text.splitlines() if line.strip() == needle)
 
 
 def preserved(text: str) -> None:
@@ -199,129 +222,249 @@ def preserved(text: str) -> None:
     ):
         if needle not in text:
             raise SystemExit(f"missing preserved line: {needle}")
+    if count_line(text, INPUT_REJECT) != 1:
+        raise SystemExit("INPUT REJECT must remain exactly once")
+    if FORWARD_REJECT in {line.strip() for line in text.splitlines()}:
+        raise SystemExit("exact FORWARD REJECT must remain absent")
 
 
-# --- CASE A: OCI baseline, allow absent, FORWARD reject present ---
+def normalize(text: str) -> tuple[str, str]:
+    return helper.normalize_rules_text(
+        text, POD_CIDR, API_PORT, KUBELET_PORT
+    )
+
+
+def plan(text: str) -> tuple[str, tuple[str, ...]]:
+    return helper.plan_input_runtime(
+        text, POD_CIDR, API_PORT, KUBELET_PORT
+    )
+
+
+def apply_runtime_inserts(save_text: str, ports: tuple[str, ...]) -> str:
+    """Simulate iptables-nft -D <spec> then -I INPUT <spec> for each port."""
+    lines = save_text.splitlines()
+    ended = save_text.endswith("\n")
+    for port in ports:
+        allow = (
+            f"-A INPUT -s {POD_CIDR} -p tcp -m tcp --dport {port} -j ACCEPT"
+        )
+        lines = [line for line in lines if line.strip() != allow]
+        insert_at = 0
+        for idx, line in enumerate(lines):
+            if line.startswith("-P "):
+                insert_at = idx + 1
+        lines.insert(insert_at, allow)
+    joined = "\n".join(lines)
+    if ended:
+        return joined + "\n"
+    return joined
+
+
+# --- CASE A: original OCI baseline ---
 
 case_a = oci_rules()
-normalized_a, action_a = helper.normalize_rules_text(case_a, POD_CIDR, API_PORT)
+normalized_a, action_a = normalize(case_a)
 if action_a != "changed":
     raise SystemExit(f"CASE A: expected changed, got {action_a}")
-if FORWARD_REJECT in {line.strip() for line in normalized_a.splitlines()}:
-    raise SystemExit("CASE A: exact FORWARD REJECT still present")
-if not allow_immediately_before_reject(normalized_a):
-    raise SystemExit("CASE A: allow is not immediately before INPUT REJECT")
+if count_line(normalized_a, API_ALLOW) != 1:
+    raise SystemExit("CASE A: API allow missing or duplicated")
+if count_line(normalized_a, KUBELET_ALLOW) != 1:
+    raise SystemExit("CASE A: kubelet allow missing or duplicated")
+if not host_allows_immediately_before_reject(normalized_a):
+    raise SystemExit("CASE A: host allows are not immediately before INPUT REJECT")
 preserved(normalized_a)
 if "# CLOUD_IMG:" not in normalized_a:
     raise SystemExit("CASE A: CLOUD_IMG marker was not preserved")
-print("PASS: CASE A OCI baseline inserts allow before INPUT REJECT and drops FORWARD REJECT")
+print("PASS: CASE A OCI baseline inserts both host allows and drops FORWARD REJECT")
 
 
-# --- CASE B: already fully normalized ---
+# --- CASE B: post-PR54, both service allows absent ---
 
-case_b = oci_rules(include_forward_reject=False, include_allow=True)
-normalized_b, action_b = helper.normalize_rules_text(case_b, POD_CIDR, API_PORT)
-if action_b != "unchanged":
-    raise SystemExit(f"CASE B: expected unchanged, got {action_b}")
-if normalized_b != case_b:
-    raise SystemExit("CASE B: already-normalized file must be byte-identical")
-print("PASS: CASE B already-normalized OCI baseline is a no-op")
+case_b = oci_rules(include_forward_reject=False)
+normalized_b, action_b = normalize(case_b)
+if action_b != "changed":
+    raise SystemExit("CASE B: expected changed when both allows are missing")
+if not host_allows_immediately_before_reject(normalized_b):
+    raise SystemExit("CASE B: both allows must be inserted before INPUT REJECT")
+preserved(normalized_b)
+print("PASS: CASE B post-PR54 file receives both INPUT host allows")
 
 
-# --- CASE C: allow exists after reject ---
+# --- CASE C: post-PR55, API allow present, kubelet missing ---
 
 case_c = oci_rules(
     include_forward_reject=False,
-    include_allow=True,
-    allow_after_reject=True,
+    api_allows=("before",),
 )
-normalized_c, action_c = helper.normalize_rules_text(case_c, POD_CIDR, API_PORT)
+normalized_c, action_c = normalize(case_c)
 if action_c != "changed":
-    raise SystemExit("CASE C: allow-after-reject must be corrected")
-if not allow_immediately_before_reject(normalized_c):
-    raise SystemExit("CASE C: allow was not moved before INPUT REJECT")
-if sum(1 for line in normalized_c.splitlines() if line.strip() == ALLOW) != 1:
-    raise SystemExit("CASE C: duplicate allow after reorder")
+    raise SystemExit("CASE C: missing kubelet allow must change the file")
+if count_line(normalized_c, API_ALLOW) != 1:
+    raise SystemExit("CASE C: API allow must remain exactly once")
+if count_line(normalized_c, KUBELET_ALLOW) != 1:
+    raise SystemExit("CASE C: kubelet allow must be inserted once")
+if not host_allows_immediately_before_reject(normalized_c):
+    raise SystemExit("CASE C: both allows must sit immediately before INPUT REJECT")
 preserved(normalized_c)
-print("PASS: CASE C allow-after-reject is reordered before INPUT REJECT")
+print("PASS: CASE C post-PR55 file adds only the missing kubelet allow")
 
 
-# --- CASE D: non-OCI file ---
+# --- CASE D: fully normalized ---
 
-message_d = expect_error(unexpected_rules(), helper.EXIT_UNEXPECTED)
-if "refusing to modify unexpected firewall file" not in message_d:
-    raise SystemExit(f"CASE D: missing fail-closed diagnostic: {message_d}")
+case_d = oci_rules(
+    include_forward_reject=False,
+    api_allows=("before",),
+    kubelet_allows=("before",),
+)
+normalized_d, action_d = normalize(case_d)
+if action_d != "unchanged":
+    raise SystemExit(f"CASE D: expected unchanged, got {action_d}")
+if normalized_d != case_d:
+    raise SystemExit("CASE D: already-normalized file must be byte-identical")
+print("PASS: CASE D fully normalized OCI baseline is a no-op")
+
+
+# --- CASE E: 10250 allow after INPUT reject ---
+
+case_e = oci_rules(
+    include_forward_reject=False,
+    api_allows=("before",),
+    kubelet_allows=("after",),
+)
+normalized_e, action_e = normalize(case_e)
+if action_e != "changed":
+    raise SystemExit("CASE E: kubelet allow after REJECT must be corrected")
+if not host_allows_immediately_before_reject(normalized_e):
+    raise SystemExit("CASE E: kubelet allow was not moved before INPUT REJECT")
+if count_line(normalized_e, KUBELET_ALLOW) != 1:
+    raise SystemExit("CASE E: duplicate kubelet allow after reorder")
+if count_line(normalized_e, API_ALLOW) != 1:
+    raise SystemExit("CASE E: API allow must remain exactly once")
+preserved(normalized_e)
+print("PASS: CASE E kubelet allow-after-reject is reordered before INPUT REJECT")
+
+
+# --- CASE F: duplicate 10250 allow ---
+
+case_f = oci_rules(
+    include_forward_reject=False,
+    api_allows=("before",),
+    kubelet_allows=("before", "before"),
+)
+normalized_f, action_f = normalize(case_f)
+if action_f != "changed":
+    raise SystemExit("CASE F: duplicate kubelet allow must be deduplicated")
+if count_line(normalized_f, KUBELET_ALLOW) != 1:
+    raise SystemExit("CASE F: kubelet allow was not reduced to one copy")
+if not host_allows_immediately_before_reject(normalized_f):
+    raise SystemExit("CASE F: deduped kubelet allow is not before INPUT REJECT")
+preserved(normalized_f)
+print("PASS: CASE F duplicate kubelet allow is deduplicated")
+
+
+# --- CASE G: duplicate 16443 allow ---
+
+case_g = oci_rules(
+    include_forward_reject=False,
+    api_allows=("before", "before"),
+    kubelet_allows=("before",),
+)
+normalized_g, action_g = normalize(case_g)
+if action_g != "changed":
+    raise SystemExit("CASE G: duplicate API allow must be deduplicated")
+if count_line(normalized_g, API_ALLOW) != 1:
+    raise SystemExit("CASE G: API allow was not reduced to one copy")
+if count_line(normalized_g, KUBELET_ALLOW) != 1:
+    raise SystemExit("CASE G: kubelet allow must remain exactly once")
+if not host_allows_immediately_before_reject(normalized_g):
+    raise SystemExit("CASE G: deduped API allow is not before INPUT REJECT")
+preserved(normalized_g)
+print("PASS: CASE G duplicate API allow is deduplicated")
+
+
+# --- CASE H: non-OCI file ---
+
+message_h = expect_error(unexpected_rules(), helper.EXIT_UNEXPECTED)
+if "refusing to modify unexpected firewall file" not in message_h:
+    raise SystemExit(f"CASE H: missing fail-closed diagnostic: {message_h}")
 with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp) / "rules.v4"
     original = unexpected_rules()
     path.write_text(original, encoding="utf-8")
     cli = run_cli(path)
     if cli.returncode != helper.EXIT_UNEXPECTED:
-        raise SystemExit(f"CASE D CLI expected rc 2, got {cli.returncode}")
+        raise SystemExit(f"CASE H CLI expected rc 2, got {cli.returncode}")
     if path.read_text(encoding="utf-8") != original:
-        raise SystemExit("CASE D: unexpected file must not be rewritten")
-print("PASS: CASE D unexpected rules.v4 fails closed")
+        raise SystemExit("CASE H: unexpected file must not be rewritten")
+print("PASS: CASE H unexpected rules.v4 fails closed")
 
 
-# --- CASE E: rules.v4 absent ---
+# --- CASE I: duplicate INPUT REJECT ---
 
-with tempfile.TemporaryDirectory() as tmp:
-    missing = Path(tmp) / "rules.v4"
-    action = helper.normalize_rules_file(
-        missing, POD_CIDR, API_PORT, write=True
-    )
-    if action != "absent":
-        raise SystemExit(f"CASE E: expected absent, got {action}")
-    if missing.exists():
-        raise SystemExit("CASE E: absent path must not create a rules file")
-    cli = run_cli(missing)
-    if cli.returncode != 0 or cli.stdout.strip() != "absent":
-        raise SystemExit(
-            f"CASE E CLI failed: rc={cli.returncode} out={cli.stdout!r}"
-        )
-print("PASS: CASE E absent rules.v4 is a safe no-op")
+case_i = oci_rules(duplicate_input_reject=True)
+expect_error(case_i, helper.EXIT_UNEXPECTED)
+print("PASS: CASE I duplicate INPUT REJECT fails closed")
 
 
-# --- CASE F: duplicate INPUT REJECT ---
+# --- CASE J: preservation + similar non-exact rules retained ---
 
-case_f = oci_rules(duplicate_input_reject=True)
-expect_error(case_f, helper.EXIT_UNEXPECTED)
-print("PASS: CASE F duplicate INPUT REJECT fails closed")
-
-
-# --- CASE G: preservation + similar non-exact rules retained ---
-
-case_g = oci_rules(
+case_j = oci_rules(
     include_forward_reject=True,
     extra_forward=SIMILAR_FORWARD,
     extra_input_before_reject=SIMILAR_ALLOW,
 )
-normalized_g, action_g = helper.normalize_rules_text(case_g, POD_CIDR, API_PORT)
-if action_g != "changed":
-    raise SystemExit("CASE G: expected changed")
-if SIMILAR_FORWARD not in normalized_g:
-    raise SystemExit("CASE G: similar FORWARD rule was lost")
-if SIMILAR_ALLOW not in normalized_g:
-    raise SystemExit("CASE G: similar INPUT allow was lost")
-if not allow_immediately_before_reject(normalized_g):
-    raise SystemExit("CASE G: exact allow missing before INPUT REJECT")
-preserved(normalized_g)
-print("PASS: CASE G preservation and non-exact rules retained")
+normalized_j, action_j = normalize(case_j)
+if action_j != "changed":
+    raise SystemExit("CASE J: expected changed")
+if SIMILAR_FORWARD not in normalized_j:
+    raise SystemExit("CASE J: similar FORWARD rule was lost")
+if SIMILAR_ALLOW not in normalized_j:
+    raise SystemExit("CASE J: similar INPUT allow was lost")
+if not host_allows_immediately_before_reject(normalized_j):
+    raise SystemExit("CASE J: exact host allows missing before INPUT REJECT")
+preserved(normalized_j)
+print("PASS: CASE J preservation and non-exact rules retained")
 
 
-# --- PR #54 FORWARD-only already gone, allow missing ---
+# --- swapped persistent order is rewritten once, then stable ---
 
-case_forward_gone = oci_rules(include_forward_reject=False, include_allow=False)
-normalized_fg, action_fg = helper.normalize_rules_text(
-    case_forward_gone, POD_CIDR, API_PORT
+swapped = oci_rules(
+    include_forward_reject=False,
+    kubelet_allows=("before",),
+    api_allows=("before",),
 )
-if action_fg != "changed":
-    raise SystemExit("FORWARD-gone/allow-missing must insert the allow")
-if FORWARD_REJECT in {line.strip() for line in normalized_fg.splitlines()}:
-    raise SystemExit("FORWARD REJECT must remain absent")
-if not allow_immediately_before_reject(normalized_fg):
-    raise SystemExit("allow missing after FORWARD-only host state")
-print("PASS: post-PR54 file without allow receives INPUT allow only")
+# Fixture emits API copies before kubelet copies, so force kubelet-then-API.
+swapped_text = swapped.replace(API_ALLOW + "\n" + KUBELET_ALLOW, KUBELET_ALLOW + "\n" + API_ALLOW)
+if KUBELET_ALLOW + "\n" + API_ALLOW not in swapped_text:
+    raise SystemExit("failed to construct swapped persistent allows")
+normalized_swap, action_swap = normalize(swapped_text)
+if action_swap != "changed":
+    raise SystemExit("swapped persistent host allows must be canonicalized")
+if not host_allows_immediately_before_reject(normalized_swap):
+    raise SystemExit("swapped persistent allows were not canonicalized")
+normalized_swap2, action_swap2 = normalize(normalized_swap)
+if action_swap2 != "unchanged" or normalized_swap2 != normalized_swap:
+    raise SystemExit("canonical persistent allows must then be a no-op")
+print("PASS: persistent host-allow order is canonical and then unchanged")
+
+
+# --- absent rules.v4 ---
+
+with tempfile.TemporaryDirectory() as tmp:
+    missing = Path(tmp) / "rules.v4"
+    action = helper.normalize_rules_file(
+        missing, POD_CIDR, API_PORT, KUBELET_PORT, write=True
+    )
+    if action != "absent":
+        raise SystemExit(f"absent file: expected absent, got {action}")
+    if missing.exists():
+        raise SystemExit("absent path must not create a rules file")
+    cli = run_cli(missing)
+    if cli.returncode != 0 or cli.stdout.strip() != "absent":
+        raise SystemExit(
+            f"absent CLI failed: rc={cli.returncode} out={cli.stdout!r}"
+        )
+print("PASS: absent rules.v4 is a safe no-op")
 
 
 # --- CLI write + idempotent second run ---
@@ -337,8 +480,8 @@ with tempfile.TemporaryDirectory() as tmp:
             f"err={first.stderr!r}"
         )
     written = path.read_text(encoding="utf-8")
-    if not allow_immediately_before_reject(written):
-        raise SystemExit("CLI write did not place allow before INPUT REJECT")
+    if not host_allows_immediately_before_reject(written):
+        raise SystemExit("CLI write did not place host allows before INPUT REJECT")
     backup = path.with_name(path.name + helper.BACKUP_SUFFIX)
     if not backup.exists() or backup.read_text(encoding="utf-8") != original:
         raise SystemExit("CLI write must create a one-time original backup")
@@ -367,32 +510,152 @@ runtime_baseline = (
     f"{INPUT_REJECT}\n"
     "-A INPUT -j ufw-before-logging-input\n"
 )
-if helper.plan_input_runtime(runtime_baseline, POD_CIDR, API_PORT) != "ensure":
-    raise SystemExit("runtime plan must ensure when allow is absent")
 
-runtime_ok = runtime_baseline.replace(
-    INPUT_REJECT, ALLOW + "\n" + INPUT_REJECT
+
+def with_allows(text: str, *allows: str, after_reject: bool = False) -> str:
+    if after_reject:
+        return text.replace(
+            "-A INPUT -j ufw-before-logging-input\n",
+            "".join(allow + "\n" for allow in allows)
+            + "-A INPUT -j ufw-before-logging-input\n",
+        )
+    return text.replace(
+        INPUT_REJECT, "\n".join(allows) + "\n" + INPUT_REJECT
+    )
+
+
+def expect_plan(text: str, action: str, ports: tuple[str, ...], label: str) -> None:
+    got_action, got_ports = plan(text)
+    if got_action != action or got_ports != ports:
+        raise SystemExit(
+            f"{label}: expected {(action, ports)}, got {(got_action, got_ports)}"
+        )
+
+
+expect_plan(
+    runtime_baseline,
+    "ensure",
+    (KUBELET_PORT, API_PORT),
+    "runtime neither allow",
 )
-if helper.plan_input_runtime(runtime_ok, POD_CIDR, API_PORT) != "unchanged":
-    raise SystemExit("runtime plan must be unchanged when allow precedes REJECT")
+expect_plan(
+    with_allows(runtime_baseline, API_ALLOW),
+    "ensure",
+    (KUBELET_PORT,),
+    "runtime only 16443",
+)
+expect_plan(
+    with_allows(runtime_baseline, KUBELET_ALLOW),
+    "ensure",
+    (API_PORT,),
+    "runtime only 10250",
+)
+expect_plan(
+    with_allows(runtime_baseline, API_ALLOW, KUBELET_ALLOW),
+    "unchanged",
+    (),
+    "runtime both before reject",
+)
+expect_plan(
+    with_allows(runtime_baseline, KUBELET_ALLOW, API_ALLOW),
+    "unchanged",
+    (),
+    "runtime swapped order before reject",
+)
+expect_plan(
+    with_allows(runtime_baseline, API_ALLOW, after_reject=True),
+    "ensure",
+    (KUBELET_PORT, API_PORT),
+    "runtime 16443 after reject",
+)
+expect_plan(
+    with_allows(runtime_baseline, KUBELET_ALLOW, after_reject=True),
+    "ensure",
+    (KUBELET_PORT, API_PORT),
+    "runtime 10250 after reject",
+)
+expect_plan(
+    with_allows(
+        runtime_baseline, API_ALLOW, KUBELET_ALLOW, after_reject=True
+    ),
+    "ensure",
+    (KUBELET_PORT, API_PORT),
+    "runtime both after reject",
+)
 
-runtime_after = runtime_baseline + ALLOW + "\n"
-if helper.plan_input_runtime(runtime_after, POD_CIDR, API_PORT) != "ensure":
-    raise SystemExit("runtime plan must ensure when allow follows REJECT")
+dup_kubelet = with_allows(runtime_baseline, KUBELET_ALLOW, KUBELET_ALLOW)
+expect_plan(
+    dup_kubelet,
+    "ensure",
+    (KUBELET_PORT, API_PORT),
+    "runtime duplicate 10250",
+)
+dup_api = with_allows(runtime_baseline, API_ALLOW, API_ALLOW)
+expect_plan(dup_api, "ensure", (KUBELET_PORT, API_PORT), "runtime duplicate 16443")
+expect_plan(
+    with_allows(runtime_baseline, API_ALLOW, KUBELET_ALLOW, KUBELET_ALLOW),
+    "ensure",
+    (KUBELET_PORT,),
+    "runtime duplicate 10250 with correct API",
+)
+expect_plan(
+    with_allows(runtime_baseline, API_ALLOW, API_ALLOW, KUBELET_ALLOW),
+    "ensure",
+    (API_PORT,),
+    "runtime duplicate 16443 with correct kubelet",
+)
+kubelet_ok = with_allows(runtime_baseline, KUBELET_ALLOW)
+expect_plan(
+    with_allows(kubelet_ok, API_ALLOW, after_reject=True),
+    "ensure",
+    (API_PORT,),
+    "runtime 16443 after reject with kubelet ok",
+)
 
 runtime_dup_reject = runtime_baseline + INPUT_REJECT + "\n"
 try:
-    helper.plan_input_runtime(runtime_dup_reject, POD_CIDR, API_PORT)
+    plan(runtime_dup_reject)
 except helper.NormalizeError as exc:
     if exc.code != helper.EXIT_UNEXPECTED:
         raise SystemExit(f"runtime duplicate REJECT expected rc 2: {exc}")
 else:
     raise SystemExit("runtime duplicate REJECT must fail closed")
 
-plan_cli = run_cli(None, plan_text=runtime_ok)
+action_none, ports_none = plan(runtime_baseline)
+updated_none = apply_runtime_inserts(runtime_baseline, ports_none)
+expect_plan(
+    updated_none,
+    "unchanged",
+    (),
+    "runtime second pass after inserting both",
+)
+if not updated_none.splitlines()[1].endswith(f"--dport {API_PORT} -j ACCEPT"):
+    raise SystemExit("greenfield -I order must leave API allow at INPUT position 1")
+if not updated_none.splitlines()[2].endswith(
+    f"--dport {KUBELET_PORT} -j ACCEPT"
+):
+    raise SystemExit("greenfield -I order must leave kubelet allow at INPUT position 2")
+
+post55 = with_allows(runtime_baseline, API_ALLOW)
+action_c, ports_c = plan(post55)
+if ports_c != (KUBELET_PORT,):
+    raise SystemExit(f"post-PR55 runtime plan must insert only kubelet, got {ports_c}")
+updated_c = apply_runtime_inserts(post55, ports_c)
+expect_plan(updated_c, "unchanged", (), "runtime second pass after kubelet-only insert")
+
+plan_cli = run_cli(None, plan_text=with_allows(runtime_baseline, API_ALLOW, KUBELET_ALLOW))
 if plan_cli.returncode != 0 or plan_cli.stdout.strip() != "unchanged":
-    raise SystemExit(f"runtime plan CLI failed: {plan_cli.stdout!r} {plan_cli.stderr!r}")
-print("PASS: runtime INPUT planner ordering contract")
+    raise SystemExit(
+        f"runtime plan CLI failed: {plan_cli.stdout!r} {plan_cli.stderr!r}"
+    )
+plan_cli_missing = run_cli(None, plan_text=runtime_baseline)
+if plan_cli_missing.returncode != 0 or plan_cli_missing.stdout.strip() != (
+    f"ensure\n{KUBELET_PORT}\n{API_PORT}"
+):
+    raise SystemExit(
+        f"runtime plan CLI insert order failed: {plan_cli_missing.stdout!r}"
+    )
+print("PASS: runtime INPUT planner ordering and second-pass contract")
 
 
 # --- invalid CIDR / port ---
@@ -410,8 +673,22 @@ except helper.NormalizeError as exc:
     if exc.code != helper.EXIT_USAGE:
         raise SystemExit(f"bad port expected usage error: {exc}")
 else:
-    raise SystemExit("non-numeric API port must be rejected")
-print("PASS: helper rejects host-sized CIDR and invalid API port")
+    raise SystemExit("non-numeric host TCP port must be rejected")
+try:
+    helper.host_tcp_ports(API_PORT, API_PORT)
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_USAGE:
+        raise SystemExit(f"duplicate ports expected usage error: {exc}")
+else:
+    raise SystemExit("identical API and kubelet ports must be rejected")
+try:
+    helper.build_allow_lines(POD_CIDR, API_PORT, "0")
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_USAGE:
+        raise SystemExit(f"port 0 expected usage error: {exc}")
+else:
+    raise SystemExit("kubelet port 0 must be rejected")
+print("PASS: helper rejects host-sized CIDR, invalid ports, and duplicate ports")
 
 
 # --- fail-closed lookalikes ---
@@ -439,12 +716,22 @@ if 'microk8s_pod_cidr: "10.1.0.0/16"' not in defaults:
     raise SystemExit("defaults must set canonical MicroK8s 1.29 pod CIDR")
 if 'microk8s_apiserver_port: "16443"' not in defaults:
     raise SystemExit("defaults must set MicroK8s API port 16443")
-if "microk8s_pod_cidr | trim" not in tasks or "microk8s_apiserver_port | trim" not in tasks:
-    raise SystemExit("tasks must pass pod CIDR and API port from role defaults")
+if 'microk8s_kubelet_port: "10250"' not in defaults:
+    raise SystemExit("defaults must set MicroK8s kubelet port 10250")
+if "microk8s_pod_cidr | trim" not in tasks:
+    raise SystemExit("tasks must pass pod CIDR from role defaults")
+if "microk8s_apiserver_port | trim" not in tasks:
+    raise SystemExit("tasks must pass API port from role defaults")
+if "microk8s_kubelet_port | trim" not in tasks:
+    raise SystemExit("tasks must pass kubelet port from role defaults")
+if "--kubelet-port" not in tasks:
+    raise SystemExit("tasks must pass --kubelet-port to the helper")
 if tasks.count("10.1.0.0/16") != 0:
     raise SystemExit("tasks must not hard-code the pod CIDR")
 if re.search(r'(?m)^\s+-\s+"16443"\s*$', tasks):
     raise SystemExit("tasks must not bury 16443 as a literal argv value")
+if re.search(r'(?m)^\s+-\s+"10250"\s*$', tasks):
+    raise SystemExit("tasks must not bury 10250 as a literal argv value")
 
 for register_name in (
     "microk8s_oci_firewall_file",
@@ -453,8 +740,10 @@ for register_name in (
     "microk8s_oci_forward_reject_delete",
     "microk8s_oci_input_save",
     "microk8s_oci_input_plan",
-    "microk8s_oci_input_allow_delete",
-    "microk8s_oci_input_allow_insert",
+    "microk8s_oci_input_kubelet_allow_delete",
+    "microk8s_oci_input_api_allow_delete",
+    "microk8s_oci_input_kubelet_allow_insert",
+    "microk8s_oci_input_api_allow_insert",
 ):
     if f"register: {register_name}" not in tasks:
         raise SystemExit(f"missing role-prefixed register {register_name}")
@@ -462,6 +751,15 @@ for match in re.finditer(r"(?m)^\s+register:\s+(\S+)\s*$", tasks):
     var = match.group(1)
     if not var.startswith("microk8s_"):
         raise SystemExit(f"register {var} must use the microk8s_ role prefix")
+if "microk8s_oci_input_plan_action" not in tasks:
+    raise SystemExit("role must record the INPUT plan action")
+if "microk8s_oci_input_plan_ports" not in tasks:
+    raise SystemExit("role must record the INPUT plan ports")
+plan_fact_block = tasks.split(
+    "Record nft-compatible INPUT pod-host allow plan", 1
+)
+if len(plan_fact_block) != 2 or "changed_when: false" not in plan_fact_block[1][:400]:
+    raise SystemExit("INPUT plan set_fact must not report changed")
 
 if "/etc/iptables/rules.v4" not in tasks:
     raise SystemExit("persistent normalization must target /etc/iptables/rules.v4")
@@ -469,19 +767,35 @@ if "/usr/sbin/iptables-nft" not in tasks:
     raise SystemExit("runtime normalization must use /usr/sbin/iptables-nft")
 if "iptables-legacy" in tasks and "are not modified" not in tasks:
     raise SystemExit("role must not mutate iptables-legacy")
-if " -S " not in tasks and "\n      - -S\n" not in tasks:
-    if "-S" not in tasks:
-        raise SystemExit("runtime INPUT plan must use iptables-nft -S")
+if "-S" not in tasks:
+    raise SystemExit("runtime INPUT plan must use iptables-nft -S")
 
 install_idx = tasks.find("Install MicroK8s from the pinned snap channel")
 ready_idx = tasks.find("Wait for MicroK8s to become ready")
 ufw_idx = tasks.find("Enable UFW with the explicit MicroK8s-compatible host policy")
 helper_idx = tasks.find("Normalize persistent OCI cloud-image IPv4 firewall for MicroK8s")
 forward_idx = tasks.find("Delete nft-compatible unconditional IPv4 FORWARD REJECT")
-input_idx = tasks.find("Insert nft-compatible INPUT pod-API allow")
-if min(install_idx, ready_idx, ufw_idx, helper_idx, forward_idx, input_idx) < 0:
+kubelet_insert_idx = tasks.find("Insert nft-compatible INPUT pod-kubelet allow")
+api_insert_idx = tasks.find("Insert nft-compatible INPUT pod-API allow")
+if min(
+    install_idx,
+    ready_idx,
+    ufw_idx,
+    helper_idx,
+    forward_idx,
+    kubelet_insert_idx,
+    api_insert_idx,
+) < 0:
     raise SystemExit("microk8s role is missing required firewall/MicroK8s tasks")
-if not (helper_idx < forward_idx < input_idx < ufw_idx < install_idx < ready_idx):
+if not (
+    helper_idx
+    < forward_idx
+    < kubelet_insert_idx
+    < api_insert_idx
+    < ufw_idx
+    < install_idx
+    < ready_idx
+):
     raise SystemExit(
         "OCI firewall normalization must run before UFW enable and MicroK8s readiness"
     )
@@ -512,6 +826,7 @@ for token in (
     "ACCEPT",
     "--dport",
     "--plan-input-runtime",
+    "--kubelet-port",
 ):
     if token not in tasks:
         raise SystemExit(f"runtime tasks missing semantic token {token}")
@@ -532,6 +847,10 @@ if re.search(r'(?m)^\s+.*\b(-F|--flush)\b', helper_src):
     raise SystemExit("helper must not flush firewall chains")
 if "INPUT_REJECT" not in helper_src or "FORWARD_REJECT" not in helper_src:
     raise SystemExit("helper must retain both INPUT and FORWARD contracts")
+if "10250" in helper_src:
+    raise SystemExit("helper must take kubelet port as input, not hard-code it")
+if "16443" in helper_src:
+    raise SystemExit("helper must take API port as input, not hard-code it")
 print("PASS: helper is file/plan-only and does not call firewall binaries")
 
 readme = read(README)
@@ -543,7 +862,9 @@ for needle in (
     "INPUT REJECT",
     "kube-proxy",
     "16443",
+    "10250",
     "10.1.0.0/16",
+    "kubelet",
 ):
     if needle not in readme:
         raise SystemExit(f"ansible/README.md missing {needle}")
@@ -563,16 +884,18 @@ for needle in (
     "do not flush",
     "kube-proxy",
     "16443",
+    "10250",
+    "kubelet",
 ):
     if needle.lower() not in v2_lower:
         raise SystemExit(f"V2 clean-room doc missing {needle}")
-print("PASS: V2 clean-room doc covers both OCI firewall problems")
+print("PASS: V2 clean-room doc covers OCI firewall problems")
 
 changelog = read(CHANGELOG)
 unreleased = changelog.split("## [0.1.0]", 1)[0]
-if "node-local" not in unreleased.lower() and "INPUT" not in unreleased:
-    raise SystemExit("CHANGELOG [Unreleased] must mention the INPUT/API allow")
-print("PASS: CHANGELOG [Unreleased] records the INPUT allow")
+if "10250" not in unreleased and "kubelet" not in unreleased.lower():
+    raise SystemExit("CHANGELOG [Unreleased] must mention the kubelet INPUT allow")
+print("PASS: CHANGELOG [Unreleased] records the kubelet allow")
 
 workflow = read(WORKFLOW)
 if "test_ansible_oci_forward_reject_contract.sh" not in workflow:
