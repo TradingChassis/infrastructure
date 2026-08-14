@@ -1,0 +1,16 @@
+# Pinned official Gitleaks CLI used by the Security validation CI job.
+# This file is not an installer. CI downloads the named GitHub release
+# asset and verifies SHA256 before executing the binary.
+#
+# Upgrade process:
+# 1. Take VERSION from https://github.com/gitleaks/gitleaks/releases
+# 2. Copy the linux_x64 SHA256 from that release's checksums.txt
+# 3. Update VERSION, ARCHIVE, and SHA256 together
+#
+# Do not install Gitleaks onto operator hosts from this file.
+
+VERSION=8.30.1
+ARCHIVE=gitleaks_8.30.1_linux_x64.tar.gz
+SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+RELEASE_URL=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+CHECKSUMS_URL=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt

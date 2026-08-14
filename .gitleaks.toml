@@ -1,0 +1,17 @@
+# Gitleaks configuration for TradingChassis infrastructure.
+#
+# Credential detection uses the upstream default rule set. This file exists
+# to keep allowlists explicit, minimal, and reviewed.
+#
+# Do not:
+# - allowlist real credentials, tokens, private keys, or live OCIDs
+# - ignore tests/, docs/, *.yml, *.yaml, *.json, *.tf, or *.md as a class
+# - disable a useful detector globally to make CI green
+#
+# Synthetic fixtures may be excepted only when they are obviously fake and
+# the exception is path-narrow or match-narrow.
+
+title = "TradingChassis infrastructure"
+
+[extend]
+useDefault = true

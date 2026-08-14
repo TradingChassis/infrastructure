@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Repository-owned sensitive-metadata hygiene checker.
+
+This is not a credential scanner. Gitleaks owns detection of passwords,
+API tokens, private keys, and other secret material.
+
+This checker detects classes of operator/live metadata that a credential
+scanner correctly ignores, including:
+
+- concrete absolute user home paths
+- high-confidence identity fields that are not architecture-required
+- shell prompts that embed a concrete local username
+- OCID-shaped strings that look like live identifiers rather than
+  synthetic fixtures or placeholders
+- likely live public IPv4 addresses outside documentation/private ranges
+- PEM private-key armor (defense in depth; Gitleaks remains primary)
+
+Tests and rules must describe classes of forbidden data. They must not
+encode the original live value that motivated the rule.
+
+Evidence class: statically identified / statically validated only.
+Does not contact OCI, GitHub, databases, or any credential verifier.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+CHECKER_NAME = "check-sensitive-metadata"
+
+# Documented placeholders and architecture-required service identities.
+# This is not a people-name list. Arbitrary real usernames are rejected.
+SAFE_HOME_USERS = frozenset(
+    {
+        "example",
+        "test-user",
+        "ubuntu",  # Ansible/image contract (ansible_user)
+        "oci",  # OCI Cloud Shell service account
+        "shared",  # macOS /Users/Shared
+    }
+)
+SAFE_IDENTITY_VALUES = SAFE_HOME_USERS | {
+    "root",
+    "git",
+    "nobody",
+    "www-data",
+    "false",
+    "true",
+    "yes",
+    "no",
+    "null",
+    "none",
+}
+SAFE_PROMPT_USERS = SAFE_HOME_USERS | {
+    "root",
+    "git",
+    "nobody",
+    "www-data",
+    "runner",
+}
+
+IDENTITY_KEYS = ("username", "user", "operator_user", "ansible_user")
+
+# Construct path roots at runtime so this file does not embed a complete
+# forbidden absolute home path that would then need a global allowlist.
+_UNIX_HOME = "/" + "home"
+_MAC_HOME = "/" + "Us" + "ers"
+_WIN_USERS = "Us" + "ers"
+_WIN_SEP = chr(92)
+_WIN_SEP_RE = re.escape(_WIN_SEP)
+
+HOME_UNIX_RE = re.compile(
+    rf"(?:{re.escape(_UNIX_HOME)}|{re.escape(_MAC_HOME)})/"
+    r"""([^/\s"'`<>$]+)/"""
+)
+HOME_WINDOWS_RE = re.compile(
+    rf"(?i)(?:[A-Za-z]:{_WIN_SEP_RE}|{_WIN_SEP_RE}{_WIN_SEP_RE}){_WIN_USERS}"
+    rf"{_WIN_SEP_RE}([^{_WIN_SEP_RE}/\s\"'`<>$]+){_WIN_SEP_RE}"
+)
+HOME_WINDOWS_FWD_RE = re.compile(
+    rf"(?i)[A-Za-z]:/{_WIN_USERS}/"
+    r"""([^/\s"'`<>$]+)/"""
+)
+
+IDENTITY_RE = re.compile(
+    r"(?m)^[ \t]*(?:- )?("
+    + "|".join(re.escape(k) for k in IDENTITY_KEYS)
+    + r""")[ \t]*:[ \t]+(?![\n|{])["']?([^"'#\n]+?)["']?[ \t]*(?:#.*)?$"""
+)
+
+PROMPT_RE = re.compile(
+    r"(?m)^([A-Za-z_][A-Za-z0-9_-]{0,31})@([A-Za-z0-9.-]+)[:#$]"
+)
+
+OCID_RE = re.compile(
+    r"\bocid1\.[a-z][a-z0-9]*\.oc[0-9]+(?:\.[A-Za-z0-9_-]*)+\b",
+    re.IGNORECASE,
+)
+
+IPV4_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
+
+PEM_BEGIN_RE = re.compile(
+    r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY|OPENSSH PRIVATE KEY)-----"
+)
+
+# Lines that are regex/validator definitions, not committed identifiers.
+OCID_CONTEXT_ALLOW_RE = re.compile(
+    r"regex\s*\(|is match\(|re\.(search|match|fullmatch|compile|findall)|"
+    r"can\(\s*regex|\\\\\.|placeholder|<region>|<unique>|<[\w-]+-ocid>",
+    re.IGNORECASE,
+)
+
+SYNTHETIC_OCID_UNIQUE = re.compile(
+    r"^(?:example|vault-example|placeholder|unique|test)(?:-[a-z0-9]+)?$|^a{8,}$",
+    re.IGNORECASE,
+)
+
+MAX_FILE_BYTES = 2_000_000
+BINARY_SNIFF = 8192
+
+
+class Finding:
+    __slots__ = ("rule", "path", "line", "excerpt")
+
+    def __init__(self, rule: str, path: str, line: int, excerpt: str) -> None:
+        self.rule = rule
+        self.path = path
+        self.line = line
+        self.excerpt = excerpt
+
+
+def usage() -> str:
+    return f"""Usage: {CHECKER_NAME} [--root DIR]
+
+Scan tracked repository files for operator/live metadata hygiene issues.
+
+Environment:
+  SENSITIVE_METADATA_ROOT  Optional override for the repository (or fixture) root.
+
+This checker does not detect credentials. Run Gitleaks for secret material.
+It does not authenticate to any provider and does not print matched usernames,
+OCIDs, or IP addresses in full.
+
+Safe home-path placeholders: $HOME, ${{HOME}}, ~/, {_UNIX_HOME}/<user>/,
+{_UNIX_HOME}/example/, {_MAC_HOME}/example/, and documented service accounts
+ubuntu and oci.
+"""
+
+
+def parse_args(argv: list[str]) -> Path:
+    parser = argparse.ArgumentParser(add_help=False, usage=usage())
+    parser.add_argument("--root", default=None)
+    parser.add_argument("-h", "--help", action="store_true")
+    args, unknown = parser.parse_known_args(argv)
+    if args.help:
+        sys.stdout.write(usage())
+        raise SystemExit(0)
+    if unknown:
+        sys.stderr.write(f"FAIL: unknown argument: {unknown[0]}\n")
+        sys.stderr.write(usage())
+        raise SystemExit(2)
+
+    script_dir = Path(__file__).resolve().parent
+    default_root = script_dir.parent
+    root = Path(args.root or os.environ.get("SENSITIVE_METADATA_ROOT") or default_root)
+    if not root.is_dir():
+        sys.stderr.write(f"FAIL: root directory does not exist: {root}\n")
+        raise SystemExit(2)
+    return root.resolve()
+
+
+def git_tracked_files(root: Path) -> list[Path] | None:
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        check=False,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    names = [name for name in proc.stdout.decode("utf-8", "replace").split("\0") if name]
+    return [root / name for name in names]
+
+
+def walk_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in {".git", ".terraform"}]
+        for name in filenames:
+            files.append(Path(dirpath) / name)
+    return files
+
+
+def iter_scan_files(root: Path) -> list[Path]:
+    tracked = git_tracked_files(root)
+    if tracked is not None:
+        return tracked
+    return walk_files(root)
+
+
+def read_text_if_scannable(path: Path) -> str | None:
+    try:
+        if not path.is_file() or path.is_symlink():
+            return None
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size > MAX_FILE_BYTES:
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data[:BINARY_SNIFF]:
+        return None
+    return data.decode("utf-8", "replace")
+
+
+def redact_user(username: str) -> str:
+    if username in SAFE_HOME_USERS or (username.startswith("<") and username.endswith(">")):
+        return username
+    return "<redacted>"
+
+
+def home_excerpt(prefix: str, username: str) -> str:
+    return f"{prefix}/{redact_user(username)}/..."
+
+
+def is_safe_username(username: str) -> bool:
+    lowered = username.lower()
+    if lowered in SAFE_HOME_USERS:
+        return True
+    if username.startswith("<") and username.endswith(">"):
+        return True
+    if username.startswith("${") or username.startswith("$"):
+        return True
+    return False
+
+
+def is_safe_identity_value(value: str) -> bool:
+    stripped = value.strip().strip("'\"")
+    lowered = stripped.lower()
+    if not stripped:
+        return True
+    if lowered in SAFE_IDENTITY_VALUES:
+        return True
+    if stripped.startswith("<") and stripped.endswith(">"):
+        return True
+    if "{{" in stripped or stripped.startswith("$") or stripped.startswith("~"):
+        return True
+    return False
+
+
+def ocid_unique_part(ocid: str) -> str:
+    return ocid.rsplit(".", 1)[-1]
+
+
+def ocid_is_synthetic(ocid: str) -> bool:
+    unique = ocid_unique_part(ocid)
+    if SYNTHETIC_OCID_UNIQUE.match(unique):
+        return True
+    lowered_unique = unique.lower()
+    if "example" in lowered_unique or "placeholder" in lowered_unique:
+        return True
+    if re.fullmatch(r"a+", unique, flags=re.IGNORECASE) and len(unique) >= 8:
+        return True
+    return False
+
+
+def ocid_looks_live(ocid: str) -> bool:
+    if ocid_is_synthetic(ocid):
+        return False
+    unique = ocid_unique_part(ocid)
+    if len(unique) < 16:
+        return False
+    distinct = len(set(unique.lower()))
+    if distinct <= 1:
+        return False
+    # High-entropy unique components look like copied live identifiers,
+    # including lowercase-only strings. All-identical characters stay synthetic.
+    if distinct >= 8:
+        return True
+    classes = sum(
+        (
+            any(ch.islower() for ch in unique),
+            any(ch.isupper() for ch in unique),
+            any(ch.isdigit() for ch in unique),
+        )
+    )
+    return classes >= 2
+
+
+def ipv4_is_allowed(a: int, b: int, c: int, d: int) -> bool:
+    if any(part > 255 for part in (a, b, c, d)):
+        return True
+    try:
+        addr = ipaddress.IPv4Address(f"{a}.{b}.{c}.{d}")
+    except ipaddress.AddressValueError:
+        return True
+    if (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+        or int(addr) == 0xFFFFFFFF
+    ):
+        return True
+    # RFC 5737 documentation ranges are "global" in ipaddress but allowed here.
+    if a == 192 and b == 0 and c == 2:
+        return True
+    if a == 198 and b == 51 and c == 100:
+        return True
+    if a == 203 and b == 0 and c == 113:
+        return True
+    # RFC 6598 shared address space.
+    if a == 100 and 64 <= b <= 127:
+        return True
+    return False
+
+
+def scan_line(rel: str, line_no: int, line: str, findings: list[Finding]) -> None:
+    for match in HOME_UNIX_RE.finditer(line):
+        username = match.group(1)
+        if is_safe_username(username):
+            continue
+        prefix = _MAC_HOME if match.group(0).startswith(_MAC_HOME) else _UNIX_HOME
+        findings.append(
+            Finding("home-path", rel, line_no, home_excerpt(prefix, username))
+        )
+
+    for match in list(HOME_WINDOWS_RE.finditer(line)) + list(
+        HOME_WINDOWS_FWD_RE.finditer(line)
+    ):
+        username = match.group(1)
+        if is_safe_username(username):
+            continue
+        findings.append(
+            Finding(
+                "home-path",
+                rel,
+                line_no,
+                f"C:{_WIN_SEP}{_WIN_USERS}{_WIN_SEP}{redact_user(username)}{_WIN_SEP}...",
+            )
+        )
+
+    for match in IDENTITY_RE.finditer(line):
+        key = match.group(1)
+        value = match.group(2).strip()
+        if is_safe_identity_value(value):
+            continue
+        findings.append(
+            Finding("identity-field", rel, line_no, f"{key}: <redacted>")
+        )
+
+    prompt = PROMPT_RE.match(line)
+    if prompt:
+        user = prompt.group(1)
+        if user.lower() not in {item.lower() for item in SAFE_PROMPT_USERS}:
+            findings.append(
+                Finding("shell-prompt", rel, line_no, "<redacted>@<host>...")
+            )
+
+    if not OCID_CONTEXT_ALLOW_RE.search(line):
+        for match in OCID_RE.finditer(line):
+            ocid = match.group(0)
+            if ocid_looks_live(ocid):
+                findings.append(
+                    Finding(
+                        "ocid-live-shape",
+                        rel,
+                        line_no,
+                        "ocid1.<type>.oc1.<redacted>",
+                    )
+                )
+
+    for match in IPV4_RE.finditer(line):
+        parts = tuple(int(p) for p in match.groups())
+        if ipv4_is_allowed(*parts):
+            continue
+        findings.append(
+            Finding("public-ipv4", rel, line_no, "<redacted-public-ipv4>")
+        )
+
+    if PEM_BEGIN_RE.search(line):
+        findings.append(
+            Finding("private-key-armor", rel, line_no, "-----BEGIN <redacted> PRIVATE KEY-----")
+        )
+
+
+def scan_text(rel: str, text: str) -> list[Finding]:
+    findings: list[Finding] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        scan_line(rel, line_no, line, findings)
+    return findings
+
+
+def format_finding(item: Finding) -> str:
+    return (
+        f"FINDING rule={item.rule} path={item.path} line={item.line} "
+        f"excerpt={item.excerpt}"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    root = parse_args(argv if argv is not None else sys.argv[1:])
+    files = iter_scan_files(root)
+    findings: list[Finding] = []
+    scanned = 0
+    skipped = 0
+
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        text = read_text_if_scannable(path)
+        if text is None:
+            skipped += 1
+            continue
+        scanned += 1
+        findings.extend(scan_text(rel, text))
+
+    print(f"{CHECKER_NAME} root: {root}")
+    print(f"scanned_files={scanned} skipped_unreadable_or_binary={skipped}")
+    print(
+        "This checker does not replace Gitleaks and does not verify credentials "
+        "against any provider."
+    )
+
+    for item in findings:
+        print(format_finding(item))
+
+    if findings:
+        print(f"FAIL: {len(findings)} sensitive-metadata finding(s)")
+        print("Do not copy the matched live value into tests or allowlists.")
+        print("Use a synthetic fixture that expresses the same class of data.")
+        return 1
+
+    print("PASS: no sensitive-metadata findings")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

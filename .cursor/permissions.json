@@ -8,12 +8,13 @@
     "git remote -v",
     "git ls-files",
     "./tools/check-agent-safety",
-    "./tools/validate-safe"
+    "./tools/validate-safe",
+    "./tools/check-sensitive-metadata"
   ],
   "autoRun": {
     "allow_instructions": [
       "Allow narrow read-only repository state queries such as git status, branch, rev-parse, remote -v, and ls-files.",
-      "Allow running ./tools/check-agent-safety or ./tools/validate-safe only after their contents have been reviewed."
+      "Allow running ./tools/check-agent-safety, ./tools/validate-safe, or ./tools/check-sensitive-metadata only after their contents have been reviewed."
     ],
     "block_instructions": [
       "Block privilege escalation including sudo, su, and doas.",

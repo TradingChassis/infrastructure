@@ -29,6 +29,10 @@ Follow [`.cursor/rules/safe-infrastructure-development.mdc`](.cursor/rules/safe-
 
 - `./tools/check-agent-safety` — local, read-only safety self-check
 - `./tools/validate-safe` — local static validation wrapper
+- `./tools/check-sensitive-metadata` — operator/live metadata hygiene (not a credential scanner)
+
+Credential scanning runs in CI via pinned Gitleaks. See
+[`docs/REPOSITORY_SECURITY.md`](docs/REPOSITORY_SECURITY.md).
 
 ## Git workflow
 
