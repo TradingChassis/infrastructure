@@ -13,7 +13,13 @@
 #   terraform output instance_public_ip  → ansible_host
 #   ubuntu (Ubuntu 24.04 image contract) → ansible_user
 #   ~/.ssh/tradingchassis                → ansible_ssh_private_key_file
-#   terraform output scratch_volume_device → pass as -e scratch_storage_device_path
+#
+# Scratch device identification is fail-closed Ansible auto-discovery on the
+# host. Do not pass terraform output scratch_volume_device; that field is not
+# a usable Linux path for paravirtualized OCI attachments.
+#
+# Optional explicit override only when intentionally justified:
+#   -e scratch_storage_device_path=/operator-verified/path
 #
 # SSH private keys stay outside Git.
 all:

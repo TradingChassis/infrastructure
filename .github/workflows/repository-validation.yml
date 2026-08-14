@@ -192,6 +192,7 @@ jobs:
               "tools/render-ansible-inventory",
               "scratch_storage_device_path",
               "scratch_storage_allow_format",
+              "automatic scratch-device discovery",
               "private-runtime.yml",
               "ansible/playbooks/site.yml",
               "ansible/playbooks/private-runtime-config.yml",
@@ -215,14 +216,19 @@ jobs:
           helper = Path("tools/render-ansible-inventory").read_text(encoding="utf-8")
           for needle in (
               "instance_public_ip",
-              "scratch_volume_device",
               "ansible_host",
               "ansible_user",
               "ansible_ssh_private_key_file",
               "scratch_storage_device_path",
+              "automatic scratch-device discovery",
           ):
               if needle not in helper:
                   raise SystemExit(f"render-ansible-inventory missing contract token: {needle}")
+          if "scratch_volume_device" in helper or "raw_output scratch_volume_device" in helper:
+              raise SystemExit(
+                  "render-ansible-inventory must not require Terraform output "
+                  "scratch_volume_device"
+              )
           for forbidden in ("ansible-playbook", "kubectl", "VAULT_ID", "private_runtime_config_vault_id"):
               if forbidden in helper:
                   raise SystemExit(f"render-ansible-inventory must not include: {forbidden}")
@@ -350,6 +356,10 @@ jobs:
         # Does not contact OCI, initialize a backend, or run terraform plan.
         run: ./tests/unit/test_terraform_pv_encryption_contract.sh
 
+      - name: Run Ansible scratch device discovery contract unit tests
+        # Static/synthetic only. Does not probe host block devices, SSH, or OCI.
+        run: ./tests/unit/test_ansible_scratch_device_discovery_contract.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the
@@ -410,6 +420,10 @@ jobs:
         env:
           ANSIBLE_CONFIG: ansible/ansible.cfg
         run: ansible-lint ansible/
+
+      - name: Run Ansible scratch device discovery contract unit tests
+        # Static/synthetic only. Does not connect to hosts or mutate disks.
+        run: ./tests/unit/test_ansible_scratch_device_discovery_contract.sh
 
       - name: Ansible playbook syntax check
         env:

@@ -1,5 +1,5 @@
 ---
-# Required at live execution from the Terraform scratch attachment output.
+# Optional operator override. Empty means fail-closed host-side auto-discovery.
 # Do not default to a hardcoded OCI or Linux device path.
 scratch_storage_device_path: ""
 
@@ -15,6 +15,7 @@ scratch_storage_workload_subdirs:
 
 # Formatting is opt-in. Keep false unless the empty Terraform-managed scratch
 # volume has been explicitly verified for first-time filesystem creation.
+# Automatic discovery never authorizes formatting by itself.
 scratch_storage_allow_format: false
 
 # Oracle recommends _netdev and nofail for persistently attached block volumes.

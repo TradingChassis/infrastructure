@@ -1,42 +1,28 @@
 ---
-- name: Assert scratch device path is provided
-  ansible.builtin.assert:
-    that:
-      - scratch_storage_device_path is string
-      - scratch_storage_device_path | length > 0
-    fail_msg: >-
-      scratch_storage_device_path must be set from the Terraform scratch
-      attachment output (scratch_volume_device) during approved live execution.
-      No hardcoded device path fallback is allowed.
-    success_msg: Scratch device path input is present.
+# Scratch-device identity is host-side and fail-closed.
+# Terraform does not provide a stable Linux path for paravirtualized attachments.
+#
+# Discovery is read-only. Formatting, mounting, and directory creation remain
+# in the existing gated stages below.
 
-- name: Stat scratch device path
-  ansible.builtin.stat:
-    path: "{{ scratch_storage_device_path }}"
-    follow: true
-  register: scratch_storage_device_stat
+- name: Normalize optional scratch device override
+  ansible.builtin.set_fact:
+    scratch_storage_override_supplied: "{{ (scratch_storage_device_path | default('') | trim | length) > 0 }}"
 
-- name: Assert scratch path exists and is a block device
-  ansible.builtin.assert:
-    that:
-      - scratch_storage_device_stat.stat.exists
-      - scratch_storage_device_stat.stat.isblk
-    fail_msg: >-
-      Scratch path '{{ scratch_storage_device_path }}' must exist and resolve to
-      a block device before filesystem or mount operations continue.
-    success_msg: Scratch path resolves to an existing block device.
+- name: Report explicit scratch device override
+  when: scratch_storage_override_supplied | bool
+  ansible.builtin.debug:
+    msg: >-
+      explicit override supplied: '{{ scratch_storage_device_path | trim }}'
+      will be used as the candidate and still pass all root, filesystem,
+      and mount guards
 
-- name: Resolve scratch candidate device path
-  ansible.builtin.command:
-    argv:
-      - readlink
-      - -f
-      - "{{ scratch_storage_device_path }}"
-  register: scratch_storage_device_resolved
-  changed_when: false
-  failed_when: >-
-    scratch_storage_device_resolved.rc != 0
-    or (scratch_storage_device_resolved.stdout | trim | length) == 0
+- name: Report automatic scratch-device discovery
+  when: not (scratch_storage_override_supplied | bool)
+  ansible.builtin.debug:
+    msg: >-
+      automatic scratch-device discovery: selecting the unique eligible
+      non-root whole disk for the single-scratch-volume reference architecture
 
 - name: Discover root filesystem source
   ansible.builtin.command:
@@ -75,30 +61,13 @@
   changed_when: false
   failed_when: scratch_storage_root_pkname.rc != 0
 
-- name: Discover parent disk name for scratch candidate
-  ansible.builtin.command:
-    argv:
-      - lsblk
-      - -no
-      - PKNAME
-      - "{{ scratch_storage_device_resolved.stdout | trim }}"
-  register: scratch_storage_candidate_pkname
-  changed_when: false
-  failed_when: scratch_storage_candidate_pkname.rc != 0
-
-- name: Derive root and candidate disk paths
+- name: Derive root disk path
   ansible.builtin.set_fact:
     scratch_storage_root_disk_path: >-
       {{
         ('/dev/' ~ (scratch_storage_root_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | first))
         if ((scratch_storage_root_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | length) > 0)
         else (scratch_storage_root_fs_resolved.stdout | trim)
-      }}
-    scratch_storage_candidate_disk_path: >-
-      {{
-        ('/dev/' ~ (scratch_storage_candidate_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | first))
-        if ((scratch_storage_candidate_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | length) > 0)
-        else (scratch_storage_device_resolved.stdout | trim)
       }}
 
 - name: Resolve root disk path
@@ -112,6 +81,113 @@
   failed_when: >-
     scratch_storage_root_disk_resolved.rc != 0
     or (scratch_storage_root_disk_resolved.stdout | trim | length) == 0
+
+- name: Capture host block topology as JSON
+  when: not (scratch_storage_override_supplied | bool)
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - -b
+      - -o
+      - NAME,KNAME,PATH,TYPE,PKNAME,MOUNTPOINTS,FSTYPE,UUID,SIZE
+  register: scratch_storage_lsblk_json
+  changed_when: false
+  failed_when: >-
+    scratch_storage_lsblk_json.rc != 0
+    or (scratch_storage_lsblk_json.stdout | trim | length) == 0
+
+- name: Copy fail-closed scratch device discovery helper
+  when: not (scratch_storage_override_supplied | bool)
+  ansible.builtin.copy:
+    src: discover_scratch_device.py
+    dest: /tmp/tradingchassis-discover-scratch-device.py
+    mode: "0600"
+
+- name: Discover unique eligible scratch candidate
+  when: not (scratch_storage_override_supplied | bool)
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /tmp/tradingchassis-discover-scratch-device.py
+      - --root-source
+      - "{{ scratch_storage_root_fs_resolved.stdout | trim }}"
+      - --expected-mount
+      - "{{ scratch_storage_mount_path }}"
+    stdin: "{{ scratch_storage_lsblk_json.stdout }}"
+  register: scratch_storage_discovery
+  changed_when: false
+  failed_when: >-
+    scratch_storage_discovery.rc != 0
+    or (scratch_storage_discovery.stdout | trim | length) == 0
+
+- name: Set effective scratch candidate path from explicit override
+  when: scratch_storage_override_supplied | bool
+  ansible.builtin.set_fact:
+    scratch_storage_effective_device_path: "{{ scratch_storage_device_path | trim }}"
+
+- name: Set effective scratch candidate path from automatic discovery
+  when: not (scratch_storage_override_supplied | bool)
+  ansible.builtin.set_fact:
+    scratch_storage_effective_device_path: "{{ scratch_storage_discovery.stdout | trim }}"
+
+- name: Assert effective scratch candidate path is present
+  ansible.builtin.assert:
+    that:
+      - scratch_storage_effective_device_path is string
+      - scratch_storage_effective_device_path | length > 0
+    fail_msg: >-
+      Effective scratch candidate path is empty after override inspection or
+      automatic discovery.
+    success_msg: Effective scratch candidate path is present.
+
+- name: Stat scratch candidate path
+  ansible.builtin.stat:
+    path: "{{ scratch_storage_effective_device_path }}"
+    follow: true
+  register: scratch_storage_device_stat
+
+- name: Assert scratch path exists and is a block device
+  ansible.builtin.assert:
+    that:
+      - scratch_storage_device_stat.stat.exists
+      - scratch_storage_device_stat.stat.isblk
+    fail_msg: >-
+      Scratch path '{{ scratch_storage_effective_device_path }}' must exist and
+      resolve to a block device before filesystem or mount operations continue.
+    success_msg: Scratch path resolves to an existing block device.
+
+- name: Resolve scratch candidate device path
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "{{ scratch_storage_effective_device_path }}"
+  register: scratch_storage_device_resolved
+  changed_when: false
+  failed_when: >-
+    scratch_storage_device_resolved.rc != 0
+    or (scratch_storage_device_resolved.stdout | trim | length) == 0
+
+- name: Discover parent disk name for scratch candidate
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -no
+      - PKNAME
+      - "{{ scratch_storage_device_resolved.stdout | trim }}"
+  register: scratch_storage_candidate_pkname
+  changed_when: false
+  failed_when: scratch_storage_candidate_pkname.rc != 0
+
+- name: Derive candidate disk path
+  ansible.builtin.set_fact:
+    scratch_storage_candidate_disk_path: >-
+      {{
+        ('/dev/' ~ (scratch_storage_candidate_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | first))
+        if ((scratch_storage_candidate_pkname.stdout_lines | map('trim') | reject('equalto', '') | list | length) > 0)
+        else (scratch_storage_device_resolved.stdout | trim)
+      }}
 
 - name: Resolve scratch candidate disk path
   ansible.builtin.command:

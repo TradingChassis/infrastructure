@@ -764,17 +764,22 @@ and `validate` only.
 | Output | Role for Ansible / operator |
 | --- | --- |
 | `instance_public_ip` | SSH / inventory `ansible_host` |
-| `scratch_volume_device` | Ansible `scratch_storage_device_path` |
+| `scratch_volume_id` | diagnostics / correlation |
+| `scratch_volume_attachment_id` | diagnostics / correlation |
+| `scratch_volume_attachment_type` | diagnostics / correlation |
 | `instance_private_ip` | informational |
 | `instance_id` | informational / IAM correlation |
 | `vault_id` | echoes configured Vault reference (not secret contents) |
 | other network/scratch/IAM IDs | diagnostics |
 
+Terraform does not expose a Linux scratch device path. Live paravirtualized
+attachments leave `oci_core_volume_attachment.device` unset, so Ansible
+performs fail-closed automatic scratch-device discovery on the host.
+
 Targeted reads only (do not dump full state):
 
 ```bash
 terraform -chdir=terraform output -raw instance_public_ip
-terraform -chdir=terraform output -raw scratch_volume_device
 ```
 
 ---
@@ -796,14 +801,16 @@ ubuntu (default)       → ansible_user
 ~/.ssh/tradingchassis  → ansible_ssh_private_key_file
 ```
 
-and prints `scratch_volume_device` for the first-converge extra var.
+Scratch device identification is Ansible fail-closed auto-discovery.
+The renderer does not emit a Linux device path.
 
 | Terraform / operator source | Ansible input |
 | --- | --- |
 | output `instance_public_ip` | inventory `ansible_host` |
 | Ubuntu 24.04 image contract | inventory `ansible_user=ubuntu` |
 | `~/.ssh/tradingchassis` | inventory `ansible_ssh_private_key_file` |
-| output `scratch_volume_device` | `-e scratch_storage_device_path=...` |
+| unique eligible non-root whole disk | automatic scratch-device discovery |
+| optional operator-verified path | `-e scratch_storage_device_path=...` (override only) |
 | first-use formatting decision | `-e scratch_storage_allow_format=true` (first converge only) |
 
 The helper must not embed Vault IDs, OCI regions, or credentials.
@@ -812,13 +819,20 @@ The helper must not embed Vault IDs, OCI regions, or credentials.
 
 ```text
 FIRST CONVERGE
-→ pass scratch_storage_device_path from Terraform
-→ set scratch_storage_allow_format=true only after verifying the device
+→ automatic scratch-device discovery
+→ set scratch_storage_allow_format=true only after reviewing that the
+  discovered device is the intended blank Terraform-managed scratch volume
+→ discovery alone does not authorize formatting
 
 SECOND CONVERGE
 → keep scratch_storage_allow_format=false (default)
+→ discovery remains idempotent for the expected UUID mount at /mnt/scratch
 → do not reformat
 ```
+
+Auto-discovery fails closed when zero or more than one eligible non-root whole
+disk exists. Kernel names are not a stable contract; persistent mounting stays
+UUID-based.
 
 Role defaults remain fail-closed (`scratch_storage_allow_format: false`).
 
@@ -857,7 +871,7 @@ execution and are **not** part of this readiness implementation.
 18. Read targeted outputs; ./tools/render-ansible-inventory
 19. Install ansible-core==2.21.2 in $HOME venv if needed; ansible-galaxy install -r ansible/requirements.yml
 20. SSH with StrictHostKeyChecking=accept-new to ubuntu@instance_public_ip
-21. FIRST LIVE DEPLOYMENT: ansible-playbook site.yml with device path + allow_format=true
+21. FIRST LIVE DEPLOYMENT: ansible-playbook site.yml with automatic scratch-device discovery + allow_format=true after reviewing the blank scratch volume
 22. FIRST LIVE DEPLOYMENT: ansible-playbook private-runtime-config.yml -e @ansible/extra-vars/private-runtime.yml
 23. Verify Argo Applications / CSI DaemonSets / SPC existence via ssh + microk8s kubectl
 24. Run acceptance checks (secret-safe) and a second site.yml converge without formatting
@@ -904,27 +918,31 @@ Use `ANSIBLE_CONFIG` so paths resolve from `ansible/ansible.cfg`.
 Use the generated ignored inventory; never commit real inventory.
 
 ```bash
-DEVICE="$(terraform -chdir=terraform output -raw scratch_volume_device)"
-
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook \
   -i ansible/inventory/local.yml \
   ansible/playbooks/site.yml \
-  -e scratch_storage_device_path="$DEVICE" \
   -e scratch_storage_allow_format=true
 ```
 
 Set `scratch_storage_allow_format=true` only for the intentional first format of
-an empty Terraform-managed scratch volume (see above).
+an empty Terraform-managed scratch volume after reviewing discovery (see above).
+Automatic discovery does not authorize formatting.
 
-Second converge (idempotency) must omit formatting opt-in:
+Optional explicit override, only when intentionally justified:
+
+```bash
+-e scratch_storage_device_path=/operator-verified/path
+```
+
+Second converge (idempotency) must omit formatting opt-in and normally omit the
+device-path override so discovery remains canonical:
 
 ```bash
 ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible-playbook \
   -i ansible/inventory/local.yml \
-  ansible/playbooks/site.yml \
-  -e scratch_storage_device_path="$DEVICE"
+  ansible/playbooks/site.yml
 ```
 
 ### What successful `site.yml` means
