@@ -119,12 +119,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
+          # Gitleaks 8.30.1: scan target is positional (dir [flags] [path]).
+          # --source is not a valid flag. working-directory is github.workspace.
           gitleaks dir \
             --redact \
             --verbose \
             --no-banner \
             --config .gitleaks.toml \
-            --source .
+            .
 
       - name: Scan Git history for credentials
         # pull_request: newly introduced commits only (base..head).
@@ -150,13 +152,15 @@ jobs:
           else
             echo "Gitleaks git scope: reachable history"
           fi
+          # Gitleaks 8.30.1: repo path is positional (git [flags] [repo]).
+          # --log-opts remains a flag; --source is not valid.
           gitleaks git \
             --redact \
             --verbose \
             --no-banner \
             --config .gitleaks.toml \
-            --source . \
-            "${extra[@]}"
+            "${extra[@]}" \
+            .
 
       - name: Check sensitive metadata
         run: ./tools/check-sensitive-metadata

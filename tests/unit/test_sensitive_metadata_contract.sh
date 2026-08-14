@@ -299,6 +299,12 @@ if len(security_job) == 2:
         pass_("security job runs directory and git gitleaks modes")
     else:
         fail_("security job runs directory and git gitleaks modes")
+    # Gitleaks 8.30.1 rejects --source; the target is positional.
+    # Match command-argument lines only, not comments that mention the flag.
+    if re.search(r"(?m)^\s*--source\b", body):
+        fail_("security job must not pass obsolete Gitleaks --source flag")
+    else:
+        pass_("security job uses positional Gitleaks scan paths")
     if "check-sensitive-metadata" in body:
         pass_("security job runs the metadata checker")
     else:
