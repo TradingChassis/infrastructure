@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Normalized the OCI Ubuntu cloud-image unconditional IPv4 FORWARD REJECT so MicroK8s pod/service forwarding is not blocked while OCI InstanceServices and INPUT protection remain.
 - Inserted a narrow MicroK8s pod-CIDR INPUT allow for the node-local kube-apiserver port before the retained OCI catch-all INPUT REJECT so kube-proxy DNAT traffic is not dropped.
 - Inserted a narrow MicroK8s pod-CIDR INPUT allow for the node-local kubelet port before the retained OCI catch-all INPUT REJECT so metrics-server scraping is not dropped.
+- Reconcile the normalized OCI / MicroK8s nft-compatible host firewall at boot after UFW initializes, because persistent `rules.v4` survived reboot while runtime iptables-nft did not.
 
 ## [0.1.0] - 2026-07-30
 

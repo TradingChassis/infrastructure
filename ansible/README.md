@@ -156,6 +156,10 @@ The `microk8s` role:
 * normalizes the OCI Ubuntu cloud-image IPv4 FORWARD REJECT and inserts
   narrow MicroK8s pod → node-local API and kubelet INPUT allows before the
   OCI INPUT REJECT
+* reconciles that same nft-compatible contract into the running
+  iptables-nft table after UFW is enabled
+* installs and enables `tradingchassis-oci-microk8s-firewall.service` so
+  the contract is restored automatically after reboot
 * installs MicroK8s from the pinned snap channel `1.29/stable`
 * waits for readiness with `microk8s status --wait-ready`
 * enables only the verified V1-required addons when missing
@@ -294,27 +298,71 @@ node addresses.
 The INPUT catch-all REJECT remains for unrelated host traffic. The Kubernetes
 API and kubelet are still not opened on UFW or OCI NSGs to the Internet.
 
+#### 4. UFW boot initialization does not restore the normalized nft runtime
+
+`/etc/iptables/rules.v4` survives reboot. UFW is the active host firewall
+owner and initializes its own iptables-nft chains at boot
+(`ufw.service`, `Before=network-pre.target`). On the current host,
+`iptables-persistent` / `netfilter-persistent` are not installed, and UFW
+does not reload the normalized OCI/MicroK8s contract from `rules.v4`.
+
+Live reboot evidence after PR #56, without running Ansible afterward:
+
+```text
+persistent rules.v4 still contained the OCI baseline, both pod allows,
+the INPUT REJECT, the OUTPUT InstanceServices jump, and InstanceServices
+runtime nft INPUT contained only UFW jumps (policy DROP)
+Pod CIDR → tcp/16443 and tcp/10250 were absent
+OCI RELATED/ESTABLISHED, ICMP, loopback, SSH, and INPUT REJECT were absent
+InstanceServices chain and OUTPUT jump were absent
+metrics API returned ServiceUnavailable
+```
+
+V2 does **not** install `iptables-persistent` / `netfilter-persistent`.
+A whole-table `iptables-restore` would race with or replace UFW chains.
+
+Instead, Ansible installs `tradingchassis-oci-microk8s-firewall.service`:
+a oneshot that runs the same helper `--apply-runtime` after `ufw.service`
+and before `network-pre.target` plus MicroK8s
+`snap.microk8s.daemon-containerd.service` /
+`snap.microk8s.daemon-kubelite.service`. It reconciles only the owned
+OCI/MicroK8s nft contract (INPUT prefix, FORWARD REJECT absence,
+InstanceServices). It does not flush tables and does not restore a whole
+table.
+
+The `microk8s` role still applies the same runtime reconciliation during
+converge. The boot unit does not replace that. Post-reboot proof of this
+boot unit is **not** claimed by repository tests.
+
 #### Shared safety properties
 
-Persistent and runtime normalization run in the `microk8s` role before UFW
-enable and MicroK8s install/readiness.
+Persistent and runtime normalization run in the `microk8s` role before
+MicroK8s install/readiness. Persist rewrite happens before UFW enable.
+Runtime `--apply-runtime` happens after UFW enable so it sees the UFW
+chains the boot path also sees.
 
-Runtime FORWARD deletion uses `iptables-nft -C` / `-D` with the exact REJECT
-spec. Runtime INPUT reconciliation plans ordering from `iptables-nft -S INPUT`
-and, when required, deletes a missing or misplaced pod-host allow by spec then
-`-I INPUT` so it precedes the catch-all REJECT. Relative order of the API and
-kubelet allows is not a runtime correctness requirement; each must exist
-exactly once before the REJECT. It does not use nft handles, FORWARD/INPUT
-line-number deletion, or a full table restore.
+`--apply-runtime` uses `/usr/sbin/iptables-nft` with exact argv specs. It
+never flushes INPUT/OUTPUT/FORWARD, never calls iptables-legacy, and never
+restores a whole table. Owned INPUT rules from the normalized persistent
+file are placed as a contiguous prefix ahead of later UFW jumps. The exact
+OCI FORWARD REJECT is deleted when present. The OUTPUT InstanceServices
+jump and InstanceServices chain rules are restored from that same
+persistent baseline. Relative order of the two pod-host allows is not a
+correctness requirement of the older INPUT-only planner; the boot/runtime
+filter planner canonicalizes the full owned INPUT prefix once, then is a
+no-op.
 
 Do not flush iptables tables (`iptables -F` / `-X` / nft flush), disable UFW,
-delete `/etc/iptables/rules.v4`, delete the OCI INPUT REJECT, or rewrite
+install `iptables-persistent` as a second full-table manager, delete
+`/etc/iptables/rules.v4`, delete the OCI INPUT REJECT, or rewrite
 InstanceServices from a template. Unexpected/non-OCI `rules.v4` files fail
 closed. Duplicate catch-all INPUT REJECT rules fail closed. An absent
-`rules.v4` is a no-op and does not create an incomplete firewall file.
+`rules.v4` is a persist no-op and does not create an incomplete firewall
+file; boot/runtime apply fails closed if that file is missing.
 
 The second MicroK8s converge must remain idempotent after FORWARD REJECT is
-gone and both pod-host allows already precede INPUT REJECT.
+gone, both pod-host allows already precede INPUT REJECT, InstanceServices
+is present, and the boot unit is already enabled.
 
 Preserved on purpose:
 

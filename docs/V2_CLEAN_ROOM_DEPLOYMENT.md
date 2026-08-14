@@ -921,7 +921,8 @@ Both load into the nft-compatible table ahead of UFW.
 ```text
 1. FORWARD REJECT
    -A FORWARD -j REJECT --reject-with icmp-host-prohibited
-   Blocks forwarded Pod → Kubernetes Service traffic.
+   Blocks forwarded Pod → Kubernetes Service traffic with
+   `no route to host`.
    V2 removes this exact rule only.
 
 2. INPUT REJECT vs node-local API (retained REJECT)
@@ -937,21 +938,37 @@ Both load into the nft-compatible table ahead of UFW.
    in the MicroK8s pod CIDR. That packet also hits INPUT before UFW.
    V2 inserts one allow from microk8s_pod_cidr (10.1.0.0/16) to
    microk8s_kubelet_port (10250) immediately before this REJECT.
+
+4. UFW boot does not restore the normalized nft runtime
+   Persistent /etc/iptables/rules.v4 survived reboot with the OCI
+   baseline, both pod allows, INPUT REJECT, and InstanceServices.
+   Runtime iptables-nft INPUT after reboot contained only UFW jumps.
+   iptables-persistent/netfilter-persistent are not the owner; UFW is.
+   V2 installs tradingchassis-oci-microk8s-firewall.service to
+   reconcile the owned contract after ufw.service, without a
+   whole-table restore. Live reboot proof of that unit is NOT yet
+   established by this repository change.
 ```
 
 UFW `DEFAULT_FORWARD_POLICY=ACCEPT` and UFW Calico interface allows do not
 fix either rule while it still precedes the UFW chains.
 
 Do not flush iptables tables, disable UFW, delete `rules.v4`, delete the OCI
-INPUT REJECT, or rewrite InstanceServices from a template.
+INPUT REJECT, or rewrite InstanceServices from a template. Do not install
+`iptables-persistent` / `netfilter-persistent` as a second full-table
+manager alongside UFW.
 
 Current-host live evidence after PR #54: the FORWARD REJECT is gone and INPUT
 REJECT remains. After PR #55: the pod → API tcp/16443 allow exists before
 INPUT REJECT and CoreDNS / calico-kube-controllers recovered on the current
-host. metrics-server still failed with `no route to host` to node-local
-kubelet tcp/10250 until this kubelet allow exists. The kubelet INPUT allow is
-implemented here and is **not** claimed live-reconciled by this repository
-change. That current-host evidence is not clean-room rebuild proof.
+host. After PR #56: the pod → kubelet tcp/10250 allow exists before INPUT
+REJECT, metrics-server became Ready, and a second Ansible converge reported
+`changed=0`. After that same host rebooted **without** Ansible, persistent
+`rules.v4` still had the contract, but runtime iptables-nft INPUT was UFW-only
+and the metrics API returned ServiceUnavailable. Finding 4 is implemented
+here as `tradingchassis-oci-microk8s-firewall.service` and is **NOT yet**
+live-reboot-proven by this repository change. None of these current-host
+observations are clean-room rebuild proof.
 
 ### Example first converge
 
@@ -997,6 +1014,7 @@ host UFW policy applied (incoming deny, outgoing allow, routed allow, SSH, Calic
 OCI cloud-image unconditional IPv4 FORWARD REJECT removed from rules.v4 and nft FORWARD
 OCI INPUT catch-all REJECT retained
 narrow MicroK8s pod CIDR → tcp/16443 and tcp/10250 allows inserted before INPUT REJECT
+tradingchassis-oci-microk8s-firewall.service enabled for post-UFW boot nft reconcile
 SSH retained, UFW active, /mnt/scratch retained
 Kubernetes node Ready
 CoreDNS Ready
@@ -1010,8 +1028,9 @@ The MicroK8s system-pod Ready state above is the intended first MicroK8s
 converge outcome after OCI FORWARD and INPUT firewall normalizations.
 FORWARD REJECT removal was live-proven after PR #54. The INPUT pod-API allow
 was live-proven on the current host after PR #55. The INPUT pod-kubelet allow
-is **not** claimed live-validated by this repository change, and none of
-these current-host observations are clean-room rebuild proof.
+was live-proven on the current host after PR #56 before reboot. Automatic
+post-reboot nft reconciliation is **NOT yet** live-proven. None of these
+current-host observations are clean-room rebuild proof.
 
 Successful `site.yml` does **not** mean:
 
@@ -1280,10 +1299,10 @@ no Argo CD reinstall churn beyond idempotent module behavior
 ```
 
 The second MicroK8s converge must remain idempotent once the OCI FORWARD
-REJECT is gone and both pod → node-local API and kubelet allows already
-precede INPUT REJECT (persistent file unchanged, nft INPUT plan `unchanged`
-so `-D`/`-I` are skipped). That claim is statically designed and **not**
-live-proven after this repository fix.
+REJECT is gone, both pod → node-local API and kubelet allows already
+precede INPUT REJECT, InstanceServices is present, and the boot firewall
+unit is already enabled. That claim is statically designed and **NOT yet**
+live-proven after a post-fix reboot.
 
 The private runtime role is designed for idempotent second runs when inputs are
 unchanged; that design is statically described and **not** live-proven by this
