@@ -214,7 +214,7 @@ Terraform OCI authentication method, outbound network access, and SSH.
 | --- | --- |
 | Git | clone this repository under `$HOME` (persistent in Cloud Shell) |
 | Terraform | `~> 1.15.0` (`terraform/versions.tf`); install **1.15.8** under `$HOME/bin` (do not trust Cloud Shell preinstall) |
-| Ansible | install pinned collections from `ansible/requirements.yml`; CI validates with `ansible-core==2.21.2` / Python `3.12` |
+| Ansible | **REQUIRED** Cloud Shell venv `$HOME/.venvs/tradingchassis-ansible` with `ansible-core==2.21.2`; collections from `ansible/requirements.yml`. Do not use Cloud Shell `/usr/bin/ansible-playbook` (Ansible 2.9.27). |
 | Python 3 | required by Ansible |
 | OCI CLI | Cloud Shell built-in CLI is `instance_obo_user` convenience only; Terraform uses `$HOME/.oci` APIKey profile `tradingchassis` |
 | SSH keypair | operator-local ed25519 keypair (public key → Terraform, private key → Ansible) |
@@ -238,9 +238,77 @@ community.general 13.2.0
 kubernetes.core 6.5.0
 ```
 
-Cloud Shell may ship an Ansible package whose version differs from CI.
-For reproducibility, create a Python virtualenv under persistent `$HOME` and install
-`ansible-core==2.21.2` before installing collections.
+Cloud Shell ships an obsolete system Ansible (`/usr/bin/ansible-playbook`, live
+observed **2.9.27**) that cannot load `kubernetes.core`. That binary is **not**
+an allowed control-node interpreter.
+
+### REQUIRED Cloud Shell Ansible venv
+
+Activation is mandatory before every Ansible command, including `site.yml`.
+It is not optional and is not implied by `cd` into the repository.
+
+Live-proven control-node venv:
+
+```bash
+source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
+```
+
+Expected after activation:
+
+```text
+which python              → ~/.venvs/tradingchassis-ansible/bin/python
+Python                    → 3.12.x
+which ansible-playbook    → ~/.venvs/tradingchassis-ansible/bin/ansible-playbook
+ansible-core              → 2.21.2
+ansible.posix             → 2.2.2
+community.general         → 13.2.0
+kubernetes.core           → 6.5.0
+```
+
+Preflight (still in the venv):
+
+```bash
+which ansible-playbook
+ansible-playbook --version
+ansible-galaxy collection list
+```
+
+`ansible-playbook --version` without `ANSIBLE_CONFIG` reports Cloud Shell's
+`/etc/ansible/ansible.cfg`. That is **not** this repository's config. The
+working directory does **not** auto-discover `ansible/ansible.cfg`.
+
+Canonical converge from the repository root:
+
+```bash
+cd "$HOME/infrastructure"
+
+source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
+
+ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg" \
+  ansible-playbook \
+  -i ansible/inventory/local.yml \
+  ansible/playbooks/site.yml
+```
+
+If the clone path differs, run the same commands from the repository root.
+Do **not** run bare `/usr/bin/ansible-playbook`.
+Do **not** run `ansible-playbook site.yml` without the `ansible/playbooks/` path.
+Do **not** omit `ANSIBLE_CONFIG`.
+Do **not** point `-i` at `ansible/inventory/example.yml`.
+
+Inventory comes from Terraform outputs via `./tools/render-ansible-inventory`
+(`instance_public_ip` → `ansible_host`). Exporting `INSTANCE_PUBLIC_IP` is for
+SSH diagnostics, not an Ansible extra-var.
+
+Create the venv once under persistent `$HOME` if it does not exist:
+
+```bash
+python3 -m venv "$HOME/.venvs/tradingchassis-ansible"
+source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
+python -m pip install --upgrade pip
+python -m pip install "ansible-core==2.21.2"
+ansible-galaxy collection install -r ansible/requirements.yml
+```
 
 ---
 
@@ -871,10 +939,16 @@ execution and are **not** part of this readiness implementation.
 16. Review plan
 17. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform apply terraform.tfplan
 18. Read targeted outputs; ./tools/render-ansible-inventory
-19. Install ansible-core==2.21.2 in $HOME venv if needed; ansible-galaxy install -r ansible/requirements.yml
-20. SSH with StrictHostKeyChecking=accept-new to ubuntu@instance_public_ip
-21. FIRST LIVE DEPLOYMENT: ansible-playbook site.yml with automatic scratch-device discovery + allow_format=true after reviewing the blank scratch volume
-22. FIRST LIVE DEPLOYMENT: ansible-playbook private-runtime-config.yml -e @ansible/extra-vars/private-runtime.yml
+    (terraform -chdir=terraform output -raw instance_public_ip → inventory ansible_host)
+19. REQUIRED: source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
+    which ansible-playbook; ansible-playbook --version; ansible-galaxy collection list
+20. SSH with StrictHostKeyChecking=accept-new to ubuntu@$(terraform -chdir=terraform output -raw instance_public_ip)
+21. FIRST LIVE DEPLOYMENT: from repository root, with the venv active:
+    ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg" ansible-playbook -i ansible/inventory/local.yml ansible/playbooks/site.yml
+    Greenfield first format only, after reviewing the blank scratch volume: add -e scratch_storage_allow_format=true
+    Resume on an already-mounted host: omit allow_format (default false)
+22. FIRST LIVE DEPLOYMENT: same venv + ANSIBLE_CONFIG, then
+    ansible/playbooks/private-runtime-config.yml -e @ansible/extra-vars/private-runtime.yml
 23. Verify Argo Applications / CSI DaemonSets / SPC existence via ssh + microk8s kubectl
 24. Run acceptance checks (secret-safe) and a second site.yml converge without formatting
 ```
@@ -890,8 +964,9 @@ Session restart resume:
 ```text
 cd $HOME/.../infrastructure
 export PATH="$HOME/bin:$PATH"
+source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
 reuse $HOME/.oci/config profile tradingchassis (APIKey)
-reuse backend.hcl, terraform.tfvars, SSH keypair
+reuse backend.hcl, terraform.tfvars, SSH keypair, ansible/inventory/local.yml
 recompute ssh_ingress_cidr if Cloud Shell public IP changed, then plan/apply if needed
 terraform init -backend-config=backend.hcl if required
 continue from the interrupted stage
@@ -910,9 +985,17 @@ host_baseline
 scratch_storage
 microk8s
 argocd_bootstrap
+  imports ansible_k8s_runtime → /opt/tradingchassis/ansible-kubernetes
 ```
 
+`argocd_bootstrap` installs Argo CD with Helm timeout `10m` (Helm 3 duration) and
+applies the root Application through `kubernetes.core` using that dedicated
+venv. It does not pip-install into Ubuntu system Python. An existing
+`python3-kubernetes` distro package, if present from a partial bootstrap, is
+left in place and is not the `kubernetes.core` interpreter.
+
 `private_runtime_config` is **intentionally not** included in `site.yml`.
+It imports the same `ansible_k8s_runtime` before any `kubernetes.core` task.
 
 ### OCI cloud-image firewall (FORWARD + INPUT)
 

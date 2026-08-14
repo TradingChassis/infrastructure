@@ -212,6 +212,13 @@ jobs:
           private_idx = runbook.find("ansible/playbooks/private-runtime-config.yml")
           if site_idx < 0 or private_idx < 0 or site_idx > private_idx:
               raise SystemExit("runbook must present site.yml before private-runtime-config.yml")
+          for needle in (
+              'source "$HOME/.venvs/tradingchassis-ansible/bin/activate"',
+              'ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg"',
+              "ansible/inventory/local.yml",
+          ):
+              if needle not in runbook:
+                  raise SystemExit(f"runbook missing Cloud Shell Ansible contract: {needle}")
 
           helper = Path("tools/render-ansible-inventory").read_text(encoding="utf-8")
           for needle in (
@@ -368,6 +375,10 @@ jobs:
         # Static/synthetic only. Does not run ufw, iptables, nft, or SSH.
         run: ./tests/unit/test_ansible_microk8s_calico_ufw_ownership.sh
 
+      - name: Run Ansible Kubernetes module runtime contract unit tests
+        # Static only. Does not SSH, run Helm, or pip-install on a live host.
+        run: ./tests/unit/test_ansible_k8s_runtime_contract.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the
@@ -440,6 +451,10 @@ jobs:
       - name: Run Ansible MicroK8s Calico UFW ownership contract unit tests
         # Static/synthetic only. Does not run ufw, iptables, nft, or SSH.
         run: ./tests/unit/test_ansible_microk8s_calico_ufw_ownership.sh
+
+      - name: Run Ansible Kubernetes module runtime contract unit tests
+        # Static only. Does not SSH, run Helm, or pip-install on a live host.
+        run: ./tests/unit/test_ansible_k8s_runtime_contract.sh
 
       - name: Ansible playbook syntax check
         env:

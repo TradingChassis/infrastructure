@@ -1,0 +1,61 @@
+---
+# Create a root-owned virtualenv for kubernetes.core modules.
+# Do not set ansible_python_interpreter here: apt and other host modules
+# must keep using /usr/bin/python3.
+
+- name: Ensure python3-venv is present for the Kubernetes module runtime
+  ansible.builtin.apt:
+    name: "{{ ansible_k8s_runtime_apt_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Ensure TradingChassis runtime parent directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_k8s_runtime_parent }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install pinned Kubernetes Python dependencies into the dedicated venv
+  ansible.builtin.pip:
+    requirements: "{{ ansible_k8s_runtime_requirements_file }}"
+    virtualenv: "{{ ansible_k8s_runtime_venv }}"
+    virtualenv_command: /usr/bin/python3 -m venv
+    virtualenv_site_packages: false
+  become: true
+
+- name: Verify dedicated runtime Kubernetes client meets kubernetes.core 6.5.0
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_k8s_runtime_python }}"
+      - -c
+      - |
+        import jsonpatch
+        import kubernetes
+        import yaml
+
+        version = kubernetes.__version__
+        parts = [int(piece) for piece in version.split(".")[:3]]
+        while len(parts) < 3:
+            parts.append(0)
+        minimum = [int(piece) for piece in "{{ ansible_k8s_runtime_min_kubernetes_version }}".split(".")[:3]]
+        while len(minimum) < 3:
+            minimum.append(0)
+        if tuple(parts) < tuple(minimum):
+            raise SystemExit(
+                "kubernetes %s is below required %s"
+                % (version, "{{ ansible_k8s_runtime_min_kubernetes_version }}")
+            )
+        print(version)
+  register: ansible_k8s_runtime_client_version
+  changed_when: false
+  become: true
+
+- name: Export dedicated Kubernetes module interpreter
+  ansible.builtin.set_fact:
+    ansible_k8s_runtime_python: "{{ ansible_k8s_runtime_python }}"
+    ansible_k8s_runtime_client_version: "{{ ansible_k8s_runtime_client_version.stdout | trim }}"

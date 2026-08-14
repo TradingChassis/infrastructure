@@ -20,4 +20,10 @@ argocd_bootstrap_repo_url: https://github.com/TradingChassis/infrastructure
 argocd_bootstrap_target_revision: main
 argocd_bootstrap_root_path: argocd
 
-argocd_bootstrap_wait_timeout: 600
+# kubernetes.core.helm timeout is a Helm 3 / Go duration passed to --timeout.
+# A bare integer becomes `--timeout 600` and fails on Helm 3.9.
+# Do not use deprecated wait_timeout for Helm.
+argocd_bootstrap_helm_timeout: "10m"
+
+# kubernetes.core.k8s wait_timeout is seconds as an integer, not a Go duration.
+argocd_bootstrap_k8s_wait_timeout: 600

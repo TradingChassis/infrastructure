@@ -7,7 +7,7 @@ private_runtime_config_vault_id: ""
 private_runtime_config_oci_region: ""
 
 # MicroK8s in-cluster kubeconfig used by kubernetes.core modules (same contract as
-# argocd_bootstrap).
+# argocd_bootstrap). kubernetes.core runs in the shared ansible_k8s_runtime venv.
 private_runtime_config_kubeconfig: /var/snap/microk8s/current/credentials/client.config
 
 # Prepared MLflow V2 contract (apps/mlflow/overlays/v2/aws-default-region-patch.yaml).

@@ -95,8 +95,22 @@ fi
 if command -v ansible-playbook >/dev/null 2>&1; then
   pass "command available: ansible-playbook"
   ansible-playbook --version | head -n1 || true
+  ansible_path="$(command -v ansible-playbook)"
+  printf 'INFO: ansible-playbook path %s\n' "${ansible_path}"
+  ansible_ver="$(ansible-playbook --version 2>/dev/null | head -n1 || true)"
+  if printf '%s\n' "${ansible_ver}" | grep -Eq 'ansible-playbook[[:space:]]+2\.9\.'; then
+    fail "Cloud Shell system Ansible 2.9 is unsupported; activate \$HOME/.venvs/tradingchassis-ansible"
+  fi
+  if [[ "${ansible_path}" != *".venvs/tradingchassis-ansible/"* ]]; then
+    warn "ansible-playbook is not the Cloud Shell venv; source \$HOME/.venvs/tradingchassis-ansible/bin/activate before site.yml"
+    if [[ "$STRICT" -eq 1 ]]; then
+      fail "strict mode requires \$HOME/.venvs/tradingchassis-ansible ansible-playbook"
+    fi
+  else
+    pass "ansible-playbook is the Cloud Shell tradingchassis-ansible venv"
+  fi
 else
-  warn "ansible-playbook not found (install pinned ansible-core in a \$HOME venv for Cloud Shell)"
+  warn "ansible-playbook not found (REQUIRED: source \$HOME/.venvs/tradingchassis-ansible/bin/activate; ansible-core==2.21.2)"
   if [[ "$STRICT" -eq 1 ]]; then
     fail "ansible-playbook required in --strict mode"
   fi

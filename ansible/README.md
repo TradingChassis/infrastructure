@@ -63,6 +63,7 @@ ansible/
 │   ├── host_baseline/
 │   ├── scratch_storage/
 │   ├── microk8s/
+│   ├── ansible_k8s_runtime/
 │   ├── argocd_bootstrap/
 │   └── private_runtime_config/
 └── README.md
@@ -448,10 +449,14 @@ The V1 CRD deletion and runtime repo-server patch are intentionally not reproduc
 
 The `argocd_bootstrap` role:
 
+* imports `ansible_k8s_runtime` to create `/opt/tradingchassis/ansible-kubernetes`
+  (Python 3.12 venv, `kubernetes==29.0.0`, not Ubuntu `python3-kubernetes` 22.6.0)
+* uses that interpreter only for `kubernetes.core` tasks (host roles keep `/usr/bin/python3`)
 * ensures the `argocd` namespace
 * installs Argo CD via the pinned community Helm chart `argo-cd` `8.2.7`
 * pins Argo CD application image tag `v3.0.23`
 * configures `kustomize.buildOptions: --enable-helm` declaratively in Helm values
+* waits for Helm with timeout `10m` (Helm 3 duration; never `--timeout 600`)
 * waits for server, repo-server, and application-controller readiness
 * applies the GitOps root Application from `argocd/root-app.yaml`
 
@@ -499,6 +504,7 @@ kubeconfigs from the workspace, or discover secrets automatically.
 The `private_runtime_config` role:
 
 * fail-closed validates Vault OCID shape (`ocid1.vault...`) and OCI region shape
+* imports the same `ansible_k8s_runtime` used by `argocd_bootstrap` before any `kubernetes.core` task
 * performs bounded, condition-based waits for Argo-owned OCI secrets platform readiness:
   * SecretProviderClass CRD
   * CSIDriver `secrets-store.csi.k8s.io`
@@ -677,6 +683,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
   ansible/playbooks/private-runtime-config.yml
 ./tests/unit/test_ansible_scratch_device_discovery_contract.sh
 ./tests/unit/test_ansible_oci_forward_reject_contract.sh
+./tests/unit/test_ansible_microk8s_calico_ufw_ownership.sh
+./tests/unit/test_ansible_k8s_runtime_contract.sh
 ```
 
 Pinned collections:
@@ -691,6 +699,8 @@ kubernetes.core 6.5.0
 
 ```text
 The V2 live operator sequence is now defined by docs/V2_CLEAN_ROOM_DEPLOYMENT.md.
+Cloud Shell must source $HOME/.venvs/tradingchassis-ansible/bin/activate and set
+ANSIBLE_CONFIG to ansible/ansible.cfg before ansible/playbooks/site.yml.
 ```
 
 ```text
