@@ -974,9 +974,14 @@ here as `tradingchassis-oci-microk8s-firewall.service` and is **NOT yet**
 live-reboot-proven by this repository change. The first live PR #57
 converge failed while appending quoted Oracle InstanceServices comments;
 runtime INPUT kept the pod allows and UFW, InstanceServices existed
-empty, and the boot unit was not installed. Quoted iptables-save
-tokenization is required before that apply can succeed. Live successful
-quoted-token apply is **NOT yet** proven. The unit uses
+empty, and the boot unit was not installed. The first live PR #58 apply
+parsed those quoted comments, resumed the empty chain, and restored the
+full runtime contract. The second PR #58 converge then failed because
+iptables-nft rendered persist `-p udp --dport 123` as
+`-p udp -m udp --dport 123`. Semantic comparison of that redundant
+protocol match is required before second-converge `changed=0` or reboot
+proof. Live successful second converge and reboot proof are **NOT yet**
+proven. The unit uses
 `PartOf=ufw.service` and `RequiredBy` the MicroK8s snap units. None of
 these current-host observations are clean-room rebuild proof.
 
@@ -1038,9 +1043,12 @@ The MicroK8s system-pod Ready state above is the intended first MicroK8s
 converge outcome after OCI FORWARD and INPUT firewall normalizations.
 FORWARD REJECT removal was live-proven after PR #54. The INPUT pod-API allow
 was live-proven on the current host after PR #55. The INPUT pod-kubelet allow
-was live-proven on the current host after PR #56 before reboot. Automatic
-post-reboot nft reconciliation is **NOT yet** live-proven. None of these
-current-host observations are clean-room rebuild proof.
+was live-proven on the current host after PR #56 before reboot. The first
+live PR #58 apply restored the empty InstanceServices chain and the full
+OCI runtime contract. Automatic post-reboot nft reconciliation is **NOT
+yet** live-proven, and the second PR #58 converge is **NOT yet**
+`changed=0` live-proven. None of these current-host observations are
+clean-room rebuild proof.
 
 Successful `site.yml` does **not** mean:
 
