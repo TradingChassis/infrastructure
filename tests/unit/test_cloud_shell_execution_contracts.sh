@@ -206,6 +206,16 @@ def main() -> None:
         raise SystemExit("runbook must still mark first clean-room deployment as not yet executed")
     print("PASS: first clean-room deployment remains not yet executed")
 
+    if "source \"$HOME/.venvs/tradingchassis-ansible/bin/activate\"" not in runbook:
+        raise SystemExit("runbook must require the Cloud Shell tradingchassis-ansible venv")
+    if "ANSIBLE_CONFIG=\"$PWD/ansible/ansible.cfg\"" not in runbook:
+        raise SystemExit("runbook must set ANSIBLE_CONFIG to the repository ansible.cfg")
+    if "ansible/playbooks/site.yml" not in runbook:
+        raise SystemExit("runbook must use ansible/playbooks/site.yml")
+    if "ansible/inventory/local.yml" not in runbook:
+        raise SystemExit("runbook must use ansible/inventory/local.yml")
+    print("PASS: Cloud Shell Ansible venv and ANSIBLE_CONFIG contract is documented")
+
     print("PASS: Cloud Shell execution contract unit tests")
 
 

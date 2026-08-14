@@ -1,0 +1,6 @@
+# Pinned Python dependencies for kubernetes.core 6.5.0 on Python 3.12.
+# Installed only into /opt/tradingchassis/ansible-kubernetes.
+# Do not install these into system Python.
+kubernetes==29.0.0
+PyYAML==6.0.2
+jsonpatch==1.33

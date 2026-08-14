@@ -99,123 +99,87 @@
       postgres, mlflow, and monitoring SecretProviderClass contracts.
     success_msg: SecretProviderClass contract list matches the expected three names.
 
-- name: Ensure Kubernetes Python client is installed for Ansible modules
-  ansible.builtin.apt:
-    name: python3-kubernetes
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
-  become: true
+- name: Ensure dedicated Kubernetes Ansible module runtime
+  ansible.builtin.import_role:
+    name: ansible_k8s_runtime
 
-# ---------------------------------------------------------------------------
-# Platform readiness (bounded, condition-based). No mutation before success.
-# Does not validate OCI Vault retrieval — that remains live clean-room evidence.
-# ---------------------------------------------------------------------------
-- name: Wait for SecretProviderClass CustomResourceDefinition
-  kubernetes.core.k8s_info:
-    api_version: apiextensions.k8s.io/v1
-    kind: CustomResourceDefinition
-    name: "{{ private_runtime_config_spc_crd_name }}"
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-  become: true
-  register: private_runtime_config_spc_crd
-  until: (private_runtime_config_spc_crd.resources | default([]) | length) == 1
-  retries: "{{ private_runtime_config_readiness_retries | int }}"
-  delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
-  failed_when: false
-  changed_when: false
+- name: Query and mutate Kubernetes objects with the dedicated runtime
+  vars:
+    ansible_python_interpreter: "{{ ansible_k8s_runtime_python }}"
+  block:
+    # ---------------------------------------------------------------------------
+    # Platform readiness (bounded, condition-based). No mutation before success.
+    # Does not validate OCI Vault retrieval — that remains live clean-room evidence.
+    # ---------------------------------------------------------------------------
+    - name: Wait for SecretProviderClass CustomResourceDefinition
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ private_runtime_config_spc_crd_name }}"
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+      become: true
+      register: private_runtime_config_spc_crd
+      until: (private_runtime_config_spc_crd.resources | default([]) | length) == 1
+      retries: "{{ private_runtime_config_readiness_retries | int }}"
+      delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
+      failed_when: false
+      changed_when: false
 
-- name: Assert SecretProviderClass CRD became available
-  ansible.builtin.assert:
-    that:
-      - (private_runtime_config_spc_crd.resources | default([]) | length) == 1
-    fail_msg: >-
-      SecretProviderClass CRD '{{ private_runtime_config_spc_crd_name }}' did not
-      become available within {{ private_runtime_config_readiness_retries }} attempts
-      ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
-      Application oci-secrets before retrying. This role never installs the CSI Driver
-      or OCI provider.
-    success_msg: SecretProviderClass CRD is present.
+    - name: Assert SecretProviderClass CRD became available
+      ansible.builtin.assert:
+        that:
+          - (private_runtime_config_spc_crd.resources | default([]) | length) == 1
+        fail_msg: >-
+          SecretProviderClass CRD '{{ private_runtime_config_spc_crd_name }}' did not
+          become available within {{ private_runtime_config_readiness_retries }} attempts
+          ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
+          Application oci-secrets before retrying. This role never installs the CSI Driver
+          or OCI provider.
+        success_msg: SecretProviderClass CRD is present.
 
-- name: Wait for Secrets Store CSIDriver object
-  kubernetes.core.k8s_info:
-    api_version: storage.k8s.io/v1
-    kind: CSIDriver
-    name: "{{ private_runtime_config_csi_driver_name }}"
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-  become: true
-  register: private_runtime_config_csi_driver
-  until: (private_runtime_config_csi_driver.resources | default([]) | length) == 1
-  retries: "{{ private_runtime_config_readiness_retries | int }}"
-  delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
-  failed_when: false
-  changed_when: false
+    - name: Wait for Secrets Store CSIDriver object
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: CSIDriver
+        name: "{{ private_runtime_config_csi_driver_name }}"
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+      become: true
+      register: private_runtime_config_csi_driver
+      until: (private_runtime_config_csi_driver.resources | default([]) | length) == 1
+      retries: "{{ private_runtime_config_readiness_retries | int }}"
+      delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
+      failed_when: false
+      changed_when: false
 
-- name: Assert Secrets Store CSIDriver object is present
-  ansible.builtin.assert:
-    that:
-      - (private_runtime_config_csi_driver.resources | default([]) | length) == 1
-    fail_msg: >-
-      CSIDriver '{{ private_runtime_config_csi_driver_name }}' did not become
-      available within {{ private_runtime_config_readiness_retries }} attempts
-      ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
-      Application oci-secrets before retrying.
-    success_msg: Secrets Store CSIDriver object is present.
+    - name: Assert Secrets Store CSIDriver object is present
+      ansible.builtin.assert:
+        that:
+          - (private_runtime_config_csi_driver.resources | default([]) | length) == 1
+        fail_msg: >-
+          CSIDriver '{{ private_runtime_config_csi_driver_name }}' did not become
+          available within {{ private_runtime_config_readiness_retries }} attempts
+          ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
+          Application oci-secrets before retrying.
+        success_msg: Secrets Store CSIDriver object is present.
 
-- name: Wait for Secrets Store CSI Driver DaemonSet readiness
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: DaemonSet
-    name: "{{ private_runtime_config_csi_driver_daemonset_name }}"
-    namespace: "{{ private_runtime_config_platform_namespace }}"
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-  become: true
-  register: private_runtime_config_csi_ds
-  until: >-
-    (private_runtime_config_csi_ds.resources | default([]) | length) == 1
-    and (
-      (
-        private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
-        | default(0) | int
-      ) > 0
-    )
-    and (
-      (
-        private_runtime_config_csi_ds.resources[0].status.numberReady
-        | default(0) | int
-      )
-      ==
-      (
-        private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
-        | int
-      )
-    )
-    and (
-      (
-        private_runtime_config_csi_ds.resources[0].status.numberAvailable
-        | default(0) | int
-      )
-      ==
-      (
-        private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
-        | int
-      )
-    )
-  retries: "{{ private_runtime_config_readiness_retries | int }}"
-  delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
-  failed_when: false
-  changed_when: false
-
-- name: Assert Secrets Store CSI Driver DaemonSet is Ready
-  ansible.builtin.assert:
-    that:
-      - (private_runtime_config_csi_ds.resources | default([]) | length) == 1
-      - >-
+    - name: Wait for Secrets Store CSI Driver DaemonSet readiness
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: "{{ private_runtime_config_csi_driver_daemonset_name }}"
+        namespace: "{{ private_runtime_config_platform_namespace }}"
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+      become: true
+      register: private_runtime_config_csi_ds
+      until: >-
+        (private_runtime_config_csi_ds.resources | default([]) | length) == 1
+        and (
           (
             private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
             | default(0) | int
           ) > 0
-      - >-
+        )
+        and (
           (
             private_runtime_config_csi_ds.resources[0].status.numberReady
             | default(0) | int
@@ -225,7 +189,8 @@
             private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
             | int
           )
-      - >-
+        )
+        and (
           (
             private_runtime_config_csi_ds.resources[0].status.numberAvailable
             | default(0) | int
@@ -235,68 +200,67 @@
             private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
             | int
           )
-    fail_msg: >-
-      Secrets Store CSI Driver DaemonSet
-      '{{ private_runtime_config_platform_namespace }}/{{ private_runtime_config_csi_driver_daemonset_name }}'
-      did not become Ready within {{ private_runtime_config_readiness_retries }} attempts
-      ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
-      Application oci-secrets before retrying.
-    success_msg: Secrets Store CSI Driver DaemonSet is Ready.
+        )
+      retries: "{{ private_runtime_config_readiness_retries | int }}"
+      delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
+      failed_when: false
+      changed_when: false
 
-- name: Wait for OCI Secrets Store CSI Provider DaemonSet readiness
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: DaemonSet
-    name: "{{ private_runtime_config_oci_provider_daemonset_name }}"
-    namespace: "{{ private_runtime_config_platform_namespace }}"
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-  become: true
-  register: private_runtime_config_provider_ds
-  until: >-
-    (private_runtime_config_provider_ds.resources | default([]) | length) == 1
-    and (
-      (
-        private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
-        | default(0) | int
-      ) > 0
-    )
-    and (
-      (
-        private_runtime_config_provider_ds.resources[0].status.numberReady
-        | default(0) | int
-      )
-      ==
-      (
-        private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
-        | int
-      )
-    )
-    and (
-      (
-        private_runtime_config_provider_ds.resources[0].status.numberAvailable
-        | default(0) | int
-      )
-      ==
-      (
-        private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
-        | int
-      )
-    )
-  retries: "{{ private_runtime_config_readiness_retries | int }}"
-  delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
-  failed_when: false
-  changed_when: false
+    - name: Assert Secrets Store CSI Driver DaemonSet is Ready
+      ansible.builtin.assert:
+        that:
+          - (private_runtime_config_csi_ds.resources | default([]) | length) == 1
+          - >-
+              (
+                private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
+                | default(0) | int
+              ) > 0
+          - >-
+              (
+                private_runtime_config_csi_ds.resources[0].status.numberReady
+                | default(0) | int
+              )
+              ==
+              (
+                private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
+                | int
+              )
+          - >-
+              (
+                private_runtime_config_csi_ds.resources[0].status.numberAvailable
+                | default(0) | int
+              )
+              ==
+              (
+                private_runtime_config_csi_ds.resources[0].status.desiredNumberScheduled
+                | int
+              )
+        fail_msg: >-
+          Secrets Store CSI Driver DaemonSet
+          '{{ private_runtime_config_platform_namespace }}/{{ private_runtime_config_csi_driver_daemonset_name }}'
+          did not become Ready within {{ private_runtime_config_readiness_retries }} attempts
+          ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
+          Application oci-secrets before retrying.
+        success_msg: Secrets Store CSI Driver DaemonSet is Ready.
 
-- name: Assert OCI Secrets Store CSI Provider DaemonSet is Ready
-  ansible.builtin.assert:
-    that:
-      - (private_runtime_config_provider_ds.resources | default([]) | length) == 1
-      - >-
+    - name: Wait for OCI Secrets Store CSI Provider DaemonSet readiness
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: "{{ private_runtime_config_oci_provider_daemonset_name }}"
+        namespace: "{{ private_runtime_config_platform_namespace }}"
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+      become: true
+      register: private_runtime_config_provider_ds
+      until: >-
+        (private_runtime_config_provider_ds.resources | default([]) | length) == 1
+        and (
           (
             private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
             | default(0) | int
           ) > 0
-      - >-
+        )
+        and (
           (
             private_runtime_config_provider_ds.resources[0].status.numberReady
             | default(0) | int
@@ -306,7 +270,8 @@
             private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
             | int
           )
-      - >-
+        )
+        and (
           (
             private_runtime_config_provider_ds.resources[0].status.numberAvailable
             | default(0) | int
@@ -316,76 +281,111 @@
             private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
             | int
           )
-    fail_msg: >-
-      OCI provider DaemonSet
-      '{{ private_runtime_config_platform_namespace }}/{{ private_runtime_config_oci_provider_daemonset_name }}'
-      did not become Ready within {{ private_runtime_config_readiness_retries }} attempts
-      ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
-      Application oci-secrets before retrying.
-    success_msg: OCI Secrets Store CSI Provider DaemonSet is Ready.
+        )
+      retries: "{{ private_runtime_config_readiness_retries | int }}"
+      delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
+      failed_when: false
+      changed_when: false
 
-- name: Wait for required application namespaces
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Namespace
-    name: "{{ item }}"
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-  become: true
-  loop: "{{ private_runtime_config_required_namespaces }}"
-  register: private_runtime_config_namespaces
-  until: (private_runtime_config_namespaces.resources | default([]) | length) == 1
-  retries: "{{ private_runtime_config_readiness_retries | int }}"
-  delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
-  failed_when: false
-  changed_when: false
+    - name: Assert OCI Secrets Store CSI Provider DaemonSet is Ready
+      ansible.builtin.assert:
+        that:
+          - (private_runtime_config_provider_ds.resources | default([]) | length) == 1
+          - >-
+              (
+                private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
+                | default(0) | int
+              ) > 0
+          - >-
+              (
+                private_runtime_config_provider_ds.resources[0].status.numberReady
+                | default(0) | int
+              )
+              ==
+              (
+                private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
+                | int
+              )
+          - >-
+              (
+                private_runtime_config_provider_ds.resources[0].status.numberAvailable
+                | default(0) | int
+              )
+              ==
+              (
+                private_runtime_config_provider_ds.resources[0].status.desiredNumberScheduled
+                | int
+              )
+        fail_msg: >-
+          OCI provider DaemonSet
+          '{{ private_runtime_config_platform_namespace }}/{{ private_runtime_config_oci_provider_daemonset_name }}'
+          did not become Ready within {{ private_runtime_config_readiness_retries }} attempts
+          ({{ private_runtime_config_readiness_delay_seconds }}s delay). Reconcile Argo CD
+          Application oci-secrets before retrying.
+        success_msg: OCI Secrets Store CSI Provider DaemonSet is Ready.
 
-- name: Assert required application namespaces exist
-  ansible.builtin.assert:
-    that:
-      - (item.resources | default([]) | length) == 1
-    fail_msg: >-
-      Namespace '{{ item.item }}' did not become available within
-      {{ private_runtime_config_readiness_retries }} attempts
-      ({{ private_runtime_config_readiness_delay_seconds }}s delay). Let Argo CD
-      create application namespaces (CreateNamespace) before materializing private
-      runtime configuration. This role does not own Namespace objects.
-    success_msg: >-
-      Namespace '{{ item.item }}' is present for private runtime configuration.
-  loop: "{{ private_runtime_config_namespaces.results }}"
-  loop_control:
-    label: "{{ item.item }}"
+    - name: Wait for required application namespaces
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+      become: true
+      loop: "{{ private_runtime_config_required_namespaces }}"
+      register: private_runtime_config_namespaces
+      until: (private_runtime_config_namespaces.resources | default([]) | length) == 1
+      retries: "{{ private_runtime_config_readiness_retries | int }}"
+      delay: "{{ private_runtime_config_readiness_delay_seconds | int }}"
+      failed_when: false
+      changed_when: false
 
-# ---------------------------------------------------------------------------
-# Mutation only after platform + namespace readiness succeeded.
-# ---------------------------------------------------------------------------
-- name: Materialize MLflow runtime configuration Secret
-  kubernetes.core.k8s:
-    state: present
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ private_runtime_config_secret_name }}"
-        namespace: "{{ private_runtime_config_secret_namespace }}"
-      type: "{{ private_runtime_config_secret_type }}"
-      stringData: "{{ {private_runtime_config_secret_key: private_runtime_config_oci_region} }}"
-  become: true
-  no_log: true
+    - name: Assert required application namespaces exist
+      ansible.builtin.assert:
+        that:
+          - (item.resources | default([]) | length) == 1
+        fail_msg: >-
+          Namespace '{{ item.item }}' did not become available within
+          {{ private_runtime_config_readiness_retries }} attempts
+          ({{ private_runtime_config_readiness_delay_seconds }}s delay). Let Argo CD
+          create application namespaces (CreateNamespace) before materializing private
+          runtime configuration. This role does not own Namespace objects.
+        success_msg: >-
+          Namespace '{{ item.item }}' is present for private runtime configuration.
+      loop: "{{ private_runtime_config_namespaces.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-- name: Materialize SecretProviderClass resources
-  kubernetes.core.k8s:
-    state: present
-    kubeconfig: "{{ private_runtime_config_kubeconfig }}"
-    definition: >-
-      {{
-        lookup(
-          'ansible.builtin.template',
-          'secret-provider-class.yaml.j2'
-        ) | from_yaml
-      }}
-  become: true
-  no_log: true
-  loop: "{{ private_runtime_config_secret_provider_classes }}"
-  loop_control:
-    label: "{{ item.namespace }}/{{ item.name }}"
+    # ---------------------------------------------------------------------------
+    # Mutation only after platform + namespace readiness succeeded.
+    # ---------------------------------------------------------------------------
+    - name: Materialize MLflow runtime configuration Secret
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ private_runtime_config_secret_name }}"
+            namespace: "{{ private_runtime_config_secret_namespace }}"
+          type: "{{ private_runtime_config_secret_type }}"
+          stringData: "{{ {private_runtime_config_secret_key: private_runtime_config_oci_region} }}"
+      become: true
+      no_log: true
+
+    - name: Materialize SecretProviderClass resources
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ private_runtime_config_kubeconfig }}"
+        definition: >-
+          {{
+            lookup(
+              'ansible.builtin.template',
+              'secret-provider-class.yaml.j2'
+            ) | from_yaml
+          }}
+      become: true
+      no_log: true
+      loop: "{{ private_runtime_config_secret_provider_classes }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.name }}"

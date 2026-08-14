@@ -1,0 +1,18 @@
+---
+# Dedicated remote Python runtime for kubernetes.core modules only.
+# Not a general application runtime. Not owned by Argo CD.
+# Host roles continue to use /usr/bin/python3 (python3-apt, UFW, snap).
+ansible_k8s_runtime_parent: /opt/tradingchassis
+ansible_k8s_runtime_venv: /opt/tradingchassis/ansible-kubernetes
+ansible_k8s_runtime_python: "{{ ansible_k8s_runtime_venv }}/bin/python3"
+
+# Distro packages that provide stdlib venv + ensurepip. Do not pip-install
+# kubernetes into system Python and do not use --break-system-packages.
+ansible_k8s_runtime_apt_packages:
+  - python3-venv
+  - python3-pip
+
+# kubernetes.core 6.5.0 requires kubernetes >= 24.2.0, PyYAML, and jsonpatch.
+# Pin kubernetes 29.0.0 to the MicroK8s 1.29 API line without chasing latest.
+ansible_k8s_runtime_min_kubernetes_version: "24.2.0"
+ansible_k8s_runtime_requirements_file: "{{ role_path }}/files/requirements.txt"
