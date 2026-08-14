@@ -5,7 +5,10 @@ MicroK8s, not Ansible, writes the four Calico interface UFW rules when it
 detects enabled UFW. This helper only inspects persisted UFW user rules.
 It does not call ufw, iptables, or nft and does not mutate any file.
 
-Required functional allowances, IPv4 and IPv6:
+Required functional allowances:
+
+  IPv4 /etc/ufw/user.rules uses ufw-user-input / ufw-user-output
+  IPv6 /etc/ufw/user6.rules uses ufw6-user-input / ufw6-user-output
 
   allow in on vxlan.calico
   allow out on vxlan.calico
@@ -26,11 +29,17 @@ EXIT_OK = 0
 EXIT_UNEXPECTED = 2
 EXIT_USAGE = 3
 
-REQUIRED = (
+REQUIRED_IPV4 = (
     ("ufw-user-input", "-i", "vxlan.calico"),
     ("ufw-user-output", "-o", "vxlan.calico"),
     ("ufw-user-input", "-i", "cali+"),
     ("ufw-user-output", "-o", "cali+"),
+)
+REQUIRED_IPV6 = (
+    ("ufw6-user-input", "-i", "vxlan.calico"),
+    ("ufw6-user-output", "-o", "vxlan.calico"),
+    ("ufw6-user-input", "-i", "cali+"),
+    ("ufw6-user-output", "-o", "cali+"),
 )
 
 
@@ -101,11 +110,15 @@ def _rule_allows_interface(
     return (iface_flag, iface) in adjacent and ("-j", "ACCEPT") in adjacent
 
 
-def verify_user_rules(text: str, label: str) -> None:
+def verify_user_rules(
+    text: str,
+    label: str,
+    required: tuple[tuple[str, str, str], ...],
+) -> None:
     present = _append_semantics(text)
     missing = [
         f"{iface_flag} {iface} on {chain}"
-        for chain, iface_flag, iface in REQUIRED
+        for chain, iface_flag, iface in required
         if not any(
             _rule_allows_interface(tokens, chain, iface_flag, iface)
             for tokens in present
@@ -159,8 +172,16 @@ def _read_rules(path: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
-        verify_user_rules(_read_rules(Path(args.user_rules)), args.user_rules)
-        verify_user_rules(_read_rules(Path(args.user6_rules)), args.user6_rules)
+        verify_user_rules(
+            _read_rules(Path(args.user_rules)),
+            args.user_rules,
+            REQUIRED_IPV4,
+        )
+        verify_user_rules(
+            _read_rules(Path(args.user6_rules)),
+            args.user6_rules,
+            REQUIRED_IPV6,
+        )
     except VerifyError as exc:
         print(str(exc), file=sys.stderr)
         return exc.code

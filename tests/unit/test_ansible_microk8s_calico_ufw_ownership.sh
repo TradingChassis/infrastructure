@@ -52,23 +52,32 @@ helper = load_helper()
 
 
 def ufw_file(*, family: str, commented: bool, omit: str | None = None) -> str:
-    addr = "0.0.0.0/0" if family == "ipv4" else "::/0"
+    if family == "ipv4":
+        addr = "0.0.0.0/0"
+        input_chain = "ufw-user-input"
+        output_chain = "ufw-user-output"
+    elif family == "ipv6":
+        addr = "::/0"
+        input_chain = "ufw6-user-input"
+        output_chain = "ufw6-user-output"
+    else:
+        raise SystemExit(f"unknown UFW family {family}")
     rules = {
         "vxlan-in": (
             f"### tuple ### allow any any {addr} any {addr} in on vxlan.calico",
-            "-A ufw-user-input -i vxlan.calico -j ACCEPT",
+            f"-A {input_chain} -i vxlan.calico -j ACCEPT",
         ),
         "vxlan-out": (
             f"### tuple ### allow any any {addr} any {addr} out on vxlan.calico",
-            "-A ufw-user-output -o vxlan.calico -j ACCEPT",
+            f"-A {output_chain} -o vxlan.calico -j ACCEPT",
         ),
         "cali-in": (
             f"### tuple ### allow any any {addr} any {addr} in on cali+",
-            "-A ufw-user-input -i cali+ -j ACCEPT",
+            f"-A {input_chain} -i cali+ -j ACCEPT",
         ),
         "cali-out": (
             f"### tuple ### allow any any {addr} any {addr} out on cali+",
-            "-A ufw-user-output -o cali+ -j ACCEPT",
+            f"-A {output_chain} -o cali+ -j ACCEPT",
         ),
     }
     if commented:
@@ -89,8 +98,8 @@ def ufw_file(*, family: str, commented: bool, omit: str | None = None) -> str:
         body += header + "\n" + line + "\n"
     return (
         "*filter\n"
-        ":ufw-user-input - [0:0]\n"
-        ":ufw-user-output - [0:0]\n"
+        f":{input_chain} - [0:0]\n"
+        f":{output_chain} - [0:0]\n"
         "### RULES ###\n"
         f"{body}"
         "### END RULES ###\n"
@@ -135,7 +144,7 @@ def expect_ok(label: str, user: str, user6: str) -> None:
         )
 
 
-def expect_fail(label: str, user: str, user6: str) -> None:
+def expect_fail(label: str, user: str, user6: str, *needles: str) -> None:
     proc = run_helper(user, user6)
     if proc.returncode != helper.EXIT_UNEXPECTED:
         raise SystemExit(
@@ -143,6 +152,9 @@ def expect_fail(label: str, user: str, user6: str) -> None:
         )
     if "missing MicroK8s Calico UFW allowances" not in proc.stderr:
         raise SystemExit(f"{label}: missing diagnostic: {proc.stderr!r}")
+    for needle in needles:
+        if needle not in proc.stderr:
+            raise SystemExit(f"{label}: expected {needle!r} in {proc.stderr!r}")
 
 
 plain4 = ufw_file(family="ipv4", commented=False)
@@ -153,12 +165,74 @@ extra4 = plain4.replace(
     "-A ufw-user-input -i vxlan.calico -j ACCEPT",
     "-A ufw-user-input -p all -i vxlan.calico -j ACCEPT",
 )
+LIVE4 = (
+    "-A ufw-user-input -i vxlan.calico -j ACCEPT\n"
+    "-A ufw-user-output -o vxlan.calico -j ACCEPT\n"
+    "-A ufw-user-input -i cali+ -j ACCEPT\n"
+    "-A ufw-user-output -o cali+ -j ACCEPT\n"
+)
+LIVE6 = (
+    "-A ufw6-user-input -i vxlan.calico -j ACCEPT\n"
+    "-A ufw6-user-output -o vxlan.calico -j ACCEPT\n"
+    "-A ufw6-user-input -i cali+ -j ACCEPT\n"
+    "-A ufw6-user-output -o cali+ -j ACCEPT\n"
+)
 expect_ok("MicroK8s uncommented rules", plain4, plain6)
 expect_ok("TradingChassis commented rules", commented4, commented6)
 expect_ok("mixed comment presentation", commented4, plain6)
 expect_ok("harmless extra protocol token", extra4, plain6)
-expect_fail("missing IPv4 vxlan in", ufw_file(family="ipv4", commented=False, omit="vxlan-in"), plain6)
-expect_fail("missing IPv6 cali out", plain4, ufw_file(family="ipv6", commented=False, omit="cali-out"))
+expect_ok("exact live IPv4 and IPv6 chain names", LIVE4, LIVE6)
+expect_fail(
+    "missing IPv4 vxlan in",
+    ufw_file(family="ipv4", commented=False, omit="vxlan-in"),
+    plain6,
+    "ufw-user-input",
+    "-i vxlan.calico",
+)
+expect_fail(
+    "missing IPv6 cali out",
+    plain4,
+    ufw_file(family="ipv6", commented=False, omit="cali-out"),
+    "ufw6-user-output",
+    "-o cali+",
+)
+expect_fail(
+    "missing IPv6 vxlan in",
+    plain4,
+    ufw_file(family="ipv6", commented=False, omit="vxlan-in"),
+    "ufw6-user-input",
+    "-i vxlan.calico",
+)
+expect_fail(
+    "IPv6 file using IPv4 chain names",
+    LIVE4,
+    LIVE4,
+    "ufw6-user-input",
+    "ufw6-user-output",
+)
+expect_fail(
+    "IPv4 file using IPv6 chain names",
+    LIVE6,
+    LIVE6,
+    "ufw-user-input",
+    "ufw-user-output",
+)
+expect_fail(
+    "IPv6 DROP instead of ACCEPT",
+    LIVE4,
+    LIVE6.replace("-j ACCEPT", "-j DROP"),
+    "ufw6-user-input",
+    "ufw6-user-output",
+)
+expect_fail(
+    "IPv6 forward chain instead of input/output",
+    LIVE4,
+    LIVE6.replace("ufw6-user-input", "ufw6-user-forward").replace(
+        "ufw6-user-output", "ufw6-user-forward"
+    ),
+    "ufw6-user-input",
+    "ufw6-user-output",
+)
 
 missing_file = subprocess.run(
     [
@@ -182,6 +256,12 @@ if "shell=True" in src or "eval(" in src or "subprocess" in src:
     raise SystemExit("verifier must not execute shell or subprocess commands")
 if "import ufw" in src or "os.system" in src or "Popen" in src:
     raise SystemExit("verifier must not mutate or invoke ufw/iptables/nft")
+if "REQUIRED_IPV4" not in src or "REQUIRED_IPV6" not in src:
+    raise SystemExit("verifier must keep separate IPv4 and IPv6 chain contracts")
+if "ufw6-user-input" not in src or "ufw6-user-output" not in src:
+    raise SystemExit("verifier must require ufw6-user-* chains for IPv6")
+if src.count("ufw-user-input") < 1 or src.count("ufw6-user-input") < 1:
+    raise SystemExit("verifier must distinguish ufw-user-* from ufw6-user-*")
 compile(src, str(HELPER), "exec")
 print("PASS: Calico UFW verifier is read-only")
 
@@ -291,6 +371,8 @@ if "vxlan.calico" not in v2 or "cali+" not in v2:
     raise SystemExit("V2 doc must record Calico UFW interface ownership")
 if "Calico" not in unreleased or "UFW" not in unreleased:
     raise SystemExit("CHANGELOG [Unreleased] must record the Calico UFW ownership fix")
+if "ufw6-user-input" not in unreleased or "ufw6-user-output" not in unreleased:
+    raise SystemExit("CHANGELOG [Unreleased] must record the IPv6 UFW chain fix")
 print("PASS: docs record MicroK8s Calico UFW ownership")
 
 workflow = WORKFLOW.read_text(encoding="utf-8")
