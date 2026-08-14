@@ -13,3 +13,11 @@ microk8s_addons:
 # Host firewall (UFW) policy for the single-node reference host.
 # Remote SSH source restriction remains the OCI NSG responsibility.
 microk8s_firewall_ssh_port: "22"
+
+# Canonical MicroK8s 1.29/stable Calico pod CIDR. This is the Kubernetes
+# pod network, not a live-discovered address and not the cluster Service CIDR.
+microk8s_pod_cidr: "10.1.0.0/16"
+
+# MicroK8s kube-apiserver secure port. Not opened on UFW or OCI NSGs for
+# the Internet. nft INPUT allows this port only from microk8s_pod_cidr.
+microk8s_apiserver_port: "16443"

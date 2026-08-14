@@ -22,44 +22,59 @@
     enabled: true
   become: true
 
-# OCI Ubuntu cloud images persist an unconditional IPv4 FORWARD REJECT in
-# /etc/iptables/rules.v4. That rule is loaded into the nft-compatible table
-# ahead of UFW and MicroK8s/Calico ACCEPT rules and blocks Pod → Service
-# traffic. Normalize only that exact rule before MicroK8s installation.
-- name: Copy OCI FORWARD REJECT normalization helper
+# OCI Ubuntu cloud images persist an unconditional IPv4 FORWARD REJECT and
+# an INPUT catch-all REJECT in /etc/iptables/rules.v4. Those rules load into
+# the nft-compatible table ahead of UFW. FORWARD REJECT is removed. INPUT
+# REJECT is retained, with a narrow MicroK8s pod → node-local API allow
+# inserted immediately before it. Normalize before MicroK8s installation.
+- name: Copy OCI MicroK8s firewall normalization helper
   ansible.builtin.copy:
-    src: normalize_oci_forward_reject.py
-    dest: /tmp/tradingchassis-normalize-oci-forward-reject.py
+    src: normalize_oci_microk8s_firewall.py
+    dest: /tmp/tradingchassis-normalize-oci-microk8s-firewall.py
     mode: "0600"
   become: true
 
-- name: Normalize persistent OCI cloud-image IPv4 FORWARD REJECT
+- name: Assert MicroK8s pod CIDR and API port are present
+  ansible.builtin.assert:
+    that:
+      - (microk8s_pod_cidr | trim | length) > 0
+      - (microk8s_apiserver_port | trim | length) > 0
+    fail_msg: >-
+      microk8s_pod_cidr and microk8s_apiserver_port must be set. The
+      supported contract is the MicroK8s 1.29/stable Calico pod CIDR and
+      kube-apiserver port, not a live Pod, Service, or node address.
+    success_msg: MicroK8s pod CIDR and API port are present.
+
+- name: Normalize persistent OCI cloud-image IPv4 firewall for MicroK8s
   ansible.builtin.command:
     argv:
       - python3
-      - /tmp/tradingchassis-normalize-oci-forward-reject.py
+      - /tmp/tradingchassis-normalize-oci-microk8s-firewall.py
       - --rules-file
       - /etc/iptables/rules.v4
-  register: microk8s_oci_forward_reject_file
+      - --pod-cidr
+      - "{{ microk8s_pod_cidr | trim }}"
+      - --apiserver-port
+      - "{{ microk8s_apiserver_port | trim }}"
+  register: microk8s_oci_firewall_file
   become: true
-  changed_when: (microk8s_oci_forward_reject_file.stdout | trim) == "removed"
-  failed_when: microk8s_oci_forward_reject_file.rc != 0
+  changed_when: (microk8s_oci_firewall_file.stdout | trim) == "changed"
+  failed_when: microk8s_oci_firewall_file.rc != 0
 
-- name: Stat iptables-nft for runtime FORWARD normalization
+- name: Stat iptables-nft for runtime firewall normalization
   ansible.builtin.stat:
     path: /usr/sbin/iptables-nft
   register: microk8s_iptables_nft_stat
 
-- name: Assert iptables-nft is present for runtime FORWARD normalization
+- name: Assert iptables-nft is present for runtime firewall normalization
   ansible.builtin.assert:
     that:
       - microk8s_iptables_nft_stat.stat.exists
     fail_msg: >-
-      /usr/sbin/iptables-nft is required to remove the OCI cloud-image
-      unconditional FORWARD REJECT from the nft-compatible table. The
-      supported Ubuntu 24 OCI reference host provides iptables-nft.
-      iptables-legacy Kubernetes rules are not modified.
-    success_msg: iptables-nft is present for semantic FORWARD rule deletion.
+      /usr/sbin/iptables-nft is required to reconcile the OCI cloud-image
+      nft-compatible filter table. The supported Ubuntu 24 OCI reference
+      host provides iptables-nft. iptables-legacy Kubernetes rules are not modified.
+    success_msg: iptables-nft is present for semantic nft filter reconciliation.
 
 # Use the nft-compatible binary by absolute path. Ansible iptables modules
 # follow PATH and can target iptables-legacy, which holds Calico/kube-proxy
@@ -94,6 +109,82 @@
   register: microk8s_oci_forward_reject_delete
   changed_when: microk8s_oci_forward_reject_delete.rc == 0
   failed_when: microk8s_oci_forward_reject_delete.rc != 0
+
+- name: Save nft-compatible INPUT chain for MicroK8s API allow planning
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -S
+      - INPUT
+  register: microk8s_oci_input_save
+  become: true
+  changed_when: false
+  failed_when: microk8s_oci_input_save.rc != 0
+
+- name: Plan nft-compatible INPUT pod-API allow ordering
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /tmp/tradingchassis-normalize-oci-microk8s-firewall.py
+      - --plan-input-runtime
+      - --pod-cidr
+      - "{{ microk8s_pod_cidr | trim }}"
+      - --apiserver-port
+      - "{{ microk8s_apiserver_port | trim }}"
+    stdin: "{{ microk8s_oci_input_save.stdout }}"
+  register: microk8s_oci_input_plan
+  become: true
+  changed_when: false
+  failed_when: >-
+    microk8s_oci_input_plan.rc != 0
+    or (microk8s_oci_input_plan.stdout | trim) not in ['unchanged', 'ensure']
+
+- name: Delete misplaced nft-compatible INPUT pod-API allow copies
+  when: (microk8s_oci_input_plan.stdout | trim) == "ensure"
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -D
+      - INPUT
+      - -s
+      - "{{ microk8s_pod_cidr | trim }}"
+      - -p
+      - tcp
+      - -m
+      - tcp
+      - --dport
+      - "{{ microk8s_apiserver_port | trim }}"
+      - -j
+      - ACCEPT
+  register: microk8s_oci_input_allow_delete
+  become: true
+  retries: 8
+  delay: 0
+  until: microk8s_oci_input_allow_delete.rc != 0
+  failed_when: microk8s_oci_input_allow_delete.rc not in [0, 1]
+  changed_when: (microk8s_oci_input_allow_delete.attempts | default(1)) > 1
+
+- name: Insert nft-compatible INPUT pod-API allow before later INPUT rules
+  when: (microk8s_oci_input_plan.stdout | trim) == "ensure"
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/iptables-nft
+      - -I
+      - INPUT
+      - -s
+      - "{{ microk8s_pod_cidr | trim }}"
+      - -p
+      - tcp
+      - -m
+      - tcp
+      - --dport
+      - "{{ microk8s_apiserver_port | trim }}"
+      - -j
+      - ACCEPT
+  become: true
+  register: microk8s_oci_input_allow_insert
+  changed_when: microk8s_oci_input_allow_insert.rc == 0
+  failed_when: microk8s_oci_input_allow_insert.rc != 0
 
 - name: Set UFW default incoming policy to deny
   community.general.ufw:

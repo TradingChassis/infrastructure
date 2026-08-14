@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Resolved ShellCheck findings in the agent safety tooling without weakening validation behavior
 - Hardened SPC inspection guidance to avoid exposing private deployment configuration through serialized last-applied annotations.
 - Normalized the OCI Ubuntu cloud-image unconditional IPv4 FORWARD REJECT so MicroK8s pod/service forwarding is not blocked while OCI InstanceServices and INPUT protection remain.
+- Inserted a narrow MicroK8s pod-CIDR INPUT allow for the node-local kube-apiserver port before the retained OCI catch-all INPUT REJECT so kube-proxy DNAT traffic is not dropped.
 
 ## [0.1.0] - 2026-07-30
 
