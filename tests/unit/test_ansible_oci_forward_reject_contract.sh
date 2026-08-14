@@ -52,6 +52,52 @@ INSTANCE_SERVICES_RULE = (
     "-A InstanceServices -d 169.254.169.254/32 -p tcp -m tcp --dport 80 "
     "-j ACCEPT"
 )
+ORACLE_IS_COMMENT = (
+    "See the Oracle-Provided Images section in the Oracle Cloud "
+    "Infrastructure documentation for security impact of modifying or "
+    "removing this rule"
+)
+
+
+def oracle_is_rule(body: str, jump: str) -> str:
+    return (
+        f"-A InstanceServices {body} -m comment --comment "
+        f'"{ORACLE_IS_COMMENT}" {jump}'
+    )
+
+
+IS_TCP_OWNER_3260 = oracle_is_rule(
+    "-d 169.254.0.2/32 -p tcp -m owner --uid-owner 0 -m tcp --dport 3260",
+    "-j ACCEPT",
+)
+IS_TCP_80_COMMENT = oracle_is_rule(
+    "-d 169.254.169.254/32 -p tcp -m tcp --dport 80",
+    "-j ACCEPT",
+)
+IS_UDP_53_COMMENT = oracle_is_rule(
+    "-d 169.254.169.254/32 -p udp -m udp --dport 53",
+    "-j ACCEPT",
+)
+IS_UDP_123_COMMENT = oracle_is_rule(
+    "-d 169.254.169.254/32 -p udp -m udp --dport 123",
+    "-j ACCEPT",
+)
+IS_TCP_REJECT_COMMENT = oracle_is_rule(
+    "-d 169.254.0.0/16 -p tcp -m tcp --dport 3260",
+    "-j REJECT --reject-with icmp-host-prohibited",
+)
+IS_UDP_REJECT_COMMENT = oracle_is_rule(
+    "-d 169.254.0.0/16 -p udp -m udp --dport 123",
+    "-j REJECT --reject-with icmp-port-unreachable",
+)
+QUOTED_IS_RULES = (
+    IS_TCP_OWNER_3260,
+    IS_TCP_80_COMMENT,
+    IS_UDP_53_COMMENT,
+    IS_UDP_123_COMMENT,
+    IS_TCP_REJECT_COMMENT,
+    IS_UDP_REJECT_COMMENT,
+)
 API_ALLOW = (
     f"-A INPUT -s {POD_CIDR} -p tcp -m tcp --dport {API_PORT} -j ACCEPT"
 )
@@ -132,6 +178,20 @@ def oci_rules(
         "-j ACCEPT\n"
         "COMMIT\n"
     )
+
+
+def oci_quoted_rules() -> str:
+    unquoted_is = (
+        f"{INSTANCE_SERVICES_RULE}\n"
+        "-A InstanceServices -d 169.254.169.254/32 -p udp -m udp --dport 53 "
+        "-j ACCEPT\n"
+    )
+    quoted_is = "".join(rule + "\n" for rule in QUOTED_IS_RULES)
+    return oci_rules(
+        include_forward_reject=False,
+        api_allows=("before",),
+        kubelet_allows=("before",),
+    ).replace(unquoted_is, quoted_is)
 
 
 def unexpected_rules() -> str:
@@ -888,18 +948,26 @@ def apply_ops(
             continue
         if action == "-I" and len(op) > 2 and op[2].isdigit():
             insert_at = int(op[2]) - 1
-            spec_line = "-A " + " ".join([chain, *op[3:]])
+            spec_line = helper.format_spec_line(("-A", chain, *op[3:]))
             if insert_at < 0 or insert_at > len(rules):
                 raise SystemExit(f"simulate: invalid insert index {op}")
             rules.insert(insert_at, spec_line)
             states[chain]["rules"] = rules
             continue
-        spec_line = "-A " + " ".join(op[1:])
+        spec_key = ("-A", *op[1:])
+        spec_line = helper.format_spec_line(spec_key)
         if action == "-D":
-            try:
-                rules.remove(spec_line)
-            except ValueError as exc:
-                raise SystemExit(f"simulate: cannot delete {spec_line}") from exc
+            found = next(
+                (
+                    index
+                    for index, line in enumerate(rules)
+                    if helper._spec_key(line) == spec_key
+                ),
+                None,
+            )
+            if found is None:
+                raise SystemExit(f"simulate: cannot delete {spec_line}")
+            del rules[found]
         elif action == "-I":
             rules.insert(0, spec_line)
         elif action == "-A":
@@ -1024,12 +1092,28 @@ def expect_filter(
     return updated
 
 
-def assert_contract(label: str, input_save: str, forward_save: str, output_save: str, is_save: str | None) -> None:
+def assert_contract(
+    label: str,
+    input_save: str,
+    forward_save: str,
+    output_save: str,
+    is_save: str | None,
+    *,
+    persist: str | None = None,
+) -> None:
+    req_in, req_out, req_is = (
+        helper.desired_runtime_contract(persist, POD_CIDR, API_PORT, KUBELET_PORT)
+        if persist is not None
+        else (required_input, required_output_jump, required_is)
+    )
     live_input = helper._chain_append_lines(input_save, "INPUT")
-    prefix_len = len(required_input)
-    if live_input[:prefix_len] != required_input:
+    prefix_len = len(req_in)
+    if [helper._spec_key(line) for line in live_input[:prefix_len]] != [
+        helper._spec_key(line) for line in req_in
+    ]:
         raise SystemExit(f"{label}: owned INPUT prefix mismatch: {live_input[:prefix_len]}")
-    if any(line in set(required_input) for line in live_input[prefix_len:]):
+    req_in_keys = {helper._spec_key(line) for line in req_in}
+    if any(helper._spec_key(line) in req_in_keys for line in live_input[prefix_len:]):
         raise SystemExit(f"{label}: owned INPUT rule duplicated after prefix")
     for jump in helper._chain_append_lines(UFW_INPUT, "INPUT"):
         if jump not in live_input:
@@ -1037,11 +1121,15 @@ def assert_contract(label: str, input_save: str, forward_save: str, output_save:
     if FORWARD_REJECT in helper._chain_append_lines(forward_save, "FORWARD"):
         raise SystemExit(f"{label}: OCI FORWARD REJECT present at runtime")
     live_output = helper._chain_append_lines(output_save, "OUTPUT")
-    if sum(1 for line in live_output if line == required_output_jump) != 1:
+    out_key = helper._spec_key(req_out)
+    if sum(1 for line in live_output if helper._spec_key(line) == out_key) != 1:
         raise SystemExit(f"{label}: OUTPUT InstanceServices jump must exist once")
     if is_save is None:
         raise SystemExit(f"{label}: InstanceServices chain missing")
-    if helper._chain_append_lines(is_save, "InstanceServices") != required_is:
+    if [helper._spec_key(line) for line in helper._chain_append_lines(is_save, "InstanceServices")] != [
+        helper._spec_key(line) for line in req_is
+    ]:
+        raise SystemExit(f"{label}: InstanceServices rules mismatch")
         raise SystemExit(f"{label}: InstanceServices rules mismatch")
 
 
@@ -1347,7 +1435,7 @@ def interrupt_each_op(
             raise SystemExit(
                 f"{label}: interrupt after op {index} {op} blocked SSH: {live_input}"
             )
-    assert_contract(label + " final", *current)
+    assert_contract(label + " final", *current, persist=persist)
     second_action, second_ops = plan_filter(persist, *current)
     if second_action != "unchanged" or second_ops:
         raise SystemExit(
@@ -1525,6 +1613,342 @@ except helper.NormalizeError as exc:
 else:
     raise SystemExit("unknown InstanceServices rule must emit zero mutations")
 print("PASS: unknown InstanceServices rules cause zero nft mutations")
+
+# --- quoted Oracle InstanceServices comments (live PR #57 apply failure) ---
+
+def expect_argv(label: str, line: str, action: str, want: tuple[str, ...]) -> None:
+    got = helper._spec_argv(line, action)
+    if got != want:
+        raise SystemExit(f"{label}: argv mismatch\n got: {got}\nwant: {want}")
+    if any('"' in token or "'" in token for token in got):
+        raise SystemExit(f"{label}: quote characters leaked into argv: {got}")
+
+
+owner_3260_argv = (
+    "-A",
+    "InstanceServices",
+    "-d",
+    "169.254.0.2/32",
+    "-p",
+    "tcp",
+    "-m",
+    "owner",
+    "--uid-owner",
+    "0",
+    "-m",
+    "tcp",
+    "--dport",
+    "3260",
+    "-m",
+    "comment",
+    "--comment",
+    ORACLE_IS_COMMENT,
+    "-j",
+    "ACCEPT",
+)
+expect_argv("TCP owner 3260 comment", IS_TCP_OWNER_3260, "-A", owner_3260_argv)
+if owner_3260_argv.count(ORACLE_IS_COMMENT) != 1:
+    raise SystemExit("Oracle comment must be exactly one argv element")
+split_tokens = IS_TCP_OWNER_3260.split()
+if "the" not in split_tokens:
+    raise SystemExit("whitespace split of quoted comment must be the live failure mode")
+if "the" in owner_3260_argv:
+    raise SystemExit("quoted parser must not emit standalone token 'the'")
+
+expect_argv(
+    "TCP 80 comment",
+    IS_TCP_80_COMMENT,
+    "-A",
+    (
+        "-A",
+        "InstanceServices",
+        "-d",
+        "169.254.169.254/32",
+        "-p",
+        "tcp",
+        "-m",
+        "tcp",
+        "--dport",
+        "80",
+        "-m",
+        "comment",
+        "--comment",
+        ORACLE_IS_COMMENT,
+        "-j",
+        "ACCEPT",
+    ),
+)
+expect_argv(
+    "UDP 53 comment",
+    IS_UDP_53_COMMENT,
+    "-A",
+    (
+        "-A",
+        "InstanceServices",
+        "-d",
+        "169.254.169.254/32",
+        "-p",
+        "udp",
+        "-m",
+        "udp",
+        "--dport",
+        "53",
+        "-m",
+        "comment",
+        "--comment",
+        ORACLE_IS_COMMENT,
+        "-j",
+        "ACCEPT",
+    ),
+)
+expect_argv(
+    "UDP 123 comment",
+    IS_UDP_123_COMMENT,
+    "-A",
+    (
+        "-A",
+        "InstanceServices",
+        "-d",
+        "169.254.169.254/32",
+        "-p",
+        "udp",
+        "-m",
+        "udp",
+        "--dport",
+        "123",
+        "-m",
+        "comment",
+        "--comment",
+        ORACLE_IS_COMMENT,
+        "-j",
+        "ACCEPT",
+    ),
+)
+expect_argv(
+    "TCP REJECT comment",
+    IS_TCP_REJECT_COMMENT,
+    "-A",
+    (
+        "-A",
+        "InstanceServices",
+        "-d",
+        "169.254.0.0/16",
+        "-p",
+        "tcp",
+        "-m",
+        "tcp",
+        "--dport",
+        "3260",
+        "-m",
+        "comment",
+        "--comment",
+        ORACLE_IS_COMMENT,
+        "-j",
+        "REJECT",
+        "--reject-with",
+        "icmp-host-prohibited",
+    ),
+)
+expect_argv(
+    "UDP REJECT comment",
+    IS_UDP_REJECT_COMMENT,
+    "-A",
+    (
+        "-A",
+        "InstanceServices",
+        "-d",
+        "169.254.0.0/16",
+        "-p",
+        "udp",
+        "-m",
+        "udp",
+        "--dport",
+        "123",
+        "-m",
+        "comment",
+        "--comment",
+        ORACLE_IS_COMMENT,
+        "-j",
+        "REJECT",
+        "--reject-with",
+        "icmp-port-unreachable",
+    ),
+)
+unquoted_input_argv = helper._spec_argv(API_ALLOW, "-I")
+if unquoted_input_argv != (
+    "-I",
+    "INPUT",
+    "-s",
+    POD_CIDR,
+    "-p",
+    "tcp",
+    "-m",
+    "tcp",
+    "--dport",
+    API_PORT,
+    "-j",
+    "ACCEPT",
+):
+    raise SystemExit(f"unquoted INPUT argv changed: {unquoted_input_argv}")
+print("PASS: quoted Oracle comment rules parse to one argv comment element")
+
+try:
+    helper._spec_argv(
+        '-A InstanceServices -m comment --comment "unterminated',
+        "-A",
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"unterminated quote expected rc 2: {exc}")
+else:
+    raise SystemExit("unterminated quoted comment must fail closed")
+
+malformed_persist = oci_quoted_rules().replace(
+    f'"{ORACLE_IS_COMMENT}"',
+    f'"{ORACLE_IS_COMMENT}',
+    1,
+)
+try:
+    plan_filter(
+        malformed_persist,
+        pr56_recovery_input,
+        ufw_only_forward(),
+        ufw_only_output(),
+        is_dump([]),
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"malformed persist quote expected rc 2: {exc}")
+else:
+    raise SystemExit("malformed persist quoting must fail closed before mutation")
+print("PASS: malformed quoted comments fail closed before nft mutation")
+
+QUOTED_PERSIST = oci_quoted_rules()
+quoted_input, quoted_output, quoted_is = helper.desired_runtime_contract(
+    QUOTED_PERSIST, POD_CIDR, API_PORT, KUBELET_PORT
+)
+if quoted_is != list(QUOTED_IS_RULES):
+    raise SystemExit("quoted persist InstanceServices contract mismatch")
+
+single_quoted_live = [rule.replace('"', "'") for rule in quoted_is]
+if [helper._spec_key(line) for line in single_quoted_live] != [
+    helper._spec_key(line) for line in quoted_is
+]:
+    raise SystemExit("single-quoted live -S form must match persist keys")
+
+pr57_failed_input = pr56_recovery_input
+empty_existing_is = is_dump([])
+if "-N InstanceServices" not in (empty_existing_is or ""):
+    raise SystemExit("empty existing chain fixture must include -N InstanceServices")
+action, live_fail_ops = plan_filter(
+    QUOTED_PERSIST,
+    pr57_failed_input,
+    ufw_only_forward(),
+    ufw_only_output(),
+    empty_existing_is,
+)
+if action != "changed":
+    raise SystemExit(f"PR57 failed live state expected changed: {live_fail_ops}")
+if any(op[0] == "-N" for op in live_fail_ops):
+    raise SystemExit("existing empty InstanceServices must not be created again")
+first_is_append = next(op for op in live_fail_ops if op[0] == "-A" and op[1] == "InstanceServices")
+if first_is_append != owner_3260_argv:
+    raise SystemExit(
+        "first InstanceServices append must be the live-failed 3260 rule argv: "
+        f"{first_is_append}"
+    )
+if "the" in first_is_append:
+    raise SystemExit("planned 3260 append still contains split token 'the'")
+updated = expect_filter(
+    "PR57 failed live partial state",
+    QUOTED_PERSIST,
+    pr57_failed_input,
+    ufw_only_forward(),
+    ufw_only_output(),
+    empty_existing_is,
+    want_action="changed",
+)
+assert_contract(
+    "PR57 failed live partial state",
+    *updated,
+    persist=QUOTED_PERSIST,
+)
+interrupt_each_op(
+    "PR57 failed live partial INPUT/IS",
+    QUOTED_PERSIST,
+    pr57_failed_input,
+    ufw_only_forward(),
+    ufw_only_output(),
+    empty_existing_is,
+)
+print("PASS: exact PR #57 failed live state resumes from empty InstanceServices")
+
+interrupt_each_op(
+    "quoted IS first-N prefix",
+    QUOTED_PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(list(quoted_is[:2])),
+)
+interrupt_each_op(
+    "quoted IS arbitrary subset",
+    QUOTED_PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump([quoted_is[0], quoted_is[2], quoted_is[5]]),
+)
+interrupt_each_op(
+    "quoted IS duplicate exact rule",
+    QUOTED_PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump([quoted_is[0], quoted_is[0], *quoted_is[1:]]),
+)
+interrupt_each_op(
+    "quoted IS wrong order",
+    QUOTED_PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(list(reversed(quoted_is))),
+)
+expect_filter(
+    "quoted IS already complete",
+    QUOTED_PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(list(quoted_is)),
+    want_action="unchanged",
+)
+expect_filter(
+    "quoted IS complete with single-quoted live form",
+    QUOTED_PERSIST,
+    canonical_input(),
+    ufw_only_forward(with_microk8s=True),
+    ufw_only_output(with_jump=True),
+    is_dump(single_quoted_live),
+    want_action="unchanged",
+)
+print("PASS: exact expected InstanceServices subsets and quoting variants resume")
+
+try:
+    plan_filter(
+        QUOTED_PERSIST,
+        pr57_failed_input,
+        ufw_only_forward(),
+        ufw_only_output(),
+        is_dump([quoted_is[0], "-A InstanceServices -p tcp -j ACCEPT"]),
+    )
+except helper.NormalizeError as exc:
+    if exc.code != helper.EXIT_UNEXPECTED:
+        raise SystemExit(f"foreign quoted IS mix expected rc 2: {exc}")
+else:
+    raise SystemExit("foreign InstanceServices rule must emit zero mutations")
+print("PASS: foreign InstanceServices rules still cause zero nft mutations")
 print("PASS: nft filter runtime planner contract")
 
 
@@ -1688,6 +2112,12 @@ if "16443" in helper_src:
     raise SystemExit("helper must take API port as input, not hard-code it")
 if "subprocess.run" not in helper_src:
     raise SystemExit("apply-runtime must invoke iptables-nft via subprocess.run")
+if "append_line.split(" in helper_src:
+    raise SystemExit("iptables specs must not be tokenized with str.split")
+if "shlex.split" not in helper_src:
+    raise SystemExit("iptables specs must preserve quoted comment arguments")
+if "eval(" in helper_src:
+    raise SystemExit("helper must not eval")
 if "reversed(required_input)" in helper_src:
     raise SystemExit("must not prepend REJECT by reversing the full INPUT contract")
 if "input_ssh_path_intact" not in helper_src:
@@ -1782,6 +2212,7 @@ for needle in (
     "PartOf=ufw.service",
     "RequiredBy",
     "WantedBy=ufw.service",
+    "quoted",
 ):
     if needle not in readme:
         raise SystemExit(f"ansible/README.md missing {needle}")
@@ -1810,6 +2241,7 @@ for needle in (
     "PartOf=ufw.service",
     "RequiredBy",
     "WantedBy=ufw.service",
+    "quoted",
 ):
     if needle.lower() not in v2_lower:
         raise SystemExit(f"V2 clean-room doc missing {needle}")
@@ -1821,6 +2253,8 @@ if "10250" not in unreleased and "kubelet" not in unreleased.lower():
     raise SystemExit("CHANGELOG [Unreleased] must mention the kubelet INPUT allow")
 if "reboot" not in unreleased.lower() and "boot" not in unreleased.lower():
     raise SystemExit("CHANGELOG [Unreleased] must mention boot/reboot firewall reconciliation")
+if "quoted" not in unreleased.lower():
+    raise SystemExit("CHANGELOG [Unreleased] must mention quoted iptables comment parsing")
 print("PASS: CHANGELOG [Unreleased] records the kubelet allow and boot reconcile")
 
 workflow = read(WORKFLOW)

@@ -971,7 +971,12 @@ REJECT, metrics-server became Ready, and a second Ansible converge reported
 `rules.v4` still had the contract, but runtime iptables-nft INPUT was UFW-only
 and the metrics API returned ServiceUnavailable. Finding 4 is implemented
 here as `tradingchassis-oci-microk8s-firewall.service` and is **NOT yet**
-live-reboot-proven by this repository change. The unit uses
+live-reboot-proven by this repository change. The first live PR #57
+converge failed while appending quoted Oracle InstanceServices comments;
+runtime INPUT kept the pod allows and UFW, InstanceServices existed
+empty, and the boot unit was not installed. Quoted iptables-save
+tokenization is required before that apply can succeed. Live successful
+quoted-token apply is **NOT yet** proven. The unit uses
 `PartOf=ufw.service` and `RequiredBy` the MicroK8s snap units. None of
 these current-host observations are clean-room rebuild proof.
 
