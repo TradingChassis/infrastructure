@@ -344,7 +344,12 @@ then places the OCI catch-all REJECT after that prefix. It does not
 insert REJECT ahead of SSH/UFW as an intermediate step. InstanceServices
 adds missing exact rules before deleting misplaced owned copies and
 never flushes that chain. Unexpected extra InstanceServices rules still
-fail closed with no nft mutations.
+fail closed with no nft mutations. iptables-save quoted `--comment`
+values are parsed as a single argv element; whitespace split of those
+Oracle comments is the live PR #57 apply failure and is not used.
+An existing empty InstanceServices chain is resumable. Live successful
+apply of this quoted-token fix is **not** claimed. PR #57 reboot
+persistence is therefore still **not** proven.
 
 The `microk8s` role still applies the same runtime reconciliation during
 converge. When the unit file changes, enablement uses `force` so the
@@ -361,7 +366,8 @@ chains the boot path also sees.
 
 `--apply-runtime` uses `/usr/sbin/iptables-nft` with exact argv specs. It
 never flushes INPUT/OUTPUT/FORWARD, never calls iptables-legacy, and never
-restores a whole table. Owned INPUT rules from the normalized persistent
+restores a whole table. Quoted iptables-save arguments are parsed with
+`shlex`, not `str.split()`. Owned INPUT rules from the normalized persistent
 file are placed as a contiguous prefix ahead of later UFW jumps. The exact
 OCI FORWARD REJECT is deleted when present. The OUTPUT InstanceServices
 jump and InstanceServices chain rules are restored from that same

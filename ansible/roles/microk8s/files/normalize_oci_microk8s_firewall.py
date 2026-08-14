@@ -22,9 +22,12 @@ Runtime contract:
   are inserted before the OCI catch-all REJECT so a partial apply cannot
   leave REJECT ahead of every SSH/UFW path. The exact OCI FORWARD REJECT
   is deleted when present. The OUTPUT InstanceServices jump and
-  InstanceServices chain rules are restored when missing. Missing
-  InstanceServices rules are appended before owned duplicates are deleted.
-  Unexpected extra InstanceServices rules fail closed with no mutations.
+  InstanceServices chain rules are restored when missing. An existing empty
+  InstanceServices chain is a resumable partial state, not an error.
+  Missing InstanceServices rules are appended before owned duplicates are
+  deleted. Unexpected extra InstanceServices rules fail closed with no
+  mutations. iptables-save quoted arguments are parsed with shlex, not
+  whitespace split, so Oracle comment strings remain one argv element.
 
 It refuses to modify an unexpected/non-OCI firewall file.
 It does not create a rules file when the path is absent.
@@ -36,6 +39,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -201,6 +205,13 @@ def normalize_rules_text(
             "InstanceServices rules",
             EXIT_UNEXPECTED,
         )
+    is_keys = [_spec_key(line) for line in is_append]
+    if len(is_keys) != len(set(is_keys)):
+        raise NormalizeError(
+            "error: refusing to modify firewall file with duplicate "
+            "InstanceServices rules",
+            EXIT_UNEXPECTED,
+        )
     output_jumps = [
         line
         for line in _chain_append_lines(text, "OUTPUT")
@@ -340,13 +351,47 @@ def _chain_append_lines(save_text: str, chain: str) -> list[str]:
     return lines
 
 
-def _spec_argv(append_line: str, action: str) -> tuple[str, ...]:
-    parts = append_line.split()
+def _quote_spec_token(token: str) -> str:
+    if token == "" or any(ch.isspace() for ch in token) or any(
+        ch in token for ch in "\"'\\"
+    ):
+        escaped = token.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return token
+
+
+def format_spec_line(tokens: tuple[str, ...]) -> str:
+    if not tokens or tokens[0] != "-A":
+        raise NormalizeError(
+            f"error: refusing to format unexpected iptables spec {tokens!r}",
+            EXIT_UNEXPECTED,
+        )
+    return " ".join(_quote_spec_token(token) for token in tokens)
+
+
+def _spec_tokens(append_line: str) -> tuple[str, ...]:
+    try:
+        parts = tuple(shlex.split(append_line, posix=True, comments=False))
+    except ValueError as exc:
+        raise NormalizeError(
+            "error: refusing to parse malformed iptables spec "
+            f"{append_line!r}",
+            EXIT_UNEXPECTED,
+        ) from exc
     if len(parts) < 3 or parts[0] != "-A":
         raise NormalizeError(
             f"error: refusing to parse unexpected iptables spec {append_line!r}",
             EXIT_UNEXPECTED,
         )
+    return parts
+
+
+def _spec_key(append_line: str) -> tuple[str, ...]:
+    return _spec_tokens(append_line)
+
+
+def _spec_argv(append_line: str, action: str) -> tuple[str, ...]:
+    parts = _spec_tokens(append_line)
     return (action, parts[1], *parts[2:])
 
 
@@ -405,6 +450,15 @@ def desired_runtime_contract(
             "error: refusing runtime plan with duplicate InstanceServices rules",
             EXIT_UNEXPECTED,
         )
+    is_keys = [_spec_key(line) for line in is_rules]
+    if len(is_keys) != len(set(is_keys)):
+        raise NormalizeError(
+            "error: refusing runtime plan with duplicate InstanceServices rules",
+            EXIT_UNEXPECTED,
+        )
+    for line in input_rules:
+        _spec_key(line)
+    _spec_key(output_jumps[0])
     return input_rules, output_jumps[0], is_rules
 
 
@@ -425,11 +479,11 @@ def _delete_owned_input_after_prefix(
     ops: list[tuple[str, ...]],
     simulated: list[str],
     required_input: list[str],
-    owned_input: set[str],
+    owned_keys: set[tuple[str, ...]],
 ) -> None:
     prefix_len = len(required_input)
     for index in range(len(simulated) - 1, prefix_len - 1, -1):
-        if simulated[index] not in owned_input:
+        if _spec_key(simulated[index]) not in owned_keys:
             continue
         ops.append(("-D", "INPUT", str(index + 1)))
         simulated.pop(index)
@@ -440,7 +494,7 @@ def _plan_input_runtime(
     ops: list[tuple[str, ...]],
     live_input: list[str],
     required_input: list[str],
-    owned_input: set[str],
+    owned_keys: set[tuple[str, ...]],
 ) -> None:
     accepts = [line for line in required_input if line != INPUT_REJECT]
     if not accepts or required_input[-1] != INPUT_REJECT:
@@ -450,9 +504,11 @@ def _plan_input_runtime(
         )
     simulated = list(live_input)
     prefix_len = len(required_input)
-    if simulated[:prefix_len] == required_input:
+    if [_spec_key(line) for line in simulated[:prefix_len]] == [
+        _spec_key(line) for line in required_input
+    ]:
         _delete_owned_input_after_prefix(
-            ops, simulated, required_input, owned_input
+            ops, simulated, required_input, owned_keys
         )
         return
 
@@ -473,13 +529,15 @@ def _plan_input_runtime(
     ops.append(_reject_insert_argv(len(accepts) + 1))
     simulated.insert(len(accepts), INPUT_REJECT)
     _assert_ssh_path(simulated, required_input)
-    if simulated[:prefix_len] != required_input:
+    if [_spec_key(line) for line in simulated[:prefix_len]] != [
+        _spec_key(line) for line in required_input
+    ]:
         raise NormalizeError(
             "error: refusing INPUT plan that did not establish the owned prefix",
             EXIT_UNEXPECTED,
         )
     _delete_owned_input_after_prefix(
-        ops, simulated, required_input, owned_input
+        ops, simulated, required_input, owned_keys
     )
 
 
@@ -497,35 +555,44 @@ def plan_filter_runtime(
     required_input, output_jump, required_is = desired_runtime_contract(
         persistent_text, pod_cidr, apiserver_port, kubelet_port
     )
-    owned_input = set(required_input)
+    owned_keys = {_spec_key(line) for line in required_input}
     live_input = _chain_append_lines(input_save, "INPUT")
     live_forward = _chain_append_lines(forward_save, "FORWARD")
     live_output = _chain_append_lines(output_save, "OUTPUT")
+    for line in live_input + live_forward + live_output:
+        _spec_key(line)
     ops: list[tuple[str, ...]] = []
 
-    expected_is = set(required_is)
+    required_keys = [_spec_key(line) for line in required_is]
+    expected_keys = set(required_keys)
     if instanceservices_save is None:
         ops.append(("-N", "InstanceServices"))
         live_is: list[str] = []
+        live_keys: list[tuple[str, ...]] = []
     else:
         live_is = _chain_append_lines(instanceservices_save, "InstanceServices")
-        unexpected = [line for line in live_is if line not in expected_is]
+        live_keys = [_spec_key(line) for line in live_is]
+        unexpected = [
+            line for line, key in zip(live_is, live_keys) if key not in expected_keys
+        ]
         if unexpected:
             raise NormalizeError(
                 "error: refusing runtime plan with unexpected "
                 "InstanceServices rules",
                 EXIT_UNEXPECTED,
             )
-    if live_is != required_is:
-        for line in required_is:
-            if live_is.count(line) == 0:
+    if live_keys != required_keys:
+        for line, key in zip(required_is, required_keys):
+            if live_keys.count(key) == 0:
                 ops.append(_spec_argv(line, "-A"))
                 live_is.append(line)
-        if live_is != required_is:
-            for line in required_is:
+                live_keys.append(key)
+        if live_keys != required_keys:
+            for line, key in zip(required_is, required_keys):
                 ops.append(_spec_argv(line, "-A"))
                 live_is.append(line)
-            while live_is != required_is:
+                live_keys.append(key)
+            while live_keys != required_keys:
                 if not live_is:
                     raise NormalizeError(
                         "error: refusing InstanceServices plan that would "
@@ -535,17 +602,21 @@ def plan_filter_runtime(
                 victim = live_is[0]
                 ops.append(_spec_argv(victim, "-D"))
                 live_is.pop(0)
+                live_keys.pop(0)
 
     live_is_jumps = [
         line for line in live_output if line.endswith("-j InstanceServices")
     ]
-    if any(line != output_jump for line in live_is_jumps):
+    output_jump_key = _spec_key(output_jump)
+    if any(_spec_key(line) != output_jump_key for line in live_is_jumps):
         raise NormalizeError(
             "error: refusing runtime plan with unexpected OUTPUT "
             "InstanceServices jump",
             EXIT_UNEXPECTED,
         )
-    jump_count = sum(1 for line in live_output if line == output_jump)
+    jump_count = sum(
+        1 for line in live_output if _spec_key(line) == output_jump_key
+    )
     if jump_count == 0:
         ops.append(_spec_argv(output_jump, "-I"))
     elif jump_count > 1:
@@ -554,11 +625,14 @@ def plan_filter_runtime(
 
     prefix_len = len(required_input)
     input_ok = (
-        live_input[:prefix_len] == required_input
-        and all(line not in owned_input for line in live_input[prefix_len:])
+        [_spec_key(line) for line in live_input[:prefix_len]]
+        == [_spec_key(line) for line in required_input]
+        and all(
+            _spec_key(line) not in owned_keys for line in live_input[prefix_len:]
+        )
     )
     if not input_ok:
-        _plan_input_runtime(ops, live_input, required_input, owned_input)
+        _plan_input_runtime(ops, live_input, required_input, owned_keys)
 
     if FORWARD_REJECT in live_forward:
         ops.append(_spec_argv(FORWARD_REJECT, "-D"))
@@ -627,6 +701,7 @@ def apply_filter_runtime(
             f"error: cannot read {rules_path}: {exc}",
             EXIT_USAGE,
         ) from exc
+    desired_runtime_contract(persistent, pod_cidr, apiserver_port, kubelet_port)
     input_save, forward_save, output_save, is_save = collect_live_filter_saves()
     action, ops = plan_filter_runtime(
         persistent,
