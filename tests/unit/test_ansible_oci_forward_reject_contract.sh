@@ -298,6 +298,18 @@ helper_src = read(HELPER)
 
 if "normalize_oci_forward_reject.py" not in tasks:
     raise SystemExit("microk8s role must invoke the FORWARD REJECT helper")
+for register_name in (
+    "microk8s_oci_forward_reject_file",
+    "microk8s_iptables_nft_stat",
+    "microk8s_oci_forward_reject_check",
+    "microk8s_oci_forward_reject_delete",
+):
+    if f"register: {register_name}" not in tasks:
+        raise SystemExit(f"missing role-prefixed register {register_name}")
+for match in re.finditer(r"(?m)^\s+register:\s+(\S+)\s*$", tasks):
+    var = match.group(1)
+    if not var.startswith("microk8s_"):
+        raise SystemExit(f"register {var} must use the microk8s_ role prefix")
 if "/etc/iptables/rules.v4" not in tasks:
     raise SystemExit("persistent normalization must target /etc/iptables/rules.v4")
 if "/usr/sbin/iptables-nft" not in tasks:

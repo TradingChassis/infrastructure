@@ -40,20 +40,20 @@
       - /tmp/tradingchassis-normalize-oci-forward-reject.py
       - --rules-file
       - /etc/iptables/rules.v4
-  register: oci_forward_reject_file
+  register: microk8s_oci_forward_reject_file
   become: true
-  changed_when: (oci_forward_reject_file.stdout | trim) == "removed"
-  failed_when: oci_forward_reject_file.rc != 0
+  changed_when: (microk8s_oci_forward_reject_file.stdout | trim) == "removed"
+  failed_when: microk8s_oci_forward_reject_file.rc != 0
 
 - name: Stat iptables-nft for runtime FORWARD normalization
   ansible.builtin.stat:
     path: /usr/sbin/iptables-nft
-  register: oci_iptables_nft_stat
+  register: microk8s_iptables_nft_stat
 
 - name: Assert iptables-nft is present for runtime FORWARD normalization
   ansible.builtin.assert:
     that:
-      - oci_iptables_nft_stat.stat.exists
+      - microk8s_iptables_nft_stat.stat.exists
     fail_msg: >-
       /usr/sbin/iptables-nft is required to remove the OCI cloud-image
       unconditional FORWARD REJECT from the nft-compatible table. The
@@ -74,13 +74,13 @@
       - REJECT
       - --reject-with
       - icmp-host-prohibited
-  register: oci_forward_reject_check
+  register: microk8s_oci_forward_reject_check
   become: true
   changed_when: false
-  failed_when: oci_forward_reject_check.rc not in [0, 1]
+  failed_when: microk8s_oci_forward_reject_check.rc not in [0, 1]
 
 - name: Delete nft-compatible unconditional IPv4 FORWARD REJECT when present
-  when: oci_forward_reject_check.rc == 0
+  when: microk8s_oci_forward_reject_check.rc == 0
   ansible.builtin.command:
     argv:
       - /usr/sbin/iptables-nft
@@ -91,9 +91,9 @@
       - --reject-with
       - icmp-host-prohibited
   become: true
-  register: oci_forward_reject_delete
-  changed_when: oci_forward_reject_delete.rc == 0
-  failed_when: oci_forward_reject_delete.rc != 0
+  register: microk8s_oci_forward_reject_delete
+  changed_when: microk8s_oci_forward_reject_delete.rc == 0
+  failed_when: microk8s_oci_forward_reject_delete.rc != 0
 
 - name: Set UFW default incoming policy to deny
   community.general.ufw:
