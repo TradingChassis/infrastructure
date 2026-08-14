@@ -345,6 +345,11 @@ jobs:
         # Isolated fixture only: no OCI provider, no remote backend, no credentials.
         run: ./tests/unit/test_terraform_cidr_validation.sh
 
+      - name: Run Terraform PV encryption contract unit tests
+        # Static consistency between instance launch_options and scratch attachment.
+        # Does not contact OCI, initialize a backend, or run terraform plan.
+        run: ./tests/unit/test_terraform_pv_encryption_contract.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the

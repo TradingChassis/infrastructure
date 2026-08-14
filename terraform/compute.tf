@@ -52,6 +52,13 @@ resource "oci_core_instance" "node" {
     boot_volume_size_in_gbs = var.boot_volume_size_gbs
   }
 
+  # The scratch volume attachment requires PV encryption in transit. Leaving
+  # this unset lets OCI default the instance to false, which then rejects the
+  # encrypted paravirtualized attachment.
+  launch_options {
+    is_pv_encryption_in_transit_enabled = true
+  }
+
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
   }
