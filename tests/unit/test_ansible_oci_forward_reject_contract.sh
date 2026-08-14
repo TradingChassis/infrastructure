@@ -2343,6 +2343,8 @@ if "iptables-restore" in tasks or "iptables-nft-restore" in tasks:
     raise SystemExit("role must not restore a full iptables table")
 if "ufw disable" in tasks or "state: disabled" in tasks:
     raise SystemExit("role must not disable UFW")
+if "interface: vxlan.calico" in tasks or "interface: cali+" in tasks:
+    raise SystemExit("role must not mutate Calico UFW interface rules")
 if "10.152.183.1" in tasks or "10.1.118" in tasks:
     raise SystemExit("role must not hard-code Kubernetes Service or pod IPs")
 if "--handle" in tasks or "nft delete" in tasks:

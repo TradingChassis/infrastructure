@@ -36,6 +36,12 @@ microk8s_firewall_helper_dir: /usr/local/lib/tradingchassis
 microk8s_firewall_helper_path: /usr/local/lib/tradingchassis/normalize_oci_microk8s_firewall.py
 microk8s_python_interpreter: /usr/bin/python3
 microk8s_iptables_nft: /usr/sbin/iptables-nft
+# Persisted UFW user rules. Ansible reads these after MicroK8s is ready
+# to verify MicroK8s-owned Calico interface allowances. It does not
+# install a host copy of the verifier; that would change the first
+# post-fix converge and would add a second long-lived owner artifact.
+microk8s_ufw_user_rules_file: /etc/ufw/user.rules
+microk8s_ufw_user6_rules_file: /etc/ufw/user6.rules
 
 # Repository-owned oneshot. Reconciles the nft-compatible OCI/MicroK8s
 # contract after UFW initializes and before MicroK8s kubelite needs

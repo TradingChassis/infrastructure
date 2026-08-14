@@ -364,6 +364,10 @@ jobs:
         # Static/synthetic only. Does not run iptables, nft, ufw, or SSH.
         run: ./tests/unit/test_ansible_oci_forward_reject_contract.sh
 
+      - name: Run Ansible MicroK8s Calico UFW ownership contract unit tests
+        # Static/synthetic only. Does not run ufw, iptables, nft, or SSH.
+        run: ./tests/unit/test_ansible_microk8s_calico_ufw_ownership.sh
+
       - name: Terraform init (CI validation mode; backend disabled)
         working-directory: terraform
         # CI/static validation only. Operator deployment always initializes the
@@ -432,6 +436,10 @@ jobs:
       - name: Run Ansible OCI FORWARD REJECT contract unit tests
         # Static/synthetic only. Does not run iptables, nft, ufw, or SSH.
         run: ./tests/unit/test_ansible_oci_forward_reject_contract.sh
+
+      - name: Run Ansible MicroK8s Calico UFW ownership contract unit tests
+        # Static/synthetic only. Does not run ufw, iptables, nft, or SSH.
+        run: ./tests/unit/test_ansible_microk8s_calico_ufw_ownership.sh
 
       - name: Ansible playbook syntax check
         env:
