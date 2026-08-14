@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Replaced the invalid Terraform-provided scratch device-path handoff with fail-closed host-side Ansible device discovery after live OCI paravirtualized attachments returned no device path.
 - Aligned the OCI compute launch option with encrypted paravirtualized scratch volume attachments after the first live V2 apply exposed the mismatch.
 - Replaced an unsupported Terraform CIDR containment validation that blocked the first real clean-room plan.
 - Aligned the OCI Cloud Shell operator workflow with live-proven API-key authentication, user-local Terraform 1.15.8 bootstrap, and explicit OCI CLI `--auth api_key` preflights.

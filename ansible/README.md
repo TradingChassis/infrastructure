@@ -98,6 +98,7 @@ Terraform:
 OCI block volume and attachment identity
 
 Ansible:
+fail-closed host-side device discovery
 device validation
 filesystem lifecycle guard
 persistent UUID mount
@@ -114,14 +115,31 @@ The `scratch_storage` role manages the host path:
 
 Persistent mount uses filesystem UUID.
 
-`scratch_storage_device_path` must come from the Terraform scratch attachment output during approved live execution.
-V1 hardcoded a Linux device path.
-V2 consumes the Terraform attachment identity and validates the target before any destructive operation.
+Canonical device identity is fail-closed host-side auto-discovery of the unique
+eligible non-root whole disk. This matches the reference architecture of exactly
+one Terraform-managed scratch data volume. Auto-discovery fails if zero or more
+than one eligible disk exists. It is not a universal multi-volume system.
+
+`scratch_storage_device_path` is an optional explicit override. When omitted,
+discovery runs. When provided, the path still passes every root, filesystem, and
+mount guard. Do not default it to `/dev/sdb`, `/dev/vdb`, or an OCI by-id value.
+
+Live paravirtualized OCI attachments do not provide a usable
+`oci_core_volume_attachment.device` Linux path, so Terraform is not the device
+handoff.
+
+V1 hardcoded a Linux device path. V2 discovers the candidate on the host and
+validates it before any destructive operation.
+
+Supported discovery topology is the Ubuntu OCI reference host: root filesystem
+on a partitioned boot disk, plus one unpartitioned whole-disk scratch volume.
+LVM/device-mapper root is not a claimed discovery topology and fails closed.
 
 ### Safety
 
 ```text
 scratch_storage_allow_format defaults to false.
+Automatic discovery never authorizes formatting by itself.
 ```
 
 ```text
@@ -371,7 +389,8 @@ Canonical operator handoff:
 terraform output instance_public_ip   → inventory ansible_host
 ubuntu (Ubuntu 24.04 image contract)  → inventory ansible_user
 ~/.ssh/tradingchassis                 → ansible_ssh_private_key_file
-terraform output scratch_volume_device → -e scratch_storage_device_path
+Ansible fail-closed auto-discovery    → scratch candidate
+optional -e scratch_storage_device_path → explicit override only
 ```
 
 Render the ignored runtime inventory after apply:

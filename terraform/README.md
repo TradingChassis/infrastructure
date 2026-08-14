@@ -67,10 +67,13 @@ Terraform guarantees:
 - a scratch block volume exists
 - it is attached to the reference compute instance
 - resource and attachment identifiers are exposed
-- the OCI-assigned attachment device path is exposed for Ansible
+
+Terraform does **not** promise a host Linux device path for paravirtualized attachments.
+Live OCI `oci_core_volume_attachment.device` is not a usable Ansible handoff.
 
 Ansible guarantees:
 
+- fail-closed host-side discovery of the unique eligible non-root whole disk
 - the expected attached volume is validated on the host before destructive work
 - destructive formatting is guarded explicitly
 - the filesystem is mounted persistently at the platform scratch path
@@ -79,9 +82,9 @@ Ansible guarantees:
 
 Hardcoded host device assumptions such as `/dev/oracleoci/oraclevds`, `/dev/sdb`, or `/dev/vdb` are not treated as a stable architecture contract.
 
-The scratch attachment exposes its OCI-assigned device path for the later Ansible storage contract.
-That value comes from the attachment resource attribute after apply and must still be validated by Ansible before formatting or mounting.
-Persistent host mounting uses the filesystem UUID rather than the transient device path.
+Ansible owns scratch-device discovery on the host. Kernel names and udev by-id
+links are re-evaluated each run and are not encoded as Terraform outputs.
+Persistent host mounting uses the filesystem UUID rather than a transient device path.
 
 Attachment type: `paravirtualized`.
 This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference host and avoids Terraform-managed iSCSI login configuration.
@@ -452,7 +455,13 @@ After apply, the operator handoff uses at least:
 | Output | Ansible / operator use |
 | --- | --- |
 | `instance_public_ip` | inventory `ansible_host` |
-| `scratch_volume_device` | extra var `scratch_storage_device_path` |
+| `scratch_volume_id` | diagnostics / correlation |
+| `scratch_volume_attachment_id` | diagnostics / correlation |
+| `scratch_volume_attachment_type` | diagnostics / correlation |
+
+Scratch Linux device identity is not a Terraform output. Ansible performs
+fail-closed host-side discovery. `scratch_storage_device_path` remains an
+optional explicit override, not a required Terraform handoff.
 
 Full clean-room sequence: [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
