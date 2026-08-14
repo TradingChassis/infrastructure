@@ -165,11 +165,85 @@ while len(parts) < 3:
     parts.append(0)
 if tuple(parts) < (24, 2, 0):
     raise SystemExit(f"kubernetes pin {kube_pin} is below kubernetes.core 6.5.0 minimum 24.2.0")
+if kube_pin != "29.0.0":
+    raise SystemExit(f"requirements.txt must pin kubernetes==29.0.0, got {kube_pin!r}")
+if "kubernetes==29.0.0" not in requirements:
+    raise SystemExit("requirements.txt must keep kubernetes==29.0.0")
+if "PyYAML==6.0.2" not in requirements:
+    raise SystemExit("requirements.txt must keep PyYAML==6.0.2")
+if "jsonpatch==1.33" not in requirements:
+    raise SystemExit("requirements.txt must keep jsonpatch==1.33")
 if not have_yaml or not have_jsonpatch:
     raise SystemExit("requirements.txt must pin PyYAML and jsonpatch")
 if "24.2.0" not in runtime_defaults:
     raise SystemExit("runtime defaults must record kubernetes.core minimum 24.2.0")
 print(f"PASS: Kubernetes Python client pin {kube_pin} satisfies >= 24.2.0")
+
+copy_block = task_block(runtime_tasks, "Materialize pinned Kubernetes runtime requirements")
+pip_install_block = task_block(runtime_tasks, "Install pinned Kubernetes Python dependencies into the dedicated venv")
+if "ansible.builtin.copy:" not in copy_block:
+    raise SystemExit("runtime role must materialize requirements with ansible.builtin.copy")
+if "ansible.builtin.pip:" not in pip_install_block:
+    raise SystemExit("runtime role must install requirements with ansible.builtin.pip")
+copy_pos = runtime_tasks.find("- name: Materialize pinned Kubernetes runtime requirements")
+pip_pos = runtime_tasks.find("- name: Install pinned Kubernetes Python dependencies into the dedicated venv")
+if copy_pos < 0 or pip_pos < 0 or copy_pos >= pip_pos:
+    raise SystemExit("requirements copy must happen before ansible.builtin.pip")
+if not re.search(r'(?m)^\s+src:\s+requirements\.txt\s*$', copy_block):
+    raise SystemExit("copy src must be role files/requirements.txt via Ansible file lookup")
+if "role_path" in copy_block:
+    raise SystemExit("copy src must not construct a controller role_path")
+if not re.search(
+    r'(?m)^\s+dest:\s+"\{\{\s*ansible_k8s_runtime_requirements_path\s*\}\}"\s*$',
+    copy_block,
+):
+    raise SystemExit("copy dest must be the managed-node requirements path variable")
+if 'requirements: "{{ ansible_k8s_runtime_requirements_path }}"' not in pip_install_block:
+    raise SystemExit("pip must consume the managed-node requirements path, not a controller path")
+for forbidden in (
+    "role_path",
+    "playbook_dir",
+    "/home/j_beerhold",
+    "ansible/roles/ansible_k8s_runtime/files/requirements.txt",
+):
+    if forbidden in pip_install_block:
+        raise SystemExit(f"pip requirements must not reference controller path token {forbidden!r}")
+if "role_path" in runtime_defaults:
+    raise SystemExit("runtime defaults must not point pip at {{ role_path }}")
+if "ansible_k8s_runtime_requirements_file" in runtime_defaults or "ansible_k8s_runtime_requirements_file" in runtime_tasks:
+    raise SystemExit("legacy controller-side ansible_k8s_runtime_requirements_file must be removed")
+req_dir_match = re.search(
+    r"(?m)^ansible_k8s_runtime_requirements_dir:\s+(\S+)\s*$", runtime_defaults
+)
+if req_dir_match is None:
+    raise SystemExit("runtime defaults must define ansible_k8s_runtime_requirements_dir")
+req_dir = req_dir_match.group(1).strip('"')
+if req_dir != "/opt/tradingchassis/ansible-k8s-runtime":
+    raise SystemExit(
+        "requirements directory must be /opt/tradingchassis/ansible-k8s-runtime, "
+        f"got {req_dir!r}"
+    )
+if not req_dir.startswith("/"):
+    raise SystemExit("requirements directory must be an absolute managed-node path")
+if req_dir.startswith("/opt/tradingchassis/ansible-kubernetes"):
+    raise SystemExit("requirements file must not live inside the venv directory")
+if 'ansible_k8s_runtime_requirements_path: "{{ ansible_k8s_runtime_requirements_dir }}/requirements.txt"' not in runtime_defaults:
+    raise SystemExit("managed-node requirements path must be the copied dest file")
+dir_pos = runtime_tasks.find(
+    "- name: Ensure managed-node Kubernetes runtime requirements directory exists"
+)
+if dir_pos < 0 or dir_pos >= copy_pos:
+    raise SystemExit("requirements directory must exist before copy")
+if re.search(r"rm\s+-rf\s+.*(ansible-kubernetes|/opt/tradingchassis)", runtime_tasks):
+    raise SystemExit("runtime role must not recreate the venv by deleting it")
+for match in re.finditer(r"(?m)^- name: (.+)$", runtime_tasks):
+    block = task_block(runtime_tasks, match.group(1))
+    if "state: absent" in block and (
+        "ansible_k8s_runtime_venv" in block
+        or "/opt/tradingchassis/ansible-kubernetes" in block
+    ):
+        raise SystemExit("runtime role must not delete the dedicated venv")
+print("PASS: requirements are copied to the managed node before remote pip")
 
 if re.search(r"(?m)^-\s+role:\s+ansible_k8s_runtime\s*$", site):
     raise SystemExit("site.yml must not globally switch the host to the Kubernetes venv role as a play role")
@@ -205,7 +279,14 @@ if "10m" not in readme and "Helm 3" not in readme:
     raise SystemExit("ansible/README.md must document the Helm duration contract")
 print("PASS: Ansible README documents the Kubernetes module runtime")
 
-for needle in ("600", "22.6.0", "10m", "ansible-kubernetes"):
+for needle in (
+    "600",
+    "22.6.0",
+    "10m",
+    "ansible-kubernetes",
+    "Could not open requirements file",
+    "ansible-k8s-runtime",
+):
     if needle not in unreleased:
         raise SystemExit(f"CHANGELOG [Unreleased] must record {needle}")
 if "not yet live" not in unreleased.lower() and "not yet live proven" not in unreleased.lower():
