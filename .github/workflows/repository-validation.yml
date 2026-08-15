@@ -1379,6 +1379,9 @@ jobs:
           print("PASS: OCI secrets bootstrap Application ordering contract.")
           PY
 
+      - name: Run Monitoring Server-Side Apply contract unit tests
+        run: ./tests/unit/test_monitoring_server_side_apply_contract.sh
+
       - name: Verify provider image tag resolves to expected multi-arch digest
         run: |
           set -euo pipefail
@@ -1520,6 +1523,7 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
+          import json
           import re
           import subprocess
           import sys
@@ -1572,6 +1576,45 @@ jobs:
                   print(f"FAIL: active {path} must not contain SecretProviderClass; found {names}")
                   sys.exit(1)
               print(f"PASS: active {path} renders V2 without SecretProviderClass.")
+
+          # Client-side apply stores the object JSON in
+          # kubectl.kubernetes.io/last-applied-configuration (max 262144 bytes).
+          annotation_limit = 262144
+          large_crd_names = {
+              "alertmanagerconfigs.monitoring.coreos.com",
+              "alertmanagers.monitoring.coreos.com",
+              "prometheusagents.monitoring.coreos.com",
+              "prometheuses.monitoring.coreos.com",
+              "scrapeconfigs.monitoring.coreos.com",
+              "thanosrulers.monitoring.coreos.com",
+          }
+          oversized = []
+          crd_names = []
+          for doc in rendered["apps/monitoring"]:
+              if doc.get("kind") != "CustomResourceDefinition":
+                  continue
+              name = (doc.get("metadata") or {}).get("name")
+              crd_names.append(name)
+              payload = json.dumps(doc, separators=(",", ":"), ensure_ascii=False)
+              if name in large_crd_names and len(payload.encode("utf-8")) > annotation_limit:
+                  oversized.append(name)
+          missing = sorted(large_crd_names.difference(crd_names))
+          if missing:
+              print(
+                  "FAIL: monitoring render missing expected Prometheus Operator CRDs: "
+                  f"{missing}"
+              )
+              sys.exit(1)
+          if not oversized:
+              print(
+                  "FAIL: expected rendered Prometheus Operator CRDs to exceed the "
+                  f"{annotation_limit}-byte client-side apply annotation limit"
+              )
+              sys.exit(1)
+          print(
+              "PASS: Monitoring Prometheus Operator CRDs exceed CSA annotation limit: "
+              f"{sorted(oversized)}"
+          )
 
           # MLflow active region contract
           deployments = [
