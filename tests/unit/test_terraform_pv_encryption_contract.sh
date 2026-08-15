@@ -2,7 +2,6 @@
 # Static regression for the OCI PV in-transit encryption contract.
 # Inspects production Terraform blocks only.
 # No OCI provider, no remote backend, no credentials, no root plan/apply.
-
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -19,8 +18,21 @@ ROOT = Path(sys.argv[1]).resolve()
 TERRAFORM_DIR = ROOT / "terraform"
 INSTANCE_RESOURCE = 'resource "oci_core_instance" "node"'
 ATTACHMENT_RESOURCE = 'resource "oci_core_volume_attachment" "scratch"'
+PV_ATTR = "is_pv_encryption_in_transit_enabled"
 PV_TRUE = "is_pv_encryption_in_transit_enabled = true"
 PV_FALSE = "is_pv_encryption_in_transit_enabled = false"
+NESTED_INSTANCE_BLOCKS = (
+    "shape_config",
+    "create_vnic_details",
+    "source_details",
+    "launch_options",
+    "instance_options",
+    "availability_config",
+    "agent_config",
+    "platform_config",
+    "preemptible_instance_config",
+    "metadata",
+)
 
 
 def extract_hcl_block(source: str, marker: str, label: str) -> str:
@@ -39,6 +51,12 @@ def extract_hcl_block(source: str, marker: str, label: str) -> str:
             if depth == 0:
                 return source[start : index + 1]
     raise SystemExit(f"{label} is unclosed")
+
+
+def try_extract_hcl_block(source: str, marker: str) -> str | None:
+    if source.find(marker) < 0:
+        return None
+    return extract_hcl_block(source, marker, marker)
 
 
 def strip_hcl_comments(text: str) -> str:
@@ -69,6 +87,16 @@ def quoted_assignment(block: str, name: str, value: str) -> bool:
     )
 
 
+def resource_top_level(resource_code: str) -> str:
+    remaining = resource_code
+    for name in NESTED_INSTANCE_BLOCKS:
+        nested = try_extract_hcl_block(remaining, name)
+        while nested is not None:
+            remaining = remaining.replace(nested, "", 1)
+            nested = try_extract_hcl_block(remaining, name)
+    return remaining
+
+
 def main() -> None:
     tf_files = sorted(TERRAFORM_DIR.glob("*.tf"))
     if not tf_files:
@@ -84,20 +112,41 @@ def main() -> None:
     instance_code = strip_hcl_comments(instance)
     attachment_code = strip_hcl_comments(attachment)
     production_code = strip_hcl_comments(joined)
+    top_level = resource_top_level(instance_code)
+    launch_options = try_extract_hcl_block(instance_code, "launch_options")
 
-    launch_options = extract_hcl_block(
-        instance_code, "launch_options", "oci_core_instance.node launch_options"
-    )
-    if not assignment_true(launch_options, "is_pv_encryption_in_transit_enabled"):
+    if launch_options is not None:
+        nested_true = assignment_true(launch_options, PV_ATTR)
+        nested_false = assignment_false(launch_options, PV_ATTR)
+        if nested_true and not assignment_true(top_level, PV_ATTR):
+            raise SystemExit(
+                "instance PV encryption must not be satisfied solely by "
+                "nested launch_options"
+            )
+        if nested_true or nested_false:
+            raise SystemExit(
+                "oci_core_instance.node must not assign "
+                "is_pv_encryption_in_transit_enabled inside launch_options"
+            )
+        if not re.search(r'(?m)^\s*network_type\s*=', launch_options):
+            raise SystemExit(
+                "oci_core_instance.node launch_options must set network_type; "
+                "OCI rejects LaunchOptions without NetworkType"
+            )
+        print("PASS: optional launch_options is not the PV encryption contract")
+    else:
+        print("PASS: instance does not use launch_options for PV encryption")
+
+    if not assignment_true(top_level, PV_ATTR):
         raise SystemExit(
-            "oci_core_instance.node launch_options must set "
-            "is_pv_encryption_in_transit_enabled = true"
+            "oci_core_instance.node must set "
+            f"{PV_TRUE} at resource top level"
         )
-    if assignment_false(launch_options, "is_pv_encryption_in_transit_enabled"):
+    if assignment_false(instance_code, PV_ATTR):
         raise SystemExit(
             "oci_core_instance.node must not disable PV encryption in transit"
         )
-    print("PASS: instance launch_options enables PV encryption in transit")
+    print("PASS: instance top-level PV encryption in transit is enabled")
 
     if not quoted_assignment(attachment_code, "attachment_type", "paravirtualized"):
         raise SystemExit(
@@ -105,12 +154,12 @@ def main() -> None:
         )
     print("PASS: scratch attachment type remains paravirtualized")
 
-    if not assignment_true(attachment_code, "is_pv_encryption_in_transit_enabled"):
+    if not assignment_true(attachment_code, PV_ATTR):
         raise SystemExit(
             "oci_core_volume_attachment.scratch must set "
-            "is_pv_encryption_in_transit_enabled = true"
+            f"{PV_TRUE}"
         )
-    if assignment_false(attachment_code, "is_pv_encryption_in_transit_enabled"):
+    if assignment_false(attachment_code, PV_ATTR):
         raise SystemExit(
             "oci_core_volume_attachment.scratch must not disable PV encryption"
         )
@@ -126,7 +175,7 @@ def main() -> None:
             "production Terraform must not assign "
             f"{PV_FALSE} (found in {', '.join(false_matches)})"
         )
-    if PV_TRUE not in instance_code or PV_TRUE not in attachment_code:
+    if PV_TRUE not in top_level or PV_TRUE not in attachment_code:
         raise SystemExit("instance and attachment PV encryption assignments drifted")
     if "is_pv_encryption_in_transit_enabled" not in production_code:
         raise SystemExit("PV encryption contract missing from production Terraform")
