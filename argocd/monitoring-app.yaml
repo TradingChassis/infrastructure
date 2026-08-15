@@ -25,3 +25,9 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # kube-prometheus-stack Prometheus Operator CRDs exceed the 262144-byte
+      # last-applied-configuration annotation used by client-side apply.
+      # Application-level Server-Side Apply avoids that annotation without
+      # Replace/Force. Do not set ClientSideApplyMigration=false on Argo CD
+      # v3.0.23; that option is not part of this pin.
+      - ServerSideApply=true
