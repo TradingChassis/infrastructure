@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# Prepare a cloned repository's control-node environment up to the operator-input gate.
+# Does not clone this repository. Does not deploy infrastructure.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/clean-room-common.sh
+source "${SCRIPT_DIR}/lib/clean-room-common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: tools/bootstrap-cloud-shell [--root DIR]
+
+Prepare an already-cloned TradingChassis/infrastructure control node:
+  user-local Terraform ~> 1.15.0 (canonical 1.15.8)
+  dedicated python3.12 Ansible venv (ansible-core==2.21.2)
+  repository-pinned Ansible collections
+  operator input files from committed examples when missing
+
+Does not clone this repository.
+Does not run terraform init/plan/apply, Ansible, SSH, or kubectl.
+Does not overwrite existing operator input files.
+Does not start tmux.
+
+After success, complete the private input files, then run tools/deploy-clean-room.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+require_cmd() {
+  if command -v "$1" >/dev/null 2>&1; then
+    clean_room_pass "command available: $1"
+  else
+    clean_room_die "missing command: $1"
+  fi
+}
+
+copy_example_if_absent() {
+  local src="$1"
+  local dest="$2"
+  if [[ -e "$dest" ]]; then
+    clean_room_info "preserving existing operator file: ${dest#"$ROOT"/}"
+    return 0
+  fi
+  if [[ ! -f "$src" ]]; then
+    clean_room_die "missing committed example: ${src#"$ROOT"/}"
+  fi
+  umask 077
+  cp "$src" "$dest"
+  chmod 600 "$dest"
+  clean_room_pass "created ${dest#"$ROOT"/} from example (operator must complete it)"
+}
+
+ensure_user_terraform() {
+  mkdir -p "$CLEAN_ROOM_TF_BIN_DIR"
+  local tf_bin="${CLEAN_ROOM_TF_BIN_DIR}/terraform"
+  export PATH="${CLEAN_ROOM_TF_BIN_DIR}:${PATH}"
+
+  if [[ -e "$tf_bin" ]]; then
+    if [[ ! -x "$tf_bin" ]]; then
+      clean_room_die "incompatible Terraform path exists and is not executable: $tf_bin (move it manually)"
+    fi
+    local existing=""
+    existing="$("$tf_bin" version -json 2>/dev/null | "$(clean_room_python)" -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || true)"
+    if [[ -z "$existing" ]]; then
+      existing="$("$tf_bin" version 2>/dev/null | head -n1 | sed -n 's/^Terraform v//p' || true)"
+    fi
+    if clean_room_terraform_version_ok "$existing"; then
+      clean_room_pass "reusing user-local Terraform ${existing} at \$HOME/bin/terraform"
+      return 0
+    fi
+    clean_room_die "incompatible Terraform ${existing:-unknown} exists at \$HOME/bin/terraform; move it manually before bootstrap"
+  fi
+
+  local arch
+  if ! arch="$(clean_room_terraform_zip_arch)"; then
+    clean_room_die "unsupported architecture for Terraform zip: $(uname -m)"
+  fi
+  local os
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  if [[ "$os" != "linux" ]]; then
+    clean_room_die "Terraform bootstrap downloads the linux zip; use a Linux control node"
+  fi
+
+  local version="$CLEAN_ROOM_TF_CANONICAL_VERSION"
+  local zip_name="terraform_${version}_${os}_${arch}.zip"
+  local base_url="https://releases.hashicorp.com/terraform/${version}"
+  local tmp
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap 'rm -rf "'"$tmp"'"' RETURN
+
+  clean_room_info "downloading Terraform ${version} (${os}_${arch})"
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+    "${base_url}/terraform_${version}_SHA256SUMS" \
+    -o "${tmp}/SHA256SUMS"
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+    "${base_url}/${zip_name}" \
+    -o "${tmp}/${zip_name}"
+
+  if ! grep -E " ${zip_name}\$" "${tmp}/SHA256SUMS" >"${tmp}/SHA256SUMS.selected"; then
+    clean_room_die "SHA256SUMS has no entry for ${zip_name}"
+  fi
+  if ! (cd "$tmp" && sha256sum -c SHA256SUMS.selected); then
+    clean_room_die "Terraform checksum mismatch; refusing to install"
+  fi
+
+  mkdir -p "${tmp}/extract"
+  unzip -o -q "${tmp}/${zip_name}" -d "${tmp}/extract"
+  if [[ ! -f "${tmp}/extract/terraform" ]]; then
+    clean_room_die "Terraform archive did not contain a terraform binary"
+  fi
+  install -m 0755 "${tmp}/extract/terraform" "$tf_bin"
+  trap - RETURN
+  rm -rf "$tmp"
+
+  local installed=""
+  installed="$("$tf_bin" version -json 2>/dev/null | "$(clean_room_python)" -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || true)"
+  if [[ -z "$installed" ]]; then
+    installed="$("$tf_bin" version | head -n1 | sed -n 's/^Terraform v//p')"
+  fi
+  if ! clean_room_terraform_version_ok "$installed"; then
+    clean_room_die "installed Terraform ${installed:-unknown} does not satisfy ~> 1.15.0"
+  fi
+  clean_room_pass "installed Terraform ${installed} at \$HOME/bin/terraform"
+}
+
+venv_interpreter_is_python312() {
+  local venv_python="$1"
+  if [[ ! -x "$venv_python" ]]; then
+    return 1
+  fi
+  "$venv_python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)'
+}
+
+ensure_ansible_venv() {
+  local venv="$CLEAN_ROOM_VENV_DIR"
+  local venv_python="${venv}/bin/python"
+  mkdir -p "$(dirname "$venv")"
+
+  if [[ -e "$venv" ]]; then
+    if ! venv_interpreter_is_python312 "$venv_python"; then
+      clean_room_die "existing venv at \$HOME/.venvs/tradingchassis-ansible is not Python 3.12; recreate it manually"
+    fi
+    clean_room_pass "reusing dedicated Ansible venv at \$HOME/.venvs/tradingchassis-ansible"
+  else
+    python3.12 -m venv "$venv"
+    if ! venv_interpreter_is_python312 "$venv_python"; then
+      clean_room_die "created venv is not Python 3.12"
+    fi
+    clean_room_pass "created dedicated Ansible venv with python3.12"
+  fi
+
+  "${venv}/bin/python" -m pip install --disable-pip-version-check \
+    "ansible-core==${CLEAN_ROOM_ANSIBLE_CORE_PIN}" >/dev/null
+  if [[ ! -x "${venv}/bin/ansible-playbook" ]]; then
+    clean_room_die "ansible-playbook missing from dedicated venv"
+  fi
+  local ap_path
+  ap_path="$(PATH="${venv}/bin:${PATH}" command -v ansible-playbook)"
+  if [[ "$ap_path" != *".venvs/tradingchassis-ansible/"* ]]; then
+    clean_room_die "ansible-playbook does not resolve inside the dedicated venv"
+  fi
+  local ver
+  ver="$("${venv}/bin/ansible-playbook" --version 2>/dev/null | head -n1 || true)"
+  if printf '%s\n' "$ver" | grep -Eq 'ansible-playbook[[:space:]]+2\.9\.'; then
+    clean_room_die "Cloud Shell system Ansible 2.9 is unsupported"
+  fi
+  if ! printf '%s\n' "$ver" | grep -Fq "$CLEAN_ROOM_ANSIBLE_CORE_PIN"; then
+    clean_room_die "dedicated venv must provide ansible-core==${CLEAN_ROOM_ANSIBLE_CORE_PIN}"
+  fi
+  clean_room_pass "ansible-playbook is ${CLEAN_ROOM_ANSIBLE_CORE_PIN} in the dedicated venv"
+
+  if [[ ! -f "${ROOT}/ansible/requirements.yml" ]]; then
+    clean_room_die "missing ansible/requirements.yml"
+  fi
+  "${venv}/bin/ansible-galaxy" collection install -r "${ROOT}/ansible/requirements.yml" >/dev/null
+  clean_room_pass "Ansible collections installed from ansible/requirements.yml"
+}
+
+if [[ ! -f "${ROOT}/terraform/versions.tf" || ! -f "${ROOT}/ansible/playbooks/site.yml" ]]; then
+  clean_room_die "run this tool from a TradingChassis/infrastructure clone (--root)"
+fi
+
+clean_room_warn_tmux
+
+require_cmd git
+require_cmd curl
+require_cmd unzip
+require_cmd sha256sum
+require_cmd python3.12
+require_cmd install
+if command -v oci >/dev/null 2>&1; then
+  clean_room_pass "command available: oci"
+else
+  clean_room_warn "oci CLI not found (expected in OCI Cloud Shell; required later by deploy)"
+fi
+
+py_mm="$(python3.12 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if [[ "$py_mm" != "3.12" ]]; then
+  clean_room_die "python3.12 must be Python 3.12.x"
+fi
+
+ensure_user_terraform
+ensure_ansible_venv
+copy_example_if_absent "${ROOT}/terraform/backend.hcl.example" "${ROOT}/terraform/backend.hcl"
+copy_example_if_absent "${ROOT}/terraform/terraform.tfvars.example" "${ROOT}/terraform/terraform.tfvars"
+copy_example_if_absent \
+  "${ROOT}/ansible/extra-vars/private-runtime.yml.example" \
+  "${ROOT}/ansible/extra-vars/private-runtime.yml"
+
+export PATH="${CLEAN_ROOM_TF_BIN_DIR}:${CLEAN_ROOM_VENV_DIR}/bin:${PATH}"
+"${SCRIPT_DIR}/check-cloud-shell-readiness" --root "$ROOT"
+
+cat <<EOF
+
+HUMAN OPERATOR INPUT GATE
+
+Complete these operator-local files before running tools/deploy-clean-room:
+  terraform/backend.hcl
+  terraform/terraform.tfvars
+  ansible/extra-vars/private-runtime.yml
+
+Do not commit them.
+Do not infer values from Terraform state, shell history, or OCI discovery.
+SSH ingress CIDR must match this control node's current public egress.
+
+Bootstrap finished. Deployment has NOT begun.
+EOF

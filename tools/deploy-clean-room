@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# State-aware clean-room deployment. Inspects live Terraform/Ansible/K8s state
+# on each run. Never infers prior APPLY/FORMAT approval from an internal step file.
+# Do not execute this tool from implementation/CI against live infrastructure.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/clean-room-common.sh
+source "${SCRIPT_DIR}/lib/clean-room-common.sh"
+
+SSH_ATTEMPTS="${CLEAN_ROOM_SSH_ATTEMPTS:-30}"
+SSH_DELAY="${CLEAN_ROOM_SSH_DELAY:-10}"
+ARGO_ATTEMPTS="${CLEAN_ROOM_ARGO_ATTEMPTS:-60}"
+ARGO_DELAY="${CLEAN_ROOM_ARGO_DELAY:-15}"
+WORKLOAD_ATTEMPTS="${CLEAN_ROOM_WORKLOAD_ATTEMPTS:-40}"
+WORKLOAD_DELAY="${CLEAN_ROOM_WORKLOAD_DELAY:-15}"
+
+TF_DIR=""
+ANSIBLE_PLAYBOOK=""
+ANSIBLE_CONFIG_FILE=""
+INVENTORY=""
+PRIVATE_VARS=""
+PLAN_FILE=""
+ANSIBLE_LOG=""
+INSTANCE_IP=""
+
+usage() {
+  cat <<'EOF'
+Usage: tools/deploy-clean-room [--root DIR]
+
+Deploy TradingChassis V2 from current Terraform/Ansible/Kubernetes state.
+
+Gates that always require exact operator input when they apply:
+  APPLY   Terraform mutation (skipped when the plan has no changes)
+  FORMAT  blank scratch filesystem creation (skipped when the volume is already formatted)
+
+Does not reboot.
+Does not destroy or replace Terraform resources.
+Does not start tmux.
+Does not remember APPLY/FORMAT from a previous invocation.
+
+After success, run tools/verify-clean-room for acceptance.
+EOF
+}
+
+cleanup() {
+  if [[ -n "${PLAN_FILE:-}" && -f "${PLAN_FILE:-}" ]]; then
+    rm -f "$PLAN_FILE"
+  fi
+  if [[ -n "${ANSIBLE_LOG:-}" && -f "${ANSIBLE_LOG:-}" ]]; then
+    rm -f "$ANSIBLE_LOG"
+  fi
+}
+trap cleanup EXIT
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+TF_DIR="${ROOT}/terraform"
+ANSIBLE_CONFIG_FILE="${ROOT}/ansible/ansible.cfg"
+INVENTORY="${ROOT}/ansible/inventory/local.yml"
+PRIVATE_VARS="${ROOT}/ansible/extra-vars/private-runtime.yml"
+ANSIBLE_PLAYBOOK="${CLEAN_ROOM_VENV_DIR}/bin/ansible-playbook"
+
+require_operator_inputs() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -f "$path" ]]; then
+    clean_room_die "missing operator input: $label"
+  fi
+  if clean_room_has_angle_placeholders "$path"; then
+    clean_room_die "$label still contains placeholders"
+  fi
+  clean_room_pass "$label is present without placeholders"
+}
+
+tf() {
+  terraform -chdir="$TF_DIR" "$@"
+}
+
+remote() {
+  ssh -n \
+    -i "$CLEAN_ROOM_SSH_KEY" \
+    -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o ConnectTimeout=10 \
+    "${CLEAN_ROOM_SSH_USER}@${INSTANCE_IP}" \
+    "$@"
+}
+
+wait_for_ssh() {
+  local attempt=1
+  while (( attempt <= SSH_ATTEMPTS )); do
+    if remote true >/dev/null 2>&1; then
+      clean_room_pass "SSH is ready"
+      return 0
+    fi
+    clean_room_info "waiting for SSH (${attempt}/${SSH_ATTEMPTS})"
+    sleep "$SSH_DELAY"
+    attempt=$((attempt + 1))
+  done
+  clean_room_die "SSH was not ready before the bounded timeout"
+}
+
+run_playbook() {
+  local log="$1"
+  local rc=0
+  shift
+  set +e
+  ANSIBLE_CONFIG="$ANSIBLE_CONFIG_FILE" "$ANSIBLE_PLAYBOOK" "$@" >"$log" 2>&1
+  rc=$?
+  cat "$log"
+  set +e
+  return "$rc"
+}
+
+wait_for_argo() {
+  local tmp
+  tmp="$(mktemp)"
+  local attempt=1
+  while (( attempt <= ARGO_ATTEMPTS )); do
+    if ! remote "sudo microk8s kubectl -n argocd get applications -o json" >"$tmp" 2>/dev/null; then
+      clean_room_info "waiting for Argo Applications (${attempt}/${ARGO_ATTEMPTS})"
+      sleep "$ARGO_DELAY"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    set +e
+    clean_room_eval_argo_json "$tmp"
+    local rc=$?
+    set -e
+    case "$rc" in
+      0)
+        rm -f "$tmp"
+        return 0
+        ;;
+      1)
+        clean_room_info "Argo Applications not yet Synced+Healthy (${attempt}/${ARGO_ATTEMPTS})"
+        ;;
+      2|3)
+        rm -f "$tmp"
+        clean_room_die "Argo Application set is empty or unhealthy"
+        ;;
+      *)
+        rm -f "$tmp"
+        clean_room_die "Argo Application evaluation failed"
+        ;;
+    esac
+    sleep "$ARGO_DELAY"
+    attempt=$((attempt + 1))
+  done
+  rm -f "$tmp"
+  clean_room_die "Argo Applications did not become Synced and Healthy before timeout"
+}
+
+wait_for_workloads() {
+  local tmp
+  tmp="$(mktemp)"
+  local attempt=1
+  while (( attempt <= WORKLOAD_ATTEMPTS )); do
+    if ! remote "sudo microk8s kubectl get pods -A -o json" >"$tmp" 2>/dev/null; then
+      clean_room_info "waiting for Kubernetes workloads (${attempt}/${WORKLOAD_ATTEMPTS})"
+      sleep "$WORKLOAD_DELAY"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    set +e
+    clean_room_eval_pods_json "$tmp"
+    local rc=$?
+    set -e
+    case "$rc" in
+      0)
+        rm -f "$tmp"
+        return 0
+        ;;
+      1)
+        clean_room_info "Kubernetes workloads not ready (${attempt}/${WORKLOAD_ATTEMPTS})"
+        ;;
+      2)
+        rm -f "$tmp"
+        clean_room_die "Kubernetes workloads are unhealthy"
+        ;;
+      *)
+        rm -f "$tmp"
+        clean_room_die "Kubernetes workload evaluation failed"
+        ;;
+    esac
+    sleep "$WORKLOAD_DELAY"
+    attempt=$((attempt + 1))
+  done
+  rm -f "$tmp"
+  clean_room_die "Kubernetes workloads were not healthy before timeout"
+}
+
+if [[ ! -f "${ROOT}/terraform/versions.tf" || ! -f "${ROOT}/ansible/playbooks/site.yml" ]]; then
+  clean_room_die "run this tool from a TradingChassis/infrastructure clone (--root)"
+fi
+
+clean_room_warn_tmux
+
+export PATH="${CLEAN_ROOM_TF_BIN_DIR}:${CLEAN_ROOM_VENV_DIR}/bin:${PATH}"
+
+if [[ ! -x "$ANSIBLE_PLAYBOOK" ]]; then
+  clean_room_die "dedicated Ansible venv is missing; run tools/bootstrap-cloud-shell"
+fi
+if [[ "$ANSIBLE_PLAYBOOK" != *".venvs/tradingchassis-ansible/"* ]]; then
+  clean_room_die "refusing system Ansible; expected \$HOME/.venvs/tradingchassis-ansible"
+fi
+
+"${SCRIPT_DIR}/check-cloud-shell-readiness" --strict --root "$ROOT"
+
+require_operator_inputs "${TF_DIR}/backend.hcl" "terraform/backend.hcl"
+require_operator_inputs "${TF_DIR}/terraform.tfvars" "terraform/terraform.tfvars"
+require_operator_inputs "$PRIVATE_VARS" "ansible/extra-vars/private-runtime.yml"
+
+if ! command -v oci >/dev/null 2>&1; then
+  clean_room_die "oci CLI is required for the APIKey identity preflight"
+fi
+clean_room_info "running read-only OCI APIKey identity preflight"
+oci iam region list \
+  --config-file "${HOME}/.oci/config" \
+  --profile "$CLEAN_ROOM_OCI_PROFILE" \
+  --auth api_key >/dev/null
+clean_room_pass "OCI APIKey identity preflight succeeded"
+
+PLAN_FILE="$(mktemp)"
+clean_room_info "terraform init"
+tf init -input=false -backend-config=backend.hcl >/dev/null
+clean_room_info "terraform validate"
+tf validate >/dev/null
+clean_room_pass "terraform validate succeeded"
+
+set +e
+tf plan -input=false -detailed-exitcode -out="$PLAN_FILE"
+plan_rc=$?
+set -e
+case "$plan_rc" in
+  0)
+    clean_room_pass "Terraform plan has no changes; skipping APPLY"
+    ;;
+  1)
+    clean_room_die "terraform plan failed"
+    ;;
+  2)
+    show_json="$(mktemp)"
+    tf show -json "$PLAN_FILE" >"$show_json"
+    set +e
+    destructive_out="$(clean_room_plan_is_destructive "$show_json" 2>&1)"
+    destructive_rc=$?
+    set -e
+    rm -f "$show_json"
+    if [[ "$destructive_rc" -eq 2 ]]; then
+      printf '%s\n' "$destructive_out"
+      clean_room_die "Terraform plan contains delete or replace actions; refusing to apply"
+    fi
+    if [[ "$destructive_rc" -ne 0 ]]; then
+      clean_room_die "unable to inspect Terraform plan JSON; refusing to apply"
+    fi
+    tf show "$PLAN_FILE"
+    cat <<'EOF'
+
+TERRAFORM APPLY GATE
+Type APPLY to apply this saved plan. Any other input stops without applying.
+EOF
+    if ! clean_room_require_exact_input "APPLY"; then
+      clean_room_die "APPLY was not confirmed; Terraform was not changed"
+    fi
+    clean_room_info "applying the saved Terraform plan"
+    tf apply -input=false "$PLAN_FILE"
+    set +e
+    tf plan -input=false -detailed-exitcode >/dev/null
+    post_rc=$?
+    set -e
+    if [[ "$post_rc" -ne 0 ]]; then
+      clean_room_die "post-apply Terraform plan is not no-change; stopping before Ansible"
+    fi
+    clean_room_pass "post-apply Terraform plan has no changes"
+    ;;
+  *)
+    clean_room_die "unexpected terraform plan exit code ${plan_rc}"
+    ;;
+esac
+
+"${SCRIPT_DIR}/render-ansible-inventory" --terraform-dir "$TF_DIR" --output "$INVENTORY" >/dev/null
+clean_room_pass "rendered Ansible inventory"
+
+INSTANCE_IP="$(tf output -raw instance_public_ip)"
+if [[ -z "$INSTANCE_IP" ]]; then
+  clean_room_die "Terraform output instance_public_ip is empty"
+fi
+wait_for_ssh
+
+ANSIBLE_LOG="$(mktemp)"
+site_args=(-i "$INVENTORY" "${ROOT}/ansible/playbooks/site.yml")
+set +e
+run_playbook "$ANSIBLE_LOG" "${site_args[@]}"
+site_rc=$?
+set -e
+if [[ "$site_rc" -eq 0 ]]; then
+  clean_room_pass "site.yml converged without format authorization"
+else
+  if clean_room_is_blank_scratch_gate "$ANSIBLE_LOG"; then
+    cat <<'EOF'
+
+SCRATCH FORMAT GATE
+This authorizes filesystem creation on the Ansible-discovered Terraform-managed
+blank scratch candidate. Type FORMAT to continue. Any other input stops.
+EOF
+    if ! clean_room_require_exact_input "FORMAT"; then
+      clean_room_die "FORMAT was not confirmed; scratch was not formatted"
+    fi
+    set +e
+    run_playbook "$ANSIBLE_LOG" "${site_args[@]}" -e scratch_storage_allow_format=true
+    format_rc=$?
+    set -e
+    if [[ "$format_rc" -ne 0 ]]; then
+      clean_room_die "site.yml failed after authorized FORMAT"
+    fi
+    clean_room_pass "site.yml converged with one-time FORMAT authorization"
+  else
+    clean_room_die "site.yml failed; FORMAT was not offered because this is not the blank-scratch gate"
+  fi
+fi
+
+clean_room_info "running private-runtime-config.yml"
+set +e
+run_playbook "$ANSIBLE_LOG" \
+  -i "$INVENTORY" \
+  -e "@${PRIVATE_VARS}" \
+  "${ROOT}/ansible/playbooks/private-runtime-config.yml"
+private_rc=$?
+set -e
+if [[ "$private_rc" -ne 0 ]]; then
+  clean_room_die "private-runtime-config.yml failed"
+fi
+clean_room_pass "private-runtime-config.yml succeeded"
+
+wait_for_argo
+wait_for_workloads
+
+cat <<'EOF'
+
+PASS: clean-room deployment convergence completed.
+Next: tools/verify-clean-room
+EOF

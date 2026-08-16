@@ -69,6 +69,10 @@ run_syntax_checks() {
 
   syntax_check_file "$CHECKER"
   syntax_check_file "${ROOT}/tools/validate-safe"
+  syntax_check_file "${ROOT}/tools/bootstrap-cloud-shell"
+  syntax_check_file "${ROOT}/tools/deploy-clean-room"
+  syntax_check_file "${ROOT}/tools/verify-clean-room"
+  syntax_check_file "${ROOT}/tools/lib/clean-room-common.sh"
   syntax_check_file "$UNIT_TEST"
   syntax_check_file "$METADATA_UNIT_TEST"
 
@@ -112,6 +116,12 @@ run_shellcheck_if_present() {
   done
   shopt -u nullglob
   targets+=("$CHECKER" "${ROOT}/tools/validate-safe" "$UNIT_TEST" "$METADATA_UNIT_TEST")
+  targets+=(
+    "${ROOT}/tools/bootstrap-cloud-shell"
+    "${ROOT}/tools/deploy-clean-room"
+    "${ROOT}/tools/verify-clean-room"
+    "${ROOT}/tools/lib/clean-room-common.sh"
+  )
 
   if shellcheck "${targets[@]}"; then
     pass "shellcheck"

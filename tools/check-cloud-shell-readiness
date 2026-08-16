@@ -55,27 +55,56 @@ require_cmd() {
 }
 
 require_cmd git
-require_cmd python3
+require_cmd python3.12
 require_cmd ssh
 require_cmd ssh-keygen
 require_cmd curl
-printf 'INFO: architecture %s (map aarch64/arm64 → arm64, x86_64 → amd64 for Terraform zip)\n' "$(uname -m)"
+printf 'INFO: architecture %s (map aarch64/arm64 → arm64, x86_64/amd64 → amd64 for Terraform zip)\n' "$(uname -m)"
+if command -v python3.12 >/dev/null 2>&1; then
+  py_mm="$(python3.12 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  if [[ "$py_mm" == "3.12" ]]; then
+    pass "python3.12 is Python 3.12.x"
+  else
+    fail "python3.12 must be Python 3.12.x (found ${py_mm:-unknown})"
+  fi
+fi
 if command -v oci >/dev/null 2>&1; then
   pass "command available: oci"
 else
   warn "oci CLI not found (expected in OCI Cloud Shell)"
 fi
 
+readiness_python() {
+  if command -v python3.12 >/dev/null 2>&1; then
+    command -v python3.12
+  elif command -v python3 >/dev/null 2>&1; then
+    command -v python3
+  else
+    return 1
+  fi
+}
+
 if command -v terraform >/dev/null 2>&1; then
-  tf_ver="$(terraform version -json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || true)"
+  tf_ver=""
+  readiness_py="$(readiness_python || true)"
+  if [[ -n "$readiness_py" ]]; then
+    tf_ver="$(terraform version -json 2>/dev/null | "$readiness_py" -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || true)"
+  fi
   if [[ -z "$tf_ver" ]]; then
     tf_ver="$(terraform version | head -n1 | sed -n 's/^Terraform v//p')"
   fi
   # required_version ~> 1.15.0 means >=1.15.0,<1.16.0
-  if python3 - "$tf_ver" <<'PY'
+  if [[ -n "$readiness_py" ]] && "$readiness_py" - "$tf_ver" <<'PY'
 import sys
-ver = sys.argv[1].strip()
-parts = [int(p) for p in ver.split(".")[:3]]
+ver = sys.argv[1].strip().lstrip("v")
+parts = []
+for token in ver.split("."):
+    digits = "".join(ch for ch in token if ch.isdigit())
+    if digits == "":
+        break
+    parts.append(int(digits))
+    if len(parts) == 3:
+        break
 while len(parts) < 3:
     parts.append(0)
 major, minor, patch = parts
@@ -130,6 +159,15 @@ check_file() {
   fi
 }
 
+placeholder_issue() {
+  local label="$1"
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "$label still contains placeholders"
+  else
+    warn "$label still contains placeholders"
+  fi
+}
+
 check_file "${ROOT}/terraform/backend.hcl.example" "backend example"
 check_file "${ROOT}/terraform/terraform.tfvars.example" "tfvars example"
 check_file "${ROOT}/ansible/extra-vars/private-runtime.yml.example" "private-runtime example"
@@ -138,8 +176,8 @@ check_file "${ROOT}/docs/V2_CLEAN_ROOM_DEPLOYMENT.md" "clean-room runbook"
 
 if [[ -f "${ROOT}/terraform/backend.hcl" ]]; then
   pass "operator backend.hcl present"
-  if grep -E '<|>' "${ROOT}/terraform/backend.hcl" >/dev/null 2>&1; then
-    fail "terraform/backend.hcl still contains placeholders"
+  if grep -Eq '<|>' "${ROOT}/terraform/backend.hcl"; then
+    placeholder_issue "terraform/backend.hcl"
   else
     pass "terraform/backend.hcl has no angle-bracket placeholders"
   fi
@@ -163,6 +201,11 @@ fi
 
 if [[ -f "${ROOT}/terraform/terraform.tfvars" ]]; then
   pass "operator terraform.tfvars present"
+  if grep -Eq '<|>' "${ROOT}/terraform/terraform.tfvars"; then
+    placeholder_issue "terraform/terraform.tfvars"
+  else
+    pass "terraform.tfvars has no angle-bracket placeholders"
+  fi
   if grep -Eq '^[[:space:]]*oci_auth[[:space:]]*=[[:space:]]*"APIKey"' "${ROOT}/terraform/terraform.tfvars"; then
     pass "terraform.tfvars selects APIKey auth"
   else
@@ -173,6 +216,27 @@ else
     fail "operator terraform.tfvars missing"
   else
     warn "operator terraform.tfvars missing (copy from terraform.tfvars.example)"
+  fi
+fi
+
+if [[ -f "${ROOT}/ansible/extra-vars/private-runtime.yml" ]]; then
+  pass "operator private-runtime.yml present"
+  if grep -Eq '<|>' "${ROOT}/ansible/extra-vars/private-runtime.yml"; then
+    placeholder_issue "ansible/extra-vars/private-runtime.yml"
+  else
+    pass "private-runtime.yml has no angle-bracket placeholders"
+  fi
+  if grep -Eq '^[[:space:]]*private_runtime_config_vault_id:' "${ROOT}/ansible/extra-vars/private-runtime.yml" \
+    && grep -Eq '^[[:space:]]*private_runtime_config_oci_region:' "${ROOT}/ansible/extra-vars/private-runtime.yml"; then
+    pass "private-runtime.yml declares required keys"
+  else
+    fail "private-runtime.yml must set private_runtime_config_vault_id and private_runtime_config_oci_region"
+  fi
+else
+  if [[ "$STRICT" -eq 1 ]]; then
+    fail "operator private-runtime.yml missing"
+  else
+    warn "operator private-runtime.yml missing (copy from private-runtime.yml.example)"
   fi
 fi
 

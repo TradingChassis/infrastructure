@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# Clean-room acceptance against an already-deployed environment.
+# Verification never repairs Terraform drift and never formats scratch.
+# Do not execute this tool from implementation/CI against live infrastructure.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/clean-room-common.sh
+source "${SCRIPT_DIR}/lib/clean-room-common.sh"
+
+SSH_ATTEMPTS="${CLEAN_ROOM_SSH_ATTEMPTS:-30}"
+SSH_DELAY="${CLEAN_ROOM_SSH_DELAY:-10}"
+ARGO_ATTEMPTS="${CLEAN_ROOM_ARGO_ATTEMPTS:-60}"
+ARGO_DELAY="${CLEAN_ROOM_ARGO_DELAY:-15}"
+WORKLOAD_ATTEMPTS="${CLEAN_ROOM_WORKLOAD_ATTEMPTS:-40}"
+WORKLOAD_DELAY="${CLEAN_ROOM_WORKLOAD_DELAY:-15}"
+REBOOT_DROP_ATTEMPTS="${CLEAN_ROOM_REBOOT_DROP_ATTEMPTS:-30}"
+REBOOT_DROP_DELAY="${CLEAN_ROOM_REBOOT_DROP_DELAY:-2}"
+REBOOT_RETURN_ATTEMPTS="${CLEAN_ROOM_REBOOT_RETURN_ATTEMPTS:-60}"
+REBOOT_RETURN_DELAY="${CLEAN_ROOM_REBOOT_RETURN_DELAY:-5}"
+MICROK8S_TIMEOUT="${CLEAN_ROOM_MICROK8S_TIMEOUT:-180}"
+
+TF_DIR=""
+ANSIBLE_PLAYBOOK=""
+ANSIBLE_CONFIG_FILE=""
+INVENTORY=""
+PRIVATE_VARS=""
+ANSIBLE_LOG=""
+INSTANCE_IP=""
+BOOT_ID_BEFORE=""
+
+usage() {
+  cat <<'EOF'
+Usage: tools/verify-clean-room [--root DIR]
+
+Accept an already-deployed TradingChassis V2 clean-room environment.
+
+Requires:
+  Terraform no-change plan (does not apply)
+  SSH, scratch mount, Argo Synced+Healthy, healthy workloads
+  private-runtime-config.yml changed=0
+  site.yml changed=0 without scratch format authorization
+  exact REBOOT confirmation
+  post-reboot SSH, MicroK8s, scratch, Argo, and workload health
+
+Does not start tmux.
+Does not repair drift.
+Does not pass scratch_storage_allow_format=true.
+EOF
+}
+
+cleanup() {
+  if [[ -n "${ANSIBLE_LOG:-}" && -f "${ANSIBLE_LOG:-}" ]]; then
+    rm -f "$ANSIBLE_LOG"
+  fi
+}
+trap cleanup EXIT
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      ROOT="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+TF_DIR="${ROOT}/terraform"
+ANSIBLE_CONFIG_FILE="${ROOT}/ansible/ansible.cfg"
+INVENTORY="${ROOT}/ansible/inventory/local.yml"
+PRIVATE_VARS="${ROOT}/ansible/extra-vars/private-runtime.yml"
+ANSIBLE_PLAYBOOK="${CLEAN_ROOM_VENV_DIR}/bin/ansible-playbook"
+
+tf() {
+  terraform -chdir="$TF_DIR" "$@"
+}
+
+remote() {
+  ssh -n \
+    -i "$CLEAN_ROOM_SSH_KEY" \
+    -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o ConnectTimeout=10 \
+    "${CLEAN_ROOM_SSH_USER}@${INSTANCE_IP}" \
+    "$@"
+}
+
+wait_for_ssh() {
+  local attempts="${1:-$SSH_ATTEMPTS}"
+  local delay="${2:-$SSH_DELAY}"
+  local attempt=1
+  while (( attempt <= attempts )); do
+    if remote true >/dev/null 2>&1; then
+      clean_room_pass "SSH is ready"
+      return 0
+    fi
+    clean_room_info "waiting for SSH (${attempt}/${attempts})"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+  clean_room_die "SSH was not ready before the bounded timeout"
+}
+
+read_boot_id() {
+  local raw=""
+  if ! raw="$(remote "cat /proc/sys/kernel/random/boot_id")"; then
+    return 1
+  fi
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  if [[ -z "$raw" ]]; then
+    return 1
+  fi
+  printf '%s\n' "$raw"
+}
+
+run_playbook() {
+  local log="$1"
+  local rc=0
+  shift
+  set +e
+  ANSIBLE_CONFIG="$ANSIBLE_CONFIG_FILE" "$ANSIBLE_PLAYBOOK" "$@" >"$log" 2>&1
+  rc=$?
+  cat "$log"
+  set +e
+  return "$rc"
+}
+
+require_zero_change_playbook() {
+  local label="$1"
+  shift
+  ANSIBLE_LOG="$(mktemp)"
+  set +e
+  run_playbook "$ANSIBLE_LOG" "$@"
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    clean_room_die "${label} failed"
+  fi
+  set +e
+  clean_room_parse_play_recap "$ANSIBLE_LOG" 1
+  local recap_rc=$?
+  set -e
+  rm -f "$ANSIBLE_LOG"
+  ANSIBLE_LOG=""
+  if [[ "$recap_rc" -ne 0 ]]; then
+    clean_room_die "${label} is not idempotent (require changed=0 unreachable=0 failed=0)"
+  fi
+  clean_room_pass "${label} PLAY RECAP changed=0"
+}
+
+eval_argo_now() {
+  local tmp rc=0
+  tmp="$(mktemp)"
+  if ! remote "sudo microk8s kubectl -n argocd get applications -o json" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  set +e
+  clean_room_eval_argo_json "$tmp"
+  rc=$?
+  rm -f "$tmp"
+  set +e
+  return "$rc"
+}
+
+wait_for_argo() {
+  local attempt=1
+  while (( attempt <= ARGO_ATTEMPTS )); do
+    set +e
+    eval_argo_now
+    local rc=$?
+    set -e
+    case "$rc" in
+      0)
+        return 0
+        ;;
+      1)
+        clean_room_info "Argo Applications not yet Synced+Healthy (${attempt}/${ARGO_ATTEMPTS})"
+        ;;
+      2|3)
+        clean_room_die "Argo Application set is empty or unhealthy"
+        ;;
+      *)
+        clean_room_info "waiting for Argo Applications (${attempt}/${ARGO_ATTEMPTS})"
+        ;;
+    esac
+    sleep "$ARGO_DELAY"
+    attempt=$((attempt + 1))
+  done
+  clean_room_die "Argo Applications did not become Synced and Healthy before timeout"
+}
+
+eval_pods_now() {
+  local tmp rc=0
+  tmp="$(mktemp)"
+  if ! remote "sudo microk8s kubectl get pods -A -o json" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  set +e
+  clean_room_eval_pods_json "$tmp"
+  rc=$?
+  rm -f "$tmp"
+  set +e
+  return "$rc"
+}
+
+wait_for_workloads() {
+  local attempt=1
+  while (( attempt <= WORKLOAD_ATTEMPTS )); do
+    set +e
+    eval_pods_now
+    local rc=$?
+    set -e
+    case "$rc" in
+      0)
+        return 0
+        ;;
+      1)
+        clean_room_info "Kubernetes workloads not ready (${attempt}/${WORKLOAD_ATTEMPTS})"
+        ;;
+      2)
+        clean_room_die "Kubernetes workloads are unhealthy"
+        ;;
+      *)
+        clean_room_info "waiting for Kubernetes workloads (${attempt}/${WORKLOAD_ATTEMPTS})"
+        ;;
+    esac
+    sleep "$WORKLOAD_DELAY"
+    attempt=$((attempt + 1))
+  done
+  clean_room_die "Kubernetes workloads were not healthy before timeout"
+}
+
+verify_scratch_mount() {
+  if ! remote "mountpoint -q ${CLEAN_ROOM_SCRATCH_MOUNT}"; then
+    clean_room_die "scratch mount ${CLEAN_ROOM_SCRATCH_MOUNT} is not mounted"
+  fi
+  clean_room_pass "scratch mount is present"
+}
+
+verify_microk8s() {
+  if ! remote "sudo microk8s status --wait-ready --timeout ${MICROK8S_TIMEOUT}"; then
+    clean_room_die "MicroK8s is not ready"
+  fi
+  clean_room_pass "MicroK8s is ready"
+}
+
+if [[ ! -f "${ROOT}/terraform/versions.tf" || ! -f "${ROOT}/ansible/playbooks/site.yml" ]]; then
+  clean_room_die "run this tool from a TradingChassis/infrastructure clone (--root)"
+fi
+
+clean_room_warn_tmux
+
+export PATH="${CLEAN_ROOM_TF_BIN_DIR}:${CLEAN_ROOM_VENV_DIR}/bin:${PATH}"
+
+if [[ ! -x "$ANSIBLE_PLAYBOOK" ]]; then
+  clean_room_die "dedicated Ansible venv is missing; run tools/bootstrap-cloud-shell"
+fi
+
+"${SCRIPT_DIR}/check-cloud-shell-readiness" --strict --root "$ROOT"
+
+if [[ ! -f "${TF_DIR}/backend.hcl" || ! -f "${TF_DIR}/terraform.tfvars" || ! -f "$PRIVATE_VARS" ]]; then
+  clean_room_die "operator input files are missing"
+fi
+if clean_room_has_angle_placeholders "${TF_DIR}/backend.hcl" \
+  || clean_room_has_angle_placeholders "${TF_DIR}/terraform.tfvars" \
+  || clean_room_has_angle_placeholders "$PRIVATE_VARS"; then
+  clean_room_die "operator input files still contain placeholders"
+fi
+
+clean_room_info "terraform init (non-mutating)"
+tf init -input=false -backend-config=backend.hcl >/dev/null
+set +e
+tf plan -input=false -detailed-exitcode >/dev/null
+plan_rc=$?
+set -e
+case "$plan_rc" in
+  0)
+    clean_room_pass "Terraform plan has no changes"
+    ;;
+  2)
+    clean_room_die "Terraform drift detected; verification does not apply changes"
+    ;;
+  *)
+    clean_room_die "terraform plan failed; verification does not apply changes"
+    ;;
+esac
+
+"${SCRIPT_DIR}/render-ansible-inventory" --terraform-dir "$TF_DIR" --output "$INVENTORY" >/dev/null
+INSTANCE_IP="$(tf output -raw instance_public_ip)"
+if [[ -z "$INSTANCE_IP" ]]; then
+  clean_room_die "Terraform output instance_public_ip is empty"
+fi
+wait_for_ssh
+verify_scratch_mount
+wait_for_argo
+wait_for_workloads
+
+require_zero_change_playbook "private-runtime-config.yml" \
+  -i "$INVENTORY" \
+  -e "@${PRIVATE_VARS}" \
+  "${ROOT}/ansible/playbooks/private-runtime-config.yml"
+
+require_zero_change_playbook "site.yml" \
+  -i "$INVENTORY" \
+  "${ROOT}/ansible/playbooks/site.yml"
+
+if ! BOOT_ID_BEFORE="$(read_boot_id)"; then
+  clean_room_die "could not read pre-reboot boot identity"
+fi
+cat <<'EOF'
+
+REBOOT GATE
+Type REBOOT to reboot the node and continue acceptance. Any other input stops
+without reboot and does not report clean-room acceptance PASS.
+EOF
+if ! clean_room_require_exact_input "REBOOT"; then
+  clean_room_die "REBOOT was not confirmed; clean-room acceptance is incomplete"
+fi
+
+clean_room_info "issuing remote reboot"
+set +e
+remote "sudo reboot"
+set -e
+
+drop_attempt=1
+while (( drop_attempt <= REBOOT_DROP_ATTEMPTS )); do
+  if ! remote true >/dev/null 2>&1; then
+    break
+  fi
+  sleep "$REBOOT_DROP_DELAY"
+  drop_attempt=$((drop_attempt + 1))
+done
+
+wait_for_ssh "$REBOOT_RETURN_ATTEMPTS" "$REBOOT_RETURN_DELAY"
+if ! BOOT_ID_AFTER="$(read_boot_id)"; then
+  clean_room_die "could not read post-reboot boot identity"
+fi
+if [[ "$BOOT_ID_BEFORE" == "$BOOT_ID_AFTER" ]]; then
+  clean_room_die "host boot identity did not change after reboot"
+fi
+clean_room_pass "host rebooted"
+
+verify_microk8s
+verify_scratch_mount
+wait_for_argo
+wait_for_workloads
+
+cat <<'EOF'
+
+PASS: clean-room acceptance completed.
+EOF
