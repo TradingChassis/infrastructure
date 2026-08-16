@@ -11,6 +11,8 @@ PASS_COUNT=0
 FAIL_COUNT=0
 TMP_ROOT=""
 
+# ShellCheck cannot see that cleanup is invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2317
 cleanup() {
   if [[ -n "${TMP_ROOT}" && -d "${TMP_ROOT}" ]]; then
     rm -rf "${TMP_ROOT}"
