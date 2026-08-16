@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/clean-room-common.sh
+# Dynamic SCRIPT_DIR path is not followed without shellcheck -x; the helper is linted separately.
+# shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/clean-room-common.sh"
 
 usage() {

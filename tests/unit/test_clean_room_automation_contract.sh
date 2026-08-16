@@ -217,6 +217,8 @@ if __name__ == "__main__":
 PY
 
 # shellcheck source=../../tools/lib/clean-room-common.sh
+# Dynamic ROOT path is not followed without shellcheck -x; the helper is linted separately.
+# shellcheck disable=SC1091
 source "${ROOT}/tools/lib/clean-room-common.sh"
 
 if [[ "$(clean_room_terraform_zip_arch aarch64)" == "arm64" ]]; then

@@ -2,6 +2,9 @@
 # Shared helpers for TradingChassis clean-room operator tools.
 # Source only. Does not mutate infrastructure by itself.
 # shellcheck shell=bash
+# Shared CLEAN_ROOM_* constants are consumed by scripts that source this helper.
+# They appear unused when this file is linted standalone.
+# shellcheck disable=SC2034
 
 CLEAN_ROOM_TF_CANONICAL_VERSION="1.15.8"
 CLEAN_ROOM_ANSIBLE_CORE_PIN="2.21.2"
