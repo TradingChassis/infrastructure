@@ -112,6 +112,11 @@ def main() -> None:
 
     runbook = (ROOT / "docs/V2_CLEAN_ROOM_DEPLOYMENT.md").read_text(encoding="utf-8")
     helper = (ROOT / "tools/check-cloud-shell-readiness").read_text(encoding="utf-8")
+    if "python3.12" not in helper:
+        raise SystemExit("check-cloud-shell-readiness must require python3.12")
+    if re.search(r"(?m)^require_cmd python3$", helper):
+        raise SystemExit("check-cloud-shell-readiness must not treat generic python3 as the Ansible interpreter")
+    print("PASS: check-cloud-shell-readiness requires python3.12")
 
     for label, text in (
         ("terraform/backend.hcl.example", backend_example),

@@ -37,6 +37,10 @@ jobs:
       - name: Run agent safety unit tests
         run: ./tests/unit/test_agent_safety.sh
 
+      - name: Run clean-room automation contract tests
+        # Stubbed/static only. Does not contact OCI, SSH, Kubernetes, or download Terraform.
+        run: ./tests/unit/test_clean_room_automation_contract.sh
+
       - name: Run safe repository validation
         run: ./tools/validate-safe
 
@@ -46,10 +50,16 @@ jobs:
           files=()
           while IFS= read -r -d '' file; do
             files+=("$file")
-          done < <(git ls-files -z -- '*.sh')
+          done < <(
+            git ls-files -z -- \
+              '*.sh' \
+              tools/bootstrap-cloud-shell \
+              tools/deploy-clean-room \
+              tools/verify-clean-room
+          )
 
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "No tracked *.sh files found; ShellCheck step succeeds."
+            echo "No tracked shell files found; ShellCheck step succeeds."
             exit 0
           fi
 
@@ -290,6 +300,9 @@ jobs:
               "ansible/extra-vars/private-runtime.yml.example",
               "tools/render-ansible-inventory",
               "tools/check-cloud-shell-readiness",
+              "tools/bootstrap-cloud-shell",
+              "tools/deploy-clean-room",
+              "tools/verify-clean-room",
           ]
           for path in required:
               if not Path(path).is_file():
@@ -359,6 +372,19 @@ jobs:
               raise SystemExit("check-cloud-shell-readiness must not invoke mutating terraform commands")
           if "ansible-playbook -i" in preflight:
               raise SystemExit("check-cloud-shell-readiness must not invoke ansible-playbook against inventory")
+          if "python3.12" not in preflight:
+              raise SystemExit("check-cloud-shell-readiness must require python3.12")
+
+          for tool_name in (
+              "tools/bootstrap-cloud-shell",
+              "tools/deploy-clean-room",
+              "tools/verify-clean-room",
+          ):
+              tool_text = Path(tool_name).read_text(encoding="utf-8")
+              if re.search(r"(?m)^\s*tmux\s+(new|attach|kill)", tool_text):
+                  raise SystemExit(f"{tool_name} must not start tmux")
+              if "-auto-approve" in tool_text:
+                  raise SystemExit(f"{tool_name} must not use terraform -auto-approve")
 
           tfvars = Path("terraform/terraform.tfvars.example").read_text(encoding="utf-8")
           for field in (

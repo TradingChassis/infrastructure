@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added resumable clean-room operator automation (`tools/bootstrap-cloud-shell`, `tools/deploy-clean-room`, `tools/verify-clean-room`) with state-aware reruns, explicit APPLY, FORMAT, and REBOOT gates, and an optional tmux warning.
 - Added a minimal Cursor/AI-assisted governance workflow: implementation and independent review rules, plus human-facing `docs/AI_AGENT_WORKFLOW.md`
 - Configured Terraform to use the native OCI Object Storage backend with an externally supplied state bucket and environment-specific object key.
 - Defined the OCI Cloud Shell operator workflow for Terraform authentication, remote-state initialization, and deterministic Terraform-to-Ansible handoff.
