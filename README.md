@@ -6,7 +6,7 @@ Single-node infrastructure for quantitative research and backtesting on OCI.
 
 | Generation | Role today | Path |
 | --- | --- | --- |
-| **Version 2** | **Current target** — Terraform → Ansible → Argo CD clean-room deploy | [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) |
+| **Version 2** | **Current architecture** — Terraform → Ansible → Argo CD clean-room deploy | [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) |
 | **Version 1** | Historical record — not an executable repository path | [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md) |
 
 V2 ownership:
@@ -27,8 +27,19 @@ That runbook is the canonical operator contract:
 tools/bootstrap-cloud-shell → tools/deploy-clean-room → tools/verify-clean-room
 ```
 
-GitHub Actions static validation is not live rebuild proof. Historical V1
-executable paths are retired.
+The canonical V2 clean-room path has been live-proven through:
+
+```text
+deploy → verify / idempotency → reboot → post-reboot convergence
+→ destroy → empty Terraform state → fresh create/add-only plan
+```
+
+The external Object Storage state bucket and Vault foundation were preserved.
+The path is resumable from actual Terraform / Ansible / Kubernetes state,
+including after the live-discovered PR #75 system-pip fix. GitHub Actions
+static validation is not live rebuild proof. Historical V1 executable paths
+are retired. This is not a claim that Version 2 is multi-node, managed
+Kubernetes, or production-grade.
 
 The historical in-place SecretProviderClass handoff document
 ([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))
@@ -44,7 +55,7 @@ is a fallback procedure, not the primary V2 path.
 
 ## Architecture Overview
 
-### Version 2 path (target)
+### Version 2 path (current architecture)
 
 See [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) for the
 canonical operator sequence (`tools/bootstrap-cloud-shell` →
@@ -83,7 +94,7 @@ argocd/
 │   ├── postgres/          # PostgreSQL deployment/pvc/service + DB init job
 │   └── scratch/           # scratch PVC overlays for dev/prod
 ├── argocd/                # Argo CD Application definitions
-├── VERSION_1_BASELINE.md  # Version 1 ownership, limits, and V2 direction
+├── VERSION_1_BASELINE.md  # Historical Version 1 ownership and limits
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 └── README.md
@@ -91,32 +102,36 @@ argocd/
 
 ## Prerequisites
 
-- Ubuntu VM with sudo privileges
-- `snap` available (used to install MicroK8s)
-- Outbound network access from the VM to pull:
-  - snap packages
-  - Helm charts
-  - container images
-  - remote CRD/manifests (Prometheus Operator and Argo CD install URLs)
-- OCI block device available at `/dev/oracleoci/oraclevds`
+Canonical V2 deploy provisions the Ubuntu host with Terraform and configures
+it with Ansible. Do not treat an already-prepared VM plus `.env` bootstrap as
+the primary path. Operator procedure:
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
+
+Platform requirements:
+
+- Ubuntu host with `sudo` and `snap` (V2: Terraform-provisioned reference VM)
+- Outbound network access from the VM to pull snap packages, Helm charts,
+  container images, and remote CRD/manifests
+- Dedicated OCI scratch block volume (V2: Terraform-attached; Ansible
+  discovers the host device; kernel paths such as
+  `/dev/oracleoci/oraclevds` are not a stable contract)
 - OCI Vault containing all required secret names (see [Required OCI Vault secrets](#required-oci-vault-secrets))
 - OCI IAM configured so the instance principal can read those vault secrets
 
 ## Configuration
 
-Copy and edit environment variables:
+Version 2 operator inputs are gitignored files completed after
+`tools/bootstrap-cloud-shell`:
 
-```bash
-cp .env.example .env
+```text
+terraform/backend.hcl
+terraform/terraform.tfvars
+ansible/extra-vars/private-runtime.yml
 ```
 
-Load values into the current shell before bootstrap:
-
-```bash
-set -a
-source .env
-set +a
-```
+[`.env.example`](.env.example) remains a public reminder of Vault secret names
+and of `VAULT_ID` / `OCI_REGION` as operator values. Ansible does not read
+`.env`. Do not commit secret values or the gitignored input files.
 
 ### Environment variables
 
@@ -127,7 +142,7 @@ set +a
 
 ## Required OCI Vault Secrets
 
-The following secret names are referenced directly by `SecretProviderClass` manifests and must exist in OCI Vault before bootstrap.
+The following secret names must exist in OCI Vault before private-runtime materialization. Ansible renders them into SecretProviderClass resources; they are not stored as secret values in Git.
 
 | Secret name | Used by | Purpose / expected value type | Source contract |
 | --- | --- | --- | --- |
@@ -147,7 +162,10 @@ Do not commit secret values to Git.
 
 All `SecretProviderClass` resources in this repository use `authType: instance`. The OCI provider DaemonSet also sets `OCI_RESOURCE_PRINCIPAL_VERSION`, indicating instance principal authentication.
 
-This repository does not include OCI IAM policy text. You must configure OCI IAM policies so the instance principal can read the required vault secrets.
+Version 2 Terraform owns the instance-principal Dynamic Group and the
+compartment-scoped `read secret-bundles` policy for the reference compute
+instance. Vault lifecycle, secret **values**, and any broader tenancy IAM
+remain external.
 
 ## V1 historical record
 
@@ -256,7 +274,8 @@ Legacy V1 Bash storage bootstrap mounted `/mnt/scratch` while scratch PVCs used 
 
 ## Post-Install Verification
 
-Run these checks after bootstrap:
+Canonical proof is `tools/verify-clean-room`. The commands below are host-side
+debugging only and are not a substitute for that tool.
 
 ```bash
 sudo microk8s status
@@ -269,8 +288,9 @@ sudo microk8s kubectl get pvc -A
 What to verify:
 
 - MicroK8s reports ready status
-- Argo CD `Application` resources exist for all six apps listed above
-- Pods are created in namespaces: `default`, `postgres`, `mlflow`, `monitoring`, `argo`, `dev`, `prod`
+- Argo CD `Application` resources exist for the Applications listed above
+- Pods are created in namespaces including `argocd`, `postgres`, `mlflow`,
+  `monitoring`, `argo`, `dev`, and `prod`
 - Expected NodePorts are present (`30007`, `32120`, `30090`, `30500`)
 - PVCs exist for `postgres-pvc` and `scratch-pvc` (dev/prod)
 
@@ -328,11 +348,16 @@ For vulnerability reporting and security policy, see `SECURITY.md`.
 
 ## Out of Scope / Limitations
 
-- Multi-node Kubernetes production setups
-- Managed Kubernetes providers
-- Public service exposure configuration
+Live Greenfield acceptance does not remove these architecture limits:
+
+- Single-node MicroK8s (not a multi-node or highly available cluster)
+- No managed Kubernetes provider
+- Public service exposure configuration (cloud firewall / NSG remains external)
 - Application business logic and trade execution systems
-- Vault lifecycle and Vault secret **values** (referenced by Terraform / consumed via CSI; not provisioned as secret contents here)
+- Vault lifecycle and Vault secret **values** (referenced by Terraform /
+  consumed via CSI; not provisioned as secret contents here)
+- External Object Storage Terraform state-bucket lifecycle (operator-managed
+  foundation; not owned by this Terraform root)
 
 Additional Version 1 limitations and evidence gaps are listed in [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
 The V2 clean-room operator procedure is [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
@@ -347,7 +372,7 @@ This repository includes Cursor and agent guardrails for AI-assisted work. Start
 - [`docs/REPOSITORY_SECURITY.md`](docs/REPOSITORY_SECURITY.md) — repository security CI and metadata hygiene
 - [`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md) — historical in-place SPC handoff (fallback only)
 - `terraform/README.md` / `ansible/README.md` / `argocd/README.md` — layer ownership
-- `VERSION_1_BASELINE.md` for Version 1 ownership, limitations, and Version 2 direction
+- `VERSION_1_BASELINE.md` for historical Version 1 ownership and limitations
 - `AGENTS.md` for the cross-agent safety entry point
 - [`docs/AI_AGENT_WORKFLOW.md`](docs/AI_AGENT_WORKFLOW.md) for the Cursor/AI-assisted implementation and review workflow
 - `CONTRIBUTING.md` for contribution workflow

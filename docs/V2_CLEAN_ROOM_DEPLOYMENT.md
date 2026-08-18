@@ -27,6 +27,29 @@ see [`RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](RUNTIME_SPC_OWNERSHIP_CUTOVER.md).
 
 ---
 
+## Live acceptance status
+
+The documented Greenfield flow has been exercised end-to-end successfully
+from a fresh OCI Cloud Shell and a fresh clone:
+
+```text
+deploy → verify / idempotency (changed=0) → reboot → post-reboot convergence
+→ reviewed destroy → empty Terraform state → fresh create/add-only plan
+```
+
+The external Object Storage state bucket (Versioning Enabled, NoPublicAccess)
+and the external Vault (ACTIVE) were preserved. The path is resumable from
+actual Terraform / Ansible / Kubernetes state, including after the
+live-discovered PR #75 system-pip fix. Vault secret **values** remain
+operator-managed; their contents were not re-read as a post-destroy proof.
+
+This status statement is not a substitute for the operator procedure below.
+GitHub Actions static validation remains not live rebuild proof. Live
+acceptance does not make Version 2 multi-node, managed Kubernetes, or
+production-grade.
+
+---
+
 ## Current operator contract vs historical context
 
 ### CURRENT OPERATOR CONTRACT

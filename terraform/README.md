@@ -22,7 +22,7 @@ Terraform does **not** own:
 - long-lived Kubernetes resources
 - Vault lifecycle or secret values
 
-Ansible will own host configuration and bootstrap.
+Ansible owns host configuration and bootstrap.
 Argo CD owns long-lived Kubernetes desired state.
 
 ## Network ownership
@@ -122,22 +122,25 @@ The reference instance can read secret bundles only in the configured secret com
 It does not receive Vault, key, secret-management, or broad tenancy permissions.
 ```
 
-V1 resolves secrets by name inside SecretProviderClass manifests. Secret OCIDs are not present in this repository, so compartment-scoped `read secret-bundles` is the minimal practical policy for this migration stage.
+V1 resolved secrets by name inside SecretProviderClass manifests. Secret OCIDs are not present in this repository, so compartment-scoped `read secret-bundles` is the minimal practical policy for this architecture.
 Further restriction to individual `target.secret.id` values remains a later hardening option once secret OCIDs are managed as explicit inputs.
 
 ### External Vault
 
 ```text
-The Vault and secret values remain externally managed at this migration stage.
+The Vault and secret values remain externally managed.
+This Terraform root does not own Vault lifecycle or secret contents.
 ```
 
-`oci_vault_id` is an infrastructure reference for later CSI / Argo CD configuration, not a secret value.
+`oci_vault_id` is an infrastructure reference for CSI / private-runtime consumption, not a secret value.
 
-### Later ownership
+### Later hardening
 
 ```text
-Terraform → OCI identity and access
-Ansible/Argo CD later → CSI/provider/bootstrap and declarative Kubernetes secret consumption
+Terraform → OCI identity and access (implemented in this root)
+Argo CD → CSI Driver / OCI provider (`oci-secrets`) and workload secret consumption
+Ansible → host bootstrap and private-runtime SecretProviderClass materialization
+Further IAM restriction to individual target.secret.id values remains later
 ```
 
 ## Current managed scope
