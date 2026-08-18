@@ -188,8 +188,8 @@ wait_for_argo() {
       1)
         clean_room_info "Argo Applications not yet Synced+Healthy (${attempt}/${ARGO_ATTEMPTS})"
         ;;
-      2|3)
-        clean_room_die "Argo Application set is empty or unhealthy"
+      2)
+        clean_room_die "Argo Application evaluation is invalid or empty"
         ;;
       *)
         clean_room_info "waiting for Argo Applications (${attempt}/${ARGO_ATTEMPTS})"

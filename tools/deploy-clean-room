@@ -151,9 +151,9 @@ wait_for_argo() {
       1)
         clean_room_info "Argo Applications not yet Synced+Healthy (${attempt}/${ARGO_ATTEMPTS})"
         ;;
-      2|3)
+      2)
         rm -f "$tmp"
-        clean_room_die "Argo Application set is empty or unhealthy"
+        clean_room_die "Argo Application evaluation is invalid or empty"
         ;;
       *)
         rm -f "$tmp"
