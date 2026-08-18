@@ -125,6 +125,20 @@ def main() -> None:
         raise SystemExit("readiness must not treat generic python3 as the Ansible interpreter")
     print("PASS: readiness requires python3.12")
 
+    if "clean_room_has_angle_placeholders" not in lib:
+        raise SystemExit("shared placeholder detector is missing from the helper")
+    if re.search(r"grep -Eq '<|>'", lib):
+        raise SystemExit("placeholder detector must not scan comment-only angle brackets")
+    if "clean_room_has_angle_placeholders" not in deploy:
+        raise SystemExit("deploy must use the shared placeholder detector")
+    if "clean_room_has_angle_placeholders" not in verify:
+        raise SystemExit("verify must use the shared placeholder detector")
+    if "clean_room_has_angle_placeholders" not in readiness:
+        raise SystemExit("readiness must use the shared placeholder detector")
+    if re.search(r"grep -Eq '<|>'", readiness):
+        raise SystemExit("readiness must not duplicate whole-file angle-bracket grep")
+    print("PASS: placeholder detection ignores comment-only angle brackets")
+
     if "-auto-approve" in deploy:
         raise SystemExit("deploy-clean-room must not use -auto-approve")
     if not re.search(r"-e\s+scratch_storage_allow_format=true", deploy):
@@ -266,6 +280,83 @@ else
 fi
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/clean-room-automation.XXXXXX")"
+PH_DIR="${TMP_ROOT}/placeholders"
+mkdir -p "$PH_DIR"
+
+cat >"${PH_DIR}/active.hcl" <<'EOF'
+oci_region = "<oci-region>"
+EOF
+if clean_room_has_angle_placeholders "${PH_DIR}/active.hcl"; then
+  pass "active HCL placeholder is rejected"
+else
+  fail "active HCL placeholder is rejected"
+fi
+
+cat >"${PH_DIR}/active.yml" <<'EOF'
+private_runtime_config_vault_id: "<vault-ocid>"
+EOF
+if clean_room_has_angle_placeholders "${PH_DIR}/active.yml"; then
+  pass "active YAML placeholder is rejected"
+else
+  fail "active YAML placeholder is rejected"
+fi
+
+cat >"${PH_DIR}/comment-only.tfvars" <<'EOF'
+# curl -s checkip.dyndns.org | sed -e 's/.*Current IP Address: //' -e 's/<.*$//'
+ssh_ingress_cidr = "203.0.113.10/32"
+EOF
+if clean_room_has_angle_placeholders "${PH_DIR}/comment-only.tfvars"; then
+  fail "comment-only angle bracket is accepted"
+else
+  pass "comment-only angle bracket is accepted"
+fi
+
+cat >"${PH_DIR}/ws-comment.tfvars" <<'EOF'
+  #   curl -s checkip.dyndns.org | sed -e 's/.*Current IP Address: //' -e 's/<.*$//'
+ssh_ingress_cidr = "203.0.113.10/32"
+EOF
+if clean_room_has_angle_placeholders "${PH_DIR}/ws-comment.tfvars"; then
+  fail "leading-whitespace comment-only angle bracket is accepted"
+else
+  pass "leading-whitespace comment-only angle bracket is accepted"
+fi
+
+python3 - "${ROOT}/terraform/terraform.tfvars.example" "${PH_DIR}/populated.tfvars" <<'PY'
+from pathlib import Path
+import sys
+
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+replacements = {
+    "<oci-region>": "eu-frankfurt-1",
+    "<compartment-ocid>": "ocid1.compartment.oc1..example",
+    "<tenancy-ocid>": "ocid1.tenancy.oc1..example",
+    "<vault-ocid>": "ocid1.vault.oc1..example",
+    "<vault-compartment-ocid>": "ocid1.compartment.oc1..vault-example",
+    "<cloud-shell-or-operator-cidr>": "203.0.113.10/32",
+    "<contents-of-~/.ssh/tradingchassis.pub>": (
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "
+        "contract-test@example.invalid"
+    ),
+}
+for old, new in replacements.items():
+    src = src.replace(old, new)
+Path(sys.argv[2]).write_text(src, encoding="utf-8")
+PY
+if grep -Fq "s/<.*\$//" "${PH_DIR}/populated.tfvars" \
+  && ! clean_room_has_angle_placeholders "${PH_DIR}/populated.tfvars"; then
+  pass "populated terraform.tfvars-style fixture with curl/sed comment is accepted"
+else
+  fail "populated terraform.tfvars-style fixture with curl/sed comment is accepted"
+fi
+
+if clean_room_has_angle_placeholders "${ROOT}/terraform/terraform.tfvars.example" \
+  && clean_room_has_angle_placeholders "${ROOT}/terraform/backend.hcl.example" \
+  && clean_room_has_angle_placeholders "${ROOT}/ansible/extra-vars/private-runtime.yml.example"; then
+  pass "committed example files still fail placeholder checks"
+else
+  fail "committed example files still fail placeholder checks"
+fi
+
 HELPER_DIR="${TMP_ROOT}/helper"
 mkdir -p "$HELPER_DIR"
 
@@ -585,6 +676,9 @@ oci_compartment_id       = "ocid1.compartment.oc1..example"
 oci_tenancy_id           = "ocid1.tenancy.oc1..example"
 oci_vault_id             = "ocid1.vault.oc1..example"
 oci_vault_compartment_id = "ocid1.compartment.oc1..vault-example"
+# Cloud Shell public egress IP is dynamic across sessions.
+# Example discovery (Cloud Shell docs):
+#   curl -s checkip.dyndns.org | sed -e 's/.*Current IP Address: //' -e 's/<.*$//'
 ssh_ingress_cidr = "203.0.113.10/32"
 ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA contract-test@example.invalid"
 EOF
