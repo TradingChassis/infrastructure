@@ -6,7 +6,7 @@ Ansible manages host configuration and bootstrap for the V2 reference platform.
 
 ## Ownership
 
-Ansible owns or will own:
+Ansible owns:
 
 ```text
 host baseline

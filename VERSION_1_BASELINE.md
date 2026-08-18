@@ -1,8 +1,16 @@
 # Version 1 Baseline
 
-This document describes the first-generation architecture of the repository (“Version 1”) as evidenced by the repository contents.
+This document is the **historical** record of the first-generation architecture
+(“Version 1”) as evidenced by the repository contents at that generation.
 
-The project uses pre-1.0 semantic versioning while the infrastructure model is being stabilized. “Version 1” names the architecture generation; it is **not** the same as a SemVer tag such as `v1.0.0`. See `CHANGELOG.md` for published release history.
+Version 2 is now the **active architecture**. The canonical operator path is
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md). This
+file does not describe how to deploy Version 2 and is not an executable
+Version 1 fallback.
+
+The project uses pre-1.0 semantic versioning until an intentional release cut.
+“Version 1” names the architecture generation; it is **not** the same as a
+SemVer tag such as `v1.0.0`. See `CHANGELOG.md` for published release history.
 
 It is documentation only. It does **not** claim that this architecture generation is production-ready, fully declarative, or fully automated.
 
@@ -23,10 +31,10 @@ Version 1 solves “bring up a usable single-node GitOps cluster on a prepared O
 
 - Version 1 is a **single-node** platform baseline.
 - It is **not** presented as a highly available or enterprise production platform.
-- Version 2 (architecture direction) is expected to improve reproducibility and clear ownership without introducing unnecessary distributed-system complexity.
+- Version 2 was the planned follow-on to improve reproducibility and clear ownership without introducing unnecessary distributed-system complexity. That generation is now the active architecture; see `docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
 - SemVer release tags track repository releases; they do not by themselves redefine the architecture generation names used in this document.
 
-## Current Ownership
+## Version 1 Ownership
 
 | Area | Version 1 owner |
 | --- | --- |
@@ -117,11 +125,15 @@ These points are **not** confirmed as facts from the repository alone:
 4. **Actual OCI NSG/Security List rules** — SECURITY and README describe an SSH-oriented access model; cloud firewall contents are not encoded in this repository.
 5. **Terraform state backend and recovery targets** — not defined in Version 1; required before Version 2 OCI automation.
 
-## Version 2 Direction
+## Version 2 Direction (historical)
 
-Version 1 achieves a usable single-node research cluster with GitOps-managed applications, but ownership is split across manual OCI setup, imperative Bash bootstrap, live Application patches, and Argo CD. That split limits reproducibility, idempotency, and auditability. Version 2 is needed to give each resource one clear owner and to move OCI and host lifecycle into reviewable automation.
+This section records the original Version 2 direction from the Version 1
+baseline. Version 2 has since become the active architecture; the canonical
+operator path is `docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
 
-Planned ownership boundaries (direction only; not implemented by this baseline):
+Version 1 achieved a usable single-node research cluster with GitOps-managed applications, but ownership was split across manual OCI setup, imperative Bash bootstrap, live Application patches, and Argo CD. That split limited reproducibility, idempotency, and auditability. Version 2 was needed to give each resource one clear owner and to move OCI and host lifecycle into reviewable automation.
+
+Ownership boundaries planned from this baseline (not implemented by Version 1):
 
 - **Terraform** owns OCI infrastructure (network, compute, storage attachments, IAM references, Vault references as appropriate).
 - **Ansible** owns host configuration, filesystems/mounts, MicroK8s, and the one-time Argo CD / root Application bootstrap.
@@ -129,11 +141,12 @@ Planned ownership boundaries (direction only; not implemented by this baseline):
 - **GitHub Actions** validates Terraform, Ansible, shell, and Kubernetes configuration; it does not own runtime infrastructure.
 - Every resource should have **one** clear owner.
 
-Version 2 should preserve single-node clarity where appropriate and avoid unnecessary multi-node complexity unless requirements change.
+Version 2 was intended to preserve single-node clarity where appropriate and avoid unnecessary multi-node complexity unless requirements change. That single-node limit remains in the active architecture.
 
 ## Related Documents
 
-- `README.md` — operator guide and bootstrap usage
+- `README.md` — current operator overview
+- [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) — canonical Version 2 operator runbook
 - `CHANGELOG.md` — change history and release tracking status
 - `SECURITY.md` — vulnerability reporting and security policy
 - `CONTRIBUTING.md` — contribution workflow
