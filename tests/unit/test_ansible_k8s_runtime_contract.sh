@@ -52,6 +52,37 @@ def task_block(text: str, name: str) -> str:
     return rest if nxt is None else rest[: nxt.start()]
 
 
+def top_level_yaml_list(text: str, key: str) -> list[str]:
+    """Parse a top-level YAML list without requiring PyYAML."""
+    match = re.search(rf"(?m)^{re.escape(key)}:[ \t]*(.*)$", text)
+    if match is None:
+        raise SystemExit(f"missing {key}")
+    inline = match.group(1).strip()
+    if inline.startswith("#"):
+        inline = ""
+    if inline == "":
+        items: list[str] = []
+        for line in text[match.end() :].splitlines():
+            stripped = line.strip()
+            if stripped == "" or stripped.startswith("#"):
+                continue
+            if re.match(r"^\S", line):
+                break
+            item = re.match(r"^\s+-\s+([^#\n]+?)(?:\s+#.*)?\s*$", line)
+            if item is None:
+                raise SystemExit(f"unrecognized {key} list item: {line!r}")
+            value = item.group(1).strip().strip("'\"")
+            if value:
+                items.append(value)
+        return items
+    if inline.startswith("[") and inline.endswith("]"):
+        inner = inline[1:-1].strip()
+        if not inner:
+            return []
+        return [part.strip().strip("'\"") for part in inner.split(",") if part.strip()]
+    raise SystemExit(f"{key} must be a YAML list")
+
+
 helm_block = task_block(argo_tasks, "Install Argo CD Helm release")
 if "kubernetes.core.helm:" not in helm_block:
     raise SystemExit("Helm install must use kubernetes.core.helm")
@@ -127,18 +158,64 @@ for label, text in (
         raise SystemExit(f"{label} must not set a role-global ansible_python_interpreter")
 print("PASS: kubernetes.core tasks use the dedicated interpreter without a global override")
 
+apt_packages = top_level_yaml_list(runtime_defaults, "ansible_k8s_runtime_apt_packages")
+if "python3-venv" not in apt_packages:
+    raise SystemExit("ansible_k8s_runtime_apt_packages must include python3-venv")
+if "python3-pip" in apt_packages:
+    raise SystemExit(
+        "ansible_k8s_runtime_apt_packages must not include python3-pip; "
+        "python3-venv supplies stdlib venv/ensurepip for the dedicated runtime"
+    )
+forbidden_apt = (
+    "python3-wheel",
+    "python3-pip-whl",
+    "python3-setuptools-whl",
+    "pipx",
+)
+for pkg in forbidden_apt:
+    if pkg in apt_packages:
+        raise SystemExit(
+            f"ansible_k8s_runtime_apt_packages must not explicitly manage {pkg}"
+        )
+if apt_packages != ["python3-venv"]:
+    raise SystemExit(
+        "ansible_k8s_runtime_apt_packages must be exactly [python3-venv], "
+        f"got {apt_packages!r}"
+    )
+apt_block = task_block(
+    runtime_tasks, "Ensure python3-venv is present for the Kubernetes module runtime"
+)
+if "ansible.builtin.apt:" not in apt_block:
+    raise SystemExit("python3-venv must be installed with ansible.builtin.apt")
+if 'name: "{{ ansible_k8s_runtime_apt_packages }}"' not in apt_block:
+    raise SystemExit("apt task must install ansible_k8s_runtime_apt_packages")
+print("PASS: runtime apt packages are python3-venv only, not system python3-pip")
+
 if "kubernetes.core." in runtime_tasks:
     raise SystemExit("ansible_k8s_runtime must not itself call kubernetes.core")
 if "/usr/bin/python3 -m venv" not in runtime_tasks:
     raise SystemExit("runtime role must create the venv with stdlib venv")
+pip_install_block = task_block(
+    runtime_tasks, "Install pinned Kubernetes Python dependencies into the dedicated venv"
+)
+if "virtualenv_command: /usr/bin/python3 -m venv" not in pip_install_block:
+    raise SystemExit("dedicated venv must be created with /usr/bin/python3 -m venv")
 if "virtualenv_site_packages: false" not in runtime_tasks:
     raise SystemExit("runtime venv must not include system site-packages")
-if "virtualenv: \"{{ ansible_k8s_runtime_venv }}\"" not in runtime_tasks:
+if "virtualenv: \"{{ ansible_k8s_runtime_venv }}\"" not in pip_install_block:
     raise SystemExit("pip install must target the dedicated virtualenv")
 if "--break-system-packages" in runtime_tasks or "--break-system-packages" in argo_tasks:
     raise SystemExit("must not use pip --break-system-packages")
+if "get-pip.py" in runtime_tasks:
+    raise SystemExit("must not bootstrap pip with get-pip.py")
 if re.search(r"(?m)^\s+executable:\s+/usr/bin/pip", runtime_tasks):
     raise SystemExit("must not pip-install Kubernetes libraries with system pip")
+for match in re.finditer(r"(?m)^- name: (.+)$", runtime_tasks):
+    block = task_block(runtime_tasks, match.group(1))
+    if "ansible.builtin.pip:" not in block:
+        continue
+    if "virtualenv:" not in block:
+        raise SystemExit(f"{match.group(1)} must not pip-install into system Python")
 if "/opt/tradingchassis/ansible-kubernetes" not in runtime_defaults:
     raise SystemExit("dedicated venv path must be /opt/tradingchassis/ansible-kubernetes")
 print("PASS: dedicated venv is isolated from system Python")
@@ -289,6 +366,8 @@ for needle in (
     "ansible-kubernetes",
     "Could not open requirements file",
     "ansible-k8s-runtime",
+    "python3-wheel",
+    "python3-venv",
 ):
     if needle not in unreleased:
         raise SystemExit(f"CHANGELOG [Unreleased] must record {needle}")

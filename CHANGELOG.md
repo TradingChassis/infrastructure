@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- First live Greenfield `ansible_k8s_runtime` on fresh OCI Ubuntu 24.04 failed while apt-installing `python3-pip` (`Depends: python3-wheel` with no installable candidate). Git now installs only `python3-venv` so stdlib `venv`/ensurepip can create `/opt/tradingchassis/ansible-kubernetes`; Kubernetes packages stay in that venv and are not installed into system Python. Dedicated venv package installation, Argo Helm, and the remaining clean-room path remain **not yet live proven**.
 - Replaced the invalid Terraform-provided scratch device-path handoff with fail-closed host-side Ansible device discovery after live OCI paravirtualized attachments returned no device path.
 - Aligned the OCI compute launch option with encrypted paravirtualized scratch volume attachments after the first live V2 apply exposed the mismatch.
 - Replaced an unsupported Terraform CIDR containment validation that blocked the first real clean-room plan.
