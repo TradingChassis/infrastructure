@@ -76,6 +76,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 TF_DIR="${ROOT}/terraform"
+# Consumed by clean_room_run_playbook from the sourced shared helper.
+# shellcheck disable=SC2034
 ANSIBLE_CONFIG_FILE="${ROOT}/ansible/ansible.cfg"
 INVENTORY="${ROOT}/ansible/inventory/local.yml"
 PRIVATE_VARS="${ROOT}/ansible/extra-vars/private-runtime.yml"
