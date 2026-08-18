@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Tracked `terraform/.terraform.lock.hcl` for `oracle/oci` `8.26.0` on `linux_amd64` and `linux_arm64`.
 - Added resumable clean-room operator automation (`tools/bootstrap-cloud-shell`, `tools/deploy-clean-room`, `tools/verify-clean-room`) with state-aware reruns, explicit APPLY, FORMAT, and REBOOT gates, and an optional tmux warning.
 - Added a minimal Cursor/AI-assisted governance workflow: implementation and independent review rules, plus human-facing `docs/AI_AGENT_WORKFLOW.md`
 - Configured Terraform to use the native OCI Object Storage backend with an externally supplied state bucket and environment-specific object key.
@@ -42,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Made `docs/V2_CLEAN_ROOM_DEPLOYMENT.md` the canonical Greenfield V2 operator runbook for the existing clean-room tools, tracked Terraform provider lockfile, and destroy-acceptance procedure.
 - Replaced a fixed repository-wide response-language rule with a task-driven contract in `AGENTS.md` and the always-applied foundation rule
 - Documented the current GitHub `main-protection` required checks as present external policy, not future work
 - Documented one explicitly authorized finalization task after PRE-COMMIT review, with stop-on-failure and a mandatory exact-head CI gate

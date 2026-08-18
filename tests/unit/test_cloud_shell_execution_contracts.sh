@@ -207,9 +207,18 @@ def main() -> None:
             raise SystemExit(f"{path} must not contain a live tenancy OCID")
     print("PASS: committed examples contain no live OCI identifiers or private keys")
 
-    if "First V2 clean-room deployment: not yet executed" not in runbook:
-        raise SystemExit("runbook must still mark first clean-room deployment as not yet executed")
-    print("PASS: first clean-room deployment remains not yet executed")
+    if "First V2 clean-room deployment: not yet executed" in runbook:
+        raise SystemExit("runbook must not keep stale first-deployment-not-executed status")
+    if re.search(r"(?m)^Status: implementation in progress\s*$", runbook):
+        raise SystemExit("runbook must not keep stale implementation-in-progress status")
+    for tool in (
+        "tools/bootstrap-cloud-shell",
+        "tools/deploy-clean-room",
+        "tools/verify-clean-room",
+    ):
+        if tool not in runbook:
+            raise SystemExit(f"runbook missing canonical tool: {tool}")
+    print("PASS: canonical tools are the runbook operator path")
 
     if "source \"$HOME/.venvs/tradingchassis-ansible/bin/activate\"" not in runbook:
         raise SystemExit("runbook must require the Cloud Shell tradingchassis-ansible venv")

@@ -10,6 +10,8 @@ terraform {
   # The state bucket is an external prerequisite; Terraform does not create it.
   backend "oci" {}
 
+  # Selected provider versions are recorded in the tracked
+  # .terraform.lock.hcl. Do not hand-write provider hashes.
   required_providers {
     oci = {
       source  = "oracle/oci"
