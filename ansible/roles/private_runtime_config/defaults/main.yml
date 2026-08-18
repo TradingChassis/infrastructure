@@ -58,9 +58,9 @@ private_runtime_config_forbidden_input_substrings:
   - "replace-me"
   - "not-a-secret"
 
-# Functional SecretProviderClass contracts mirrored from
-# apps/*/overlays/v1/secrets.yaml. Only vaultId sourcing differs for V2:
-# Ansible renders a literal private_runtime_config_vault_id instead of ${VAULT_ID}.
+# Functional SecretProviderClass contracts owned by Ansible
+# private_runtime_config. vaultId is rendered from
+# private_runtime_config_vault_id (not a Git ${VAULT_ID} placeholder).
 private_runtime_config_secret_provider_classes:
   - name: postgres-secret-bundle
     namespace: postgres

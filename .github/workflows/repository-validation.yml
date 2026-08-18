@@ -41,6 +41,9 @@ jobs:
         # Stubbed/static only. Does not contact OCI, SSH, Kubernetes, or download Terraform.
         run: ./tests/unit/test_clean_room_automation_contract.sh
 
+      - name: Run retired V1 path contract tests
+        run: ./tests/unit/test_retired_v1_paths_contract.sh
+
       - name: Run safe repository validation
         run: ./tools/validate-safe
 
@@ -639,13 +642,72 @@ jobs:
           mlflow_v2_patch = (
               root / "apps/mlflow/overlays/v2/aws-default-region-patch.yaml"
           )
-          v1_spc_paths = {
-              "postgres-secret-bundle": root
-              / "apps/postgres/overlays/v1/secrets.yaml",
-              "mlflow-secret-bundle": root / "apps/mlflow/overlays/v1/secrets.yaml",
-              "monitoring-secret-bundle": root
-              / "apps/monitoring/overlays/v1/secrets.yaml",
+          expected_spc_namespaces = {
+              "postgres-secret-bundle": "postgres",
+              "mlflow-secret-bundle": "mlflow",
+              "monitoring-secret-bundle": "monitoring",
           }
+          expected_spc_secrets = {
+              "postgres-secret-bundle": [
+                  {"name": "postgresdb-naming", "fileName": "postgresdb-naming"},
+                  {"name": "postgres-user", "fileName": "postgres-user"},
+                  {"name": "postgres-password", "fileName": "postgres-password"},
+                  {"name": "mlflowdb-naming", "fileName": "mlflowdb-naming"},
+                  {"name": "mlflow-user", "fileName": "mlflow-user"},
+                  {"name": "mlflow-password", "fileName": "mlflow-password"},
+              ],
+              "mlflow-secret-bundle": [
+                  {"name": "mlflow-db-uri", "fileName": "mlflow-db-uri"},
+              ],
+              "monitoring-secret-bundle": [
+                  {"name": "grafana-login-user", "fileName": "grafana-login-user"},
+                  {"name": "grafana-login-password", "fileName": "grafana-login-password"},
+              ],
+          }
+          expected_spc_objects = {
+              "postgres-secret-bundle": [
+                  {
+                      "secretName": "postgres-secret",
+                      "type": "Opaque",
+                      "data": [
+                          {"objectName": "postgresdb-naming", "key": "POSTGRES_DB"},
+                          {"objectName": "postgres-user", "key": "POSTGRES_USER"},
+                          {"objectName": "postgres-password", "key": "POSTGRES_PASSWORD"},
+                          {"objectName": "mlflowdb-naming", "key": "MLFLOW_DB"},
+                          {"objectName": "mlflow-user", "key": "MLFLOW_USER"},
+                          {"objectName": "mlflow-password", "key": "MLFLOW_PASSWORD"},
+                      ],
+                  }
+              ],
+              "mlflow-secret-bundle": [
+                  {
+                      "secretName": "mlflow-secret",
+                      "type": "Opaque",
+                      "data": [
+                          {"objectName": "mlflow-db-uri", "key": "MLFLOW_DB_URI"},
+                      ],
+                  }
+              ],
+              "monitoring-secret-bundle": [
+                  {
+                      "secretName": "monitoring-secret",
+                      "type": "Opaque",
+                      "data": [
+                          {"objectName": "grafana-login-user", "key": "GF_USER"},
+                          {"objectName": "grafana-login-password", "key": "GF_PASSWORD"},
+                      ],
+                  }
+              ],
+          }
+
+          for rel in (
+              "apps/postgres/overlays/v1",
+              "apps/mlflow/overlays/v1",
+              "apps/monitoring/overlays/v1",
+          ):
+              if (root / rel).exists():
+                  print(f"FAIL: retired V1 overlay path must not exist: {rel}")
+                  sys.exit(1)
 
           defaults = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
           spcs = defaults.get("private_runtime_config_secret_provider_classes") or []
@@ -654,7 +716,7 @@ jobs:
               sys.exit(1)
 
           by_name = {spc["name"]: spc for spc in spcs}
-          expected_names = set(v1_spc_paths)
+          expected_names = set(expected_spc_namespaces)
           if set(by_name) != expected_names:
               print(f"FAIL: SPC names {sorted(by_name)} != {sorted(expected_names)}")
               sys.exit(1)
@@ -702,51 +764,30 @@ jobs:
                   for item in parsed
               ]
 
-          for name, path in v1_spc_paths.items():
-              doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+          for name, namespace in expected_spc_namespaces.items():
               role_spc = by_name[name]
-              if doc.get("kind") != "SecretProviderClass":
-                  print(f"FAIL: {path} is not a SecretProviderClass")
-                  sys.exit(1)
-              if doc["metadata"]["name"] != name:
-                  print(f"FAIL: {path} metadata.name mismatch")
-                  sys.exit(1)
-              if doc["metadata"]["namespace"] != role_spc["namespace"]:
+              if role_spc.get("namespace") != namespace:
                   print(
                       f"FAIL: {name} namespace drift: "
-                      f"V1={doc['metadata']['namespace']} role={role_spc['namespace']}"
-                  )
-                  sys.exit(1)
-              if doc["spec"].get("provider") != "oci":
-                  print(f"FAIL: {name} provider must remain oci")
-                  sys.exit(1)
-              if doc["spec"]["parameters"].get("authType") != "instance":
-                  print(f"FAIL: {name} authType must remain instance")
-                  sys.exit(1)
-              if doc["spec"]["parameters"].get("vaultId") != "${{ '${VAULT_ID}' }}":
-                  print(
-                      f"FAIL: active V1 {name} must keep vaultId placeholder "
-                      f"${{ '${VAULT_ID}' }}"
+                      f"role={role_spc.get('namespace')!r} expected={namespace!r}"
                   )
                   sys.exit(1)
 
-              v1_secrets = normalize_secrets_list(doc["spec"]["parameters"].get("secrets"))
               role_secrets = normalize_secrets_list(role_spc.get("secrets"))
-              if v1_secrets != role_secrets:
-                  print(f"FAIL: {name} secrets mapping drift between V1 and role defaults")
-                  print(f"  V1={v1_secrets}")
+              if role_secrets != expected_spc_secrets[name]:
+                  print(f"FAIL: {name} secrets mapping drift vs pinned V2 contract")
                   print(f"  role={role_secrets}")
+                  print(f"  expected={expected_spc_secrets[name]}")
                   sys.exit(1)
 
-              v1_objects = normalize_secret_objects(doc["spec"].get("secretObjects") or [])
               role_objects = normalize_secret_objects(role_spc.get("secret_objects") or [])
-              if v1_objects != role_objects:
-                  print(f"FAIL: {name} secretObjects drift between V1 and role defaults")
-                  print(f"  V1={v1_objects}")
+              if role_objects != expected_spc_objects[name]:
+                  print(f"FAIL: {name} secretObjects drift vs pinned V2 contract")
                   print(f"  role={role_objects}")
+                  print(f"  expected={expected_spc_objects[name]}")
                   sys.exit(1)
 
-              print(f"PASS: {name} matches V1 functional SPC contract (vaultId source excluded).")
+              print(f"PASS: {name} matches Ansible-owned SPC contract.")
 
           if defaults.get("private_runtime_config_secret_name") != "tradingchassis-runtime-config":
               print("FAIL: runtime Secret name must be tradingchassis-runtime-config")
@@ -1469,80 +1510,8 @@ jobs:
           print("PASS: Manifest includes linux/amd64 and linux/arm64.")
           PY
 
-      - name: Validate historical V1 application overlays
-        run: |
-          set -euo pipefail
-          # Enable Helm for monitoring (kube-prometheus-stack via Kustomize).
-          export KUSTOMIZE_ENABLE_HELM=true
-
-          python3 <<'PY'
-          from pathlib import Path
-          import subprocess
-          import sys
-          import yaml
-
-          # kube-prometheus-stack CRDs emit bare "=" enum values. PyYAML 1.1 maps
-          # those to tag:yaml.org,2002:value without a SafeLoader constructor.
-          yaml.SafeLoader.add_constructor(
-              "tag:yaml.org,2002:value",
-              lambda loader, node: loader.construct_scalar(node),
-          )
-
-          expected = {
-              "apps/postgres/overlays/v1": "postgres-secret-bundle",
-              "apps/mlflow/overlays/v1": "mlflow-secret-bundle",
-              "apps/monitoring/overlays/v1": "monitoring-secret-bundle",
-          }
-
-          def load_docs(text: str):
-              return [
-                  doc for doc in yaml.safe_load_all(text)
-                  if isinstance(doc, dict)
-              ]
-
-          for path, spc_name in expected.items():
-              proc = subprocess.run(
-                  ["kustomize", "build", "--enable-helm", path],
-                  check=True,
-                  capture_output=True,
-                  text=True,
-              )
-              docs = load_docs(proc.stdout)
-              spcs = [
-                  d for d in docs
-                  if d.get("kind") == "SecretProviderClass"
-                  and d.get("metadata", {}).get("name") == spc_name
-              ]
-              if len(spcs) != 1:
-                  print(f"FAIL: {path} expected one SecretProviderClass named {spc_name}, found {len(spcs)}")
-                  sys.exit(1)
-              vault_id = (
-                  spcs[0].get("spec", {})
-                  .get("parameters", {})
-                  .get("vaultId")
-              )
-              # Escape so Actions emits the literal placeholder string for Python.
-              expected_vault_id = "${{ '${VAULT_ID}' }}"
-              if vault_id != expected_vault_id:
-                  print(f"FAIL: {path} vaultId={vault_id!r}, expected {expected_vault_id!r} placeholder for historical V1")
-                  sys.exit(1)
-              sync_options = (
-                  spcs[0]
-                  .get("metadata", {})
-                  .get("annotations", {})
-                  .get("argocd.argoproj.io/sync-options")
-              )
-              if sync_options != "Prune=false":
-                  print(
-                      f"FAIL: {path} SPC {spc_name} must carry "
-                      f"argocd.argoproj.io/sync-options=Prune=false "
-                      f"(got {sync_options!r})"
-                  )
-                  sys.exit(1)
-              print(f"PASS: historical {path} retains V1 SPC fallback contract {spc_name}.")
-
-          print("PASS: Historical V1 overlays remain renderable fallback artifacts.")
-          PY
+      - name: Reject retired V1 executable paths
+        run: ./tests/unit/test_retired_v1_paths_contract.sh
 
       - name: Validate active V2 application overlays
         run: |

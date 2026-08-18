@@ -9,7 +9,7 @@ Contributions should preserve clarity, explicitness, and reproducibility.
 
 - GitOps-first for long-lived Kubernetes resources reconciled by Argo CD
 - No secrets in Git (ever)
-- Prefer declarative manifests for application state; Version 1 still includes imperative host bootstrap scripts under `scripts/`
+- Prefer declarative manifests for application state; do not reintroduce Version 1 imperative host bootstrap scripts
 - Keep changes minimal and documented
 - Single source of truth for each owned resource
 - Avoid ad-hoc live cluster mutations outside an explicit architecture decision
