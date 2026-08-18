@@ -792,6 +792,8 @@ PB_STUBS="${TMP_ROOT}/playbook-stubs"
 mkdir -p "$PB_STUBS"
 write_playbook_stub "${PB_STUBS}/ansible-ok" 0
 write_playbook_stub "${PB_STUBS}/ansible-fail" 7
+# Test harness assignment; consumed by clean_room_run_playbook from the sourced helper.
+# shellcheck disable=SC2034
 ANSIBLE_CONFIG_FILE="/dev/null"
 PB_OK_LOG="${TMP_ROOT}/playbook-ok.log"
 PB_FAIL_LOG="${TMP_ROOT}/playbook-fail.log"
@@ -812,6 +814,8 @@ if grep -Fq "LIVE-STDOUT" "$PB_OK_LOG" && grep -Fq "LIVE-STDERR" "$PB_OK_LOG"; t
 else
   fail "successful run_playbook retains a complete log"
 fi
+# Test harness assignment; consumed by clean_room_run_playbook from the sourced helper.
+# shellcheck disable=SC2034
 ANSIBLE_PLAYBOOK="${PB_STUBS}/ansible-fail"
 set +e
 pb_fail_out="$(clean_room_run_playbook "$PB_FAIL_LOG" site.yml 2>&1)"
