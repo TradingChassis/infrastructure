@@ -89,9 +89,11 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# True when an active (non-comment, non-blank) line contains < or >.
+# Full-line comments such as sed 's/<.*$//' are documentation, not placeholders.
 clean_room_has_angle_placeholders() {
   local path="$1"
-  grep -Eq '<|>' "$path"
+  grep -Eq '^[[:space:]]*[^#[:space:]].*[<>]' "$path"
 }
 
 clean_room_require_exact_input() {

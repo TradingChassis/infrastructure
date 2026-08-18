@@ -85,6 +85,8 @@ def main() -> None:
             content = content.replace(old, new)
         if ssh_public_key_uses_function(content):
             raise SystemExit("sanitized temp tfvars unexpectedly contains functions")
+        if "s/<.*$//" not in content:
+            raise SystemExit("sanitized tfvars must retain the documented curl/sed comment")
         sanitized.write_text(content, encoding="utf-8")
         print("PASS: sanitized temp var-file keeps literal ssh_public_key")
 
