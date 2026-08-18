@@ -33,14 +33,28 @@ if ignored.returncode == 0:
     )
 print("PASS: terraform/.terraform.lock.hcl exists and is not gitignored")
 
+# Query a synthetic descendant so Git applies the directory rule even when
+# terraform/.terraform does not exist (fresh CI checkout before terraform init).
+# Do not create the sentinel path.
 dot_tf = subprocess.run(
-    ["git", "check-ignore", "-v", "terraform/.terraform"],
+    [
+        "git",
+        "check-ignore",
+        "--no-index",
+        "-v",
+        "terraform/.terraform/contract-sentinel",
+    ],
     check=False,
     capture_output=True,
     text=True,
 )
 if dot_tf.returncode != 0:
-    raise SystemExit("terraform/.terraform must remain gitignored")
+    raise SystemExit(
+        "terraform/.terraform/ must remain gitignored; "
+        "git check-ignore --no-index did not match "
+        "terraform/.terraform/contract-sentinel"
+        + (("\n" + dot_tf.stderr.strip()) if dot_tf.stderr.strip() else "")
+    )
 print("PASS: terraform/.terraform remains gitignored")
 
 gitignore = GITIGNORE.read_text(encoding="utf-8")
