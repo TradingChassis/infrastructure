@@ -220,13 +220,14 @@ clean_room_eval_argo_json() {
 import json
 import sys
 
-# PASS: every Application is Synced + Healthy.
-# WAIT: incomplete first-reconcile states, including the live-proven
-# OutOfSync/Missing pair. Unknown means status is not yet assessed, not
-# that the Application is Healthy or terminally Degraded; the bounded
-# waiter still times out if it never converges.
-# FAIL-FAST (3): Health Degraded — resources were assessed as unhealthy.
-# FAIL (2): empty set or JSON that cannot be evaluated.
+# PASS (0): every Application is Synced + Healthy.
+# WAIT (1): structurally evaluable set that is not yet entirely
+# Synced + Healthy. Valid non-final statuses include OutOfSync,
+# Missing, Progressing, Degraded, Unknown, Suspended, and unset.
+# Live Greenfield reconciliation has shown Missing and Degraded to be
+# transient. The bounded waiter is the safety boundary; no non-final
+# state can PASS.
+# FAIL (2): malformed JSON, empty set, or a shape that cannot be evaluated.
 
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
@@ -236,12 +237,17 @@ except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     sys.exit(2)
 
 try:
+    if not isinstance(data, dict):
+        print("FAIL: Argo Application JSON is not an object")
+        sys.exit(2)
     items = data.get("items")
-    if not isinstance(items, list) or not items:
+    if not isinstance(items, list):
+        print("FAIL: Argo Application items is not a list")
+        sys.exit(2)
+    if not items:
         print("FAIL: no Argo Applications found")
         sys.exit(2)
 
-    immediate = []
     pending = []
     for item in items:
         if not isinstance(item, dict):
@@ -253,15 +259,9 @@ try:
             status = {}
         sync = ((status.get("sync") or {}).get("status")) or ""
         health = ((status.get("health") or {}).get("status")) or ""
-        if health == "Degraded":
-            immediate.append(f"{name} sync={sync or 'unset'} health={health}")
-            continue
         if sync != "Synced" or health != "Healthy":
             pending.append(f"{name} sync={sync or 'unset'} health={health or 'unset'}")
 
-    if immediate:
-        print("FAIL: " + "; ".join(immediate))
-        sys.exit(3)
     if pending:
         print("WAIT: " + "; ".join(pending))
         sys.exit(1)

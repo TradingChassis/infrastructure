@@ -190,8 +190,10 @@ def main() -> None:
         raise SystemExit("Missing Argo health must not fail immediately")
     if re.search(r'sync in \{[^}]*Unknown', lib):
         raise SystemExit("Unknown Argo sync must not fail immediately")
-    if 'health == "Degraded"' not in lib:
-        raise SystemExit("Degraded Argo health must remain an immediate failure")
+    if 'health == "Degraded"' in lib:
+        raise SystemExit("Degraded Argo health must wait, not fail immediately")
+    if "sys.exit(3)" in lib:
+        raise SystemExit("Argo evaluator must not keep a fail-fast exit 3")
     if "JSONDecodeError" not in lib:
         raise SystemExit("Argo evaluator must fail closed on malformed JSON")
     for name, text in (("deploy", deploy), ("verify", verify)):
@@ -199,11 +201,15 @@ def main() -> None:
             raise SystemExit(f"{name} must evaluate Argo Applications via the shared helper")
         if "not yet Synced+Healthy" not in text:
             raise SystemExit(f"{name} must retry when the Argo evaluator returns WAIT")
-        if "empty or unhealthy" not in text:
-            raise SystemExit(f"{name} must fail immediately on empty/unhealthy Argo sets")
+        if "invalid or empty" not in text:
+            raise SystemExit(f"{name} must fail immediately on invalid/empty Argo evaluation")
+        if "empty or unhealthy" in text:
+            raise SystemExit(f"{name} must not treat valid unhealthy Applications as immediate failure")
+        if "2|3" in text:
+            raise SystemExit(f"{name} must not treat evaluator exit 3 as a live fail-fast class")
         if "before timeout" not in text:
             raise SystemExit(f"{name} must keep the bounded Argo wait timeout")
-    print("PASS: Argo evaluator distinguishes PASS/WAIT/FAIL-FAST")
+    print("PASS: Argo evaluator distinguishes PASS/WAIT/INVALID")
 
     synthetic_forbidden = (
         "BEGIN PRIVATE KEY",
@@ -567,7 +573,40 @@ root = Path(sys.argv[1])
     ),
     encoding="utf-8",
 )
-(root / "argo-mixed-fail.json").write_text(
+(root / "argo-outofsync-degraded.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "monitoring"},
+                    "status": {
+                        "sync": {"status": "OutOfSync"},
+                        "health": {"status": "Degraded"},
+                    },
+                }
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-mixed-degraded.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "root"},
+                    "status": {"sync": {"status": "Synced"}, "health": {"status": "Healthy"}},
+                },
+                {
+                    "metadata": {"name": "postgres"},
+                    "status": {"sync": {"status": "Synced"}, "health": {"status": "Degraded"}},
+                },
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-missing-degraded.json").write_text(
     json.dumps(
         {
             "items": [
@@ -587,6 +626,8 @@ root = Path(sys.argv[1])
     ),
     encoding="utf-8",
 )
+(root / "argo-items-not-list.json").write_text(json.dumps({"items": {"name": "root"}}), encoding="utf-8")
+(root / "argo-non-object.json").write_text(json.dumps({"items": ["not-an-object"]}), encoding="utf-8")
 (root / "argo-malformed.json").write_text("{not-json\n", encoding="utf-8")
 (root / "missing-recap.log").write_text("ok: all tasks completed\n", encoding="utf-8")
 (root / "malformed-recap.log").write_text(
@@ -704,29 +745,18 @@ fi
 set +e
 clean_room_eval_argo_json "${HELPER_DIR}/argo-empty.json" >/dev/null
 empty_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-items-not-list.json" >/dev/null
+items_not_list_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-non-object.json" >/dev/null
+non_object_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-malformed.json" >/dev/null
+malformed_argo_rc=$?
 clean_room_eval_argo_json "${HELPER_DIR}/argo-degraded.json" >/dev/null
 degraded_rc=$?
-set -e
-if [[ "$empty_rc" -eq 2 ]]; then
-  pass "empty Application set fails"
-else
-  fail "empty Application set fails (rc=${empty_rc})"
-fi
-if [[ "$degraded_rc" -eq 3 ]]; then
-  pass "Degraded Application fails immediately"
-else
-  fail "Degraded Application fails immediately (rc=${degraded_rc})"
-fi
-set +e
+clean_room_eval_argo_json "${HELPER_DIR}/argo-outofsync-degraded.json" >/dev/null
+outofsync_degraded_rc=$?
 clean_room_eval_argo_json "${HELPER_DIR}/argo-pending.json" >/dev/null
 pending_rc=$?
-set -e
-if [[ "$pending_rc" -eq 1 ]]; then
-  pass "non-converged Applications wait rather than pass"
-else
-  fail "non-converged Applications wait rather than pass (rc=${pending_rc})"
-fi
-set +e
 clean_room_eval_argo_json "${HELPER_DIR}/argo-missing.json" >/dev/null
 missing_rc=$?
 clean_room_eval_argo_json "${HELPER_DIR}/argo-synced-progressing.json" >/dev/null
@@ -735,11 +765,46 @@ clean_room_eval_argo_json "${HELPER_DIR}/argo-unknown.json" >/dev/null
 unknown_rc=$?
 clean_room_eval_argo_json "${HELPER_DIR}/argo-mixed-wait.json" >/dev/null
 mixed_wait_rc=$?
-clean_room_eval_argo_json "${HELPER_DIR}/argo-mixed-fail.json" >/dev/null
-mixed_fail_rc=$?
-clean_room_eval_argo_json "${HELPER_DIR}/argo-malformed.json" >/dev/null
-malformed_argo_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-mixed-degraded.json" >/dev/null
+mixed_degraded_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-missing-degraded.json" >/dev/null
+missing_degraded_rc=$?
 set -e
+if [[ "$empty_rc" -eq 2 ]]; then
+  pass "empty Application set fails"
+else
+  fail "empty Application set fails (rc=${empty_rc})"
+fi
+if [[ "$items_not_list_rc" -eq 2 ]]; then
+  pass "items not a list fails closed"
+else
+  fail "items not a list fails closed (rc=${items_not_list_rc})"
+fi
+if [[ "$non_object_rc" -eq 2 ]]; then
+  pass "non-object Application item fails closed"
+else
+  fail "non-object Application item fails closed (rc=${non_object_rc})"
+fi
+if [[ "$malformed_argo_rc" -eq 2 ]]; then
+  pass "malformed Argo JSON fails closed"
+else
+  fail "malformed Argo JSON fails closed (rc=${malformed_argo_rc})"
+fi
+if [[ "$degraded_rc" -eq 1 ]]; then
+  pass "Synced/Degraded Applications wait"
+else
+  fail "Synced/Degraded Applications wait (rc=${degraded_rc})"
+fi
+if [[ "$outofsync_degraded_rc" -eq 1 ]]; then
+  pass "OutOfSync/Degraded Applications wait"
+else
+  fail "OutOfSync/Degraded Applications wait (rc=${outofsync_degraded_rc})"
+fi
+if [[ "$pending_rc" -eq 1 ]]; then
+  pass "non-converged Applications wait rather than pass"
+else
+  fail "non-converged Applications wait rather than pass (rc=${pending_rc})"
+fi
 if [[ "$missing_rc" -eq 1 ]]; then
   pass "OutOfSync/Missing Applications wait"
 else
@@ -760,15 +825,39 @@ if [[ "$mixed_wait_rc" -eq 1 ]]; then
 else
   fail "Healthy plus transient Applications wait (rc=${mixed_wait_rc})"
 fi
-if [[ "$mixed_fail_rc" -eq 3 ]]; then
-  pass "transient plus Degraded Applications fail immediately"
+if [[ "$mixed_degraded_rc" -eq 1 ]]; then
+  pass "Healthy plus Degraded Applications wait"
 else
-  fail "transient plus Degraded Applications fail immediately (rc=${mixed_fail_rc})"
+  fail "Healthy plus Degraded Applications wait (rc=${mixed_degraded_rc})"
 fi
-if [[ "$malformed_argo_rc" -eq 2 ]]; then
-  pass "malformed Argo JSON fails closed"
+if [[ "$missing_degraded_rc" -eq 1 ]]; then
+  pass "Missing plus Degraded Applications wait"
 else
-  fail "malformed Argo JSON fails closed (rc=${malformed_argo_rc})"
+  fail "Missing plus Degraded Applications wait (rc=${missing_degraded_rc})"
+fi
+non_final_passed=0
+for wait_fixture in \
+  argo-degraded.json \
+  argo-outofsync-degraded.json \
+  argo-pending.json \
+  argo-missing.json \
+  argo-synced-progressing.json \
+  argo-unknown.json \
+  argo-mixed-wait.json \
+  argo-mixed-degraded.json \
+  argo-missing-degraded.json
+do
+  set +e
+  clean_room_eval_argo_json "${HELPER_DIR}/${wait_fixture}" >/dev/null
+  wait_pass_rc=$?
+  set -e
+  if [[ "$wait_pass_rc" -eq 0 ]]; then
+    fail "non-final Application fixture must not PASS (${wait_fixture})"
+    non_final_passed=1
+  fi
+done
+if [[ "$non_final_passed" -eq 0 ]]; then
+  pass "no valid non-final Application combination may PASS"
 fi
 
 write_playbook_stub() {
@@ -1657,35 +1746,41 @@ set +e
 out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
 rc=$?
 set -e
-if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Eq 'empty or unhealthy|no Argo Applications'; then
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Eq 'invalid or empty|no Argo Applications'; then
   pass "empty Application set fails deploy wait"
 else
   fail "empty Application set fails deploy wait (rc=${rc})"
   printf '%s\n' "$out"
 fi
+if printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
+  fail "empty Application set must not use the stale unhealthy fail-fast message"
+else
+  pass "empty Application set must not use the stale unhealthy fail-fast message"
+fi
 
 read -r fx home stubs <<<"$(prepare_runtime argodeg)"
-cp "${HELPER_DIR}/argo-degraded.json" "${home}/argo.json"
+cp "${HELPER_DIR}/argo-outofsync-degraded.json" "${home}/argo.json"
 cp "${HELPER_DIR}/pods-ok.json" "${home}/pods.json"
 set +e
 out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
 rc=$?
 set -e
-if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
-  pass "Degraded Applications fail deploy wait immediately"
+if printf '%s' "$out" | grep -Eq 'empty or unhealthy|invalid or empty'; then
+  fail "Degraded Applications must not fail immediately as invalid/unhealthy"
 else
-  fail "Degraded Applications fail deploy wait immediately (rc=${rc})"
+  pass "Degraded Applications must not fail immediately as invalid/unhealthy"
+fi
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "not yet Synced+Healthy"; then
+  pass "Degraded Applications enter the bounded Argo wait loop"
+else
+  fail "Degraded Applications enter the bounded Argo wait loop (rc=${rc})"
   printf '%s\n' "$out"
 fi
-if printf '%s' "$out" | grep -Fq "not yet Synced+Healthy"; then
-  fail "Degraded Applications must not enter the Argo wait loop"
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "before timeout"; then
+  pass "persistent Degraded Applications fail via timeout"
 else
-  pass "Degraded Applications must not enter the Argo wait loop"
-fi
-if printf '%s' "$out" | grep -Fq "before timeout"; then
-  fail "Degraded Applications must not wait until timeout"
-else
-  pass "Degraded Applications must not wait until timeout"
+  fail "persistent Degraded Applications fail via timeout (rc=${rc})"
+  printf '%s\n' "$out"
 fi
 
 read -r fx home stubs <<<"$(prepare_runtime argomiss)"
@@ -1701,10 +1796,10 @@ else
   fail "OutOfSync/Missing waits then times out (rc=${rc})"
   printf '%s\n' "$out"
 fi
-if printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
-  fail "OutOfSync/Missing must not fail immediately as unhealthy"
+if printf '%s' "$out" | grep -Eq 'empty or unhealthy|invalid or empty'; then
+  fail "OutOfSync/Missing must not fail immediately as invalid/unhealthy"
 else
-  pass "OutOfSync/Missing must not fail immediately as unhealthy"
+  pass "OutOfSync/Missing must not fail immediately as invalid/unhealthy"
 fi
 
 read -r fx home stubs <<<"$(prepare_runtime argomixw)"
@@ -1722,22 +1817,22 @@ else
 fi
 
 read -r fx home stubs <<<"$(prepare_runtime argomixf)"
-cp "${HELPER_DIR}/argo-mixed-fail.json" "${home}/argo.json"
+cp "${HELPER_DIR}/argo-missing-degraded.json" "${home}/argo.json"
 cp "${HELPER_DIR}/pods-ok.json" "${home}/pods.json"
 set +e
 out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
 rc=$?
 set -e
-if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
-  pass "mixed Missing plus Degraded fails immediately"
+if printf '%s' "$out" | grep -Eq 'empty or unhealthy|invalid or empty'; then
+  fail "mixed Missing plus Degraded must not fail immediately as invalid/unhealthy"
 else
-  fail "mixed Missing plus Degraded fails immediately (rc=${rc})"
-  printf '%s\n' "$out"
+  pass "mixed Missing plus Degraded must not fail immediately as invalid/unhealthy"
 fi
-if printf '%s' "$out" | grep -Fq "not yet Synced+Healthy"; then
-  fail "mixed Missing plus Degraded must not wait"
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "not yet Synced+Healthy" && printf '%s' "$out" | grep -Fq "before timeout"; then
+  pass "mixed Missing plus Degraded waits then times out"
 else
-  pass "mixed Missing plus Degraded must not wait"
+  fail "mixed Missing plus Degraded waits then times out (rc=${rc})"
+  printf '%s\n' "$out"
 fi
 
 read -r fx home stubs <<<"$(prepare_runtime argotime)"
