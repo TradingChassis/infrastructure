@@ -176,6 +176,35 @@ def main() -> None:
         raise SystemExit("deploy must use file-based private-runtime extra-vars")
     print("PASS: private-runtime extra-vars are file-based")
 
+    if "clean_room_run_playbook" not in lib:
+        raise SystemExit("shared live playbook helper is missing")
+    if "tee" not in lib or "PIPESTATUS[0]" not in lib:
+        raise SystemExit("run_playbook must tee live output and preserve PIPESTATUS[0]")
+    if re.search(r'>\s*"\$log"\s+2>&1', deploy) or re.search(r'>\s*"\$log"\s+2>&1', verify):
+        raise SystemExit("operator tools must not buffer ansible-playbook output until exit")
+    if "clean_room_run_playbook" not in deploy or "clean_room_run_playbook" not in verify:
+        raise SystemExit("deploy and verify must use the shared live playbook helper")
+    print("PASS: ansible-playbook output is live-teed with preserved exit code")
+
+    if re.search(r'health in \{[^}]*Missing', lib):
+        raise SystemExit("Missing Argo health must not fail immediately")
+    if re.search(r'sync in \{[^}]*Unknown', lib):
+        raise SystemExit("Unknown Argo sync must not fail immediately")
+    if 'health == "Degraded"' not in lib:
+        raise SystemExit("Degraded Argo health must remain an immediate failure")
+    if "JSONDecodeError" not in lib:
+        raise SystemExit("Argo evaluator must fail closed on malformed JSON")
+    for name, text in (("deploy", deploy), ("verify", verify)):
+        if "clean_room_eval_argo_json" not in text:
+            raise SystemExit(f"{name} must evaluate Argo Applications via the shared helper")
+        if "not yet Synced+Healthy" not in text:
+            raise SystemExit(f"{name} must retry when the Argo evaluator returns WAIT")
+        if "empty or unhealthy" not in text:
+            raise SystemExit(f"{name} must fail immediately on empty/unhealthy Argo sets")
+        if "before timeout" not in text:
+            raise SystemExit(f"{name} must keep the bounded Argo wait timeout")
+    print("PASS: Argo evaluator distinguishes PASS/WAIT/FAIL-FAST")
+
     synthetic_forbidden = (
         "BEGIN PRIVATE KEY",
         "BEGIN RSA PRIVATE KEY",
@@ -470,6 +499,95 @@ root = Path(sys.argv[1])
     ),
     encoding="utf-8",
 )
+(root / "argo-missing.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "monitoring"},
+                    "status": {
+                        "sync": {"status": "OutOfSync"},
+                        "health": {"status": "Missing"},
+                    },
+                }
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-synced-progressing.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "root"},
+                    "status": {
+                        "sync": {"status": "Synced"},
+                        "health": {"status": "Progressing"},
+                    },
+                }
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-unknown.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "mlflow"},
+                    "status": {
+                        "sync": {"status": "Synced"},
+                        "health": {"status": "Unknown"},
+                    },
+                }
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-mixed-wait.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "root"},
+                    "status": {"sync": {"status": "Synced"}, "health": {"status": "Healthy"}},
+                },
+                {
+                    "metadata": {"name": "monitoring"},
+                    "status": {
+                        "sync": {"status": "OutOfSync"},
+                        "health": {"status": "Missing"},
+                    },
+                },
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-mixed-fail.json").write_text(
+    json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": "monitoring"},
+                    "status": {
+                        "sync": {"status": "OutOfSync"},
+                        "health": {"status": "Missing"},
+                    },
+                },
+                {
+                    "metadata": {"name": "postgres"},
+                    "status": {"sync": {"status": "Synced"}, "health": {"status": "Degraded"}},
+                },
+            ]
+        }
+    ),
+    encoding="utf-8",
+)
+(root / "argo-malformed.json").write_text("{not-json\n", encoding="utf-8")
 (root / "missing-recap.log").write_text("ok: all tasks completed\n", encoding="utf-8")
 (root / "malformed-recap.log").write_text(
     "PLAY RECAP *********************************************************************\n"
@@ -608,6 +726,128 @@ if [[ "$pending_rc" -eq 1 ]]; then
 else
   fail "non-converged Applications wait rather than pass (rc=${pending_rc})"
 fi
+set +e
+clean_room_eval_argo_json "${HELPER_DIR}/argo-missing.json" >/dev/null
+missing_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-synced-progressing.json" >/dev/null
+synced_progressing_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-unknown.json" >/dev/null
+unknown_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-mixed-wait.json" >/dev/null
+mixed_wait_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-mixed-fail.json" >/dev/null
+mixed_fail_rc=$?
+clean_room_eval_argo_json "${HELPER_DIR}/argo-malformed.json" >/dev/null
+malformed_argo_rc=$?
+set -e
+if [[ "$missing_rc" -eq 1 ]]; then
+  pass "OutOfSync/Missing Applications wait"
+else
+  fail "OutOfSync/Missing Applications wait (rc=${missing_rc})"
+fi
+if [[ "$synced_progressing_rc" -eq 1 ]]; then
+  pass "Synced/Progressing Applications wait"
+else
+  fail "Synced/Progressing Applications wait (rc=${synced_progressing_rc})"
+fi
+if [[ "$unknown_rc" -eq 1 ]]; then
+  pass "Unknown Argo health waits within the bounded timeout"
+else
+  fail "Unknown Argo health waits within the bounded timeout (rc=${unknown_rc})"
+fi
+if [[ "$mixed_wait_rc" -eq 1 ]]; then
+  pass "Healthy plus transient Applications wait"
+else
+  fail "Healthy plus transient Applications wait (rc=${mixed_wait_rc})"
+fi
+if [[ "$mixed_fail_rc" -eq 3 ]]; then
+  pass "transient plus Degraded Applications fail immediately"
+else
+  fail "transient plus Degraded Applications fail immediately (rc=${mixed_fail_rc})"
+fi
+if [[ "$malformed_argo_rc" -eq 2 ]]; then
+  pass "malformed Argo JSON fails closed"
+else
+  fail "malformed Argo JSON fails closed (rc=${malformed_argo_rc})"
+fi
+
+write_playbook_stub() {
+  local dest="$1"
+  local exit_code="$2"
+  cat >"$dest" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "LIVE-STDOUT"
+printf '%s\n' "LIVE-STDERR" >&2
+printf '%s\n' "The scratch volume has no filesystem. Set scratch_storage_allow_format=true only after verifying that this is the intended Terraform-managed scratch volume."
+cat <<'REC'
+PLAY RECAP *********************************************************************
+reference-node              : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+REC
+exit ${exit_code}
+STUB
+  chmod +x "$dest"
+}
+
+PB_STUBS="${TMP_ROOT}/playbook-stubs"
+mkdir -p "$PB_STUBS"
+write_playbook_stub "${PB_STUBS}/ansible-ok" 0
+write_playbook_stub "${PB_STUBS}/ansible-fail" 7
+# Test harness assignment; consumed by clean_room_run_playbook from the sourced helper.
+# shellcheck disable=SC2034
+ANSIBLE_CONFIG_FILE="/dev/null"
+PB_OK_LOG="${TMP_ROOT}/playbook-ok.log"
+PB_FAIL_LOG="${TMP_ROOT}/playbook-fail.log"
+ANSIBLE_PLAYBOOK="${PB_STUBS}/ansible-ok"
+set +e
+pb_ok_out="$(clean_room_run_playbook "$PB_OK_LOG" site.yml 2>&1)"
+pb_ok_rc=$?
+set -e
+if [[ "$pb_ok_rc" -eq 0 ]]; then
+  pass "successful run_playbook returns 0"
+else
+  fail "successful run_playbook returns 0 (rc=${pb_ok_rc})"
+fi
+assert_contains "successful run_playbook is operator-visible" "LIVE-STDOUT" "$pb_ok_out"
+assert_contains "successful run_playbook stderr is operator-visible" "LIVE-STDERR" "$pb_ok_out"
+if grep -Fq "LIVE-STDOUT" "$PB_OK_LOG" && grep -Fq "LIVE-STDERR" "$PB_OK_LOG"; then
+  pass "successful run_playbook retains a complete log"
+else
+  fail "successful run_playbook retains a complete log"
+fi
+# Test harness assignment; consumed by clean_room_run_playbook from the sourced helper.
+# shellcheck disable=SC2034
+ANSIBLE_PLAYBOOK="${PB_STUBS}/ansible-fail"
+set +e
+pb_fail_out="$(clean_room_run_playbook "$PB_FAIL_LOG" site.yml 2>&1)"
+pb_fail_rc=$?
+set -e
+if [[ "$pb_fail_rc" -eq 7 ]]; then
+  pass "failed run_playbook returns the ansible-playbook exit code"
+else
+  fail "failed run_playbook returns the ansible-playbook exit code (rc=${pb_fail_rc})"
+fi
+assert_contains "failed run_playbook is operator-visible" "LIVE-STDOUT" "$pb_fail_out"
+if grep -Fq "LIVE-STDOUT" "$PB_FAIL_LOG"; then
+  pass "failed run_playbook retains a complete log"
+else
+  fail "failed run_playbook retains a complete log"
+fi
+if [[ "$pb_fail_rc" -eq 0 ]]; then
+  fail "pipeline behavior cannot convert an Ansible failure into success"
+else
+  pass "pipeline behavior cannot convert an Ansible failure into success"
+fi
+if clean_room_is_blank_scratch_gate "$PB_FAIL_LOG"; then
+  pass "blank-scratch gate remains detectable from the live-teed log"
+else
+  fail "blank-scratch gate remains detectable from the live-teed log"
+fi
+if clean_room_parse_play_recap "$PB_FAIL_LOG" 1 >/dev/null; then
+  pass "PLAY RECAP parsing still works from the live-teed log"
+else
+  fail "PLAY RECAP parsing still works from the live-teed log"
+fi
+unset ANSIBLE_PLAYBOOK ANSIBLE_CONFIG_FILE
 
 if clean_room_eval_pods_json "${HELPER_DIR}/pods-ok.json" >/dev/null; then
   pass "completed Jobs are treated as healthy"
@@ -1431,11 +1671,73 @@ set +e
 out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
 rc=$?
 set -e
-if [[ "$rc" -ne 0 ]]; then
-  pass "Degraded Applications fail deploy wait"
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
+  pass "Degraded Applications fail deploy wait immediately"
 else
-  fail "Degraded Applications fail deploy wait"
+  fail "Degraded Applications fail deploy wait immediately (rc=${rc})"
   printf '%s\n' "$out"
+fi
+if printf '%s' "$out" | grep -Fq "not yet Synced+Healthy"; then
+  fail "Degraded Applications must not enter the Argo wait loop"
+else
+  pass "Degraded Applications must not enter the Argo wait loop"
+fi
+if printf '%s' "$out" | grep -Fq "before timeout"; then
+  fail "Degraded Applications must not wait until timeout"
+else
+  pass "Degraded Applications must not wait until timeout"
+fi
+
+read -r fx home stubs <<<"$(prepare_runtime argomiss)"
+cp "${HELPER_DIR}/argo-missing.json" "${home}/argo.json"
+cp "${HELPER_DIR}/pods-ok.json" "${home}/pods.json"
+set +e
+out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "not yet Synced+Healthy" && printf '%s' "$out" | grep -Fq "before timeout"; then
+  pass "OutOfSync/Missing waits then times out"
+else
+  fail "OutOfSync/Missing waits then times out (rc=${rc})"
+  printf '%s\n' "$out"
+fi
+if printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
+  fail "OutOfSync/Missing must not fail immediately as unhealthy"
+else
+  pass "OutOfSync/Missing must not fail immediately as unhealthy"
+fi
+
+read -r fx home stubs <<<"$(prepare_runtime argomixw)"
+cp "${HELPER_DIR}/argo-mixed-wait.json" "${home}/argo.json"
+cp "${HELPER_DIR}/pods-ok.json" "${home}/pods.json"
+set +e
+out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "not yet Synced+Healthy"; then
+  pass "mixed Healthy plus Missing waits"
+else
+  fail "mixed Healthy plus Missing waits (rc=${rc})"
+  printf '%s\n' "$out"
+fi
+
+read -r fx home stubs <<<"$(prepare_runtime argomixf)"
+cp "${HELPER_DIR}/argo-mixed-fail.json" "${home}/argo.json"
+cp "${HELPER_DIR}/pods-ok.json" "${home}/pods.json"
+set +e
+out="$(TF_STUB_PLAN_EXIT=0 SITE_MODE=ok run_deploy_env "$fx" "$home" "$stubs" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -Fq "empty or unhealthy"; then
+  pass "mixed Missing plus Degraded fails immediately"
+else
+  fail "mixed Missing plus Degraded fails immediately (rc=${rc})"
+  printf '%s\n' "$out"
+fi
+if printf '%s' "$out" | grep -Fq "not yet Synced+Healthy"; then
+  fail "mixed Missing plus Degraded must not wait"
+else
+  pass "mixed Missing plus Degraded must not wait"
 fi
 
 read -r fx home stubs <<<"$(prepare_runtime argotime)"

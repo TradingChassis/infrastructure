@@ -196,6 +196,22 @@ sys.exit(0)
 PY
 }
 
+# Stream ansible-playbook stdout/stderr live while retaining a complete log.
+# Returns the ansible-playbook exit code (PIPESTATUS[0]), never tee's.
+# Callers must wrap the invocation with set +e if they need to inspect a
+# non-zero status under set -e. pipefail is restored before return.
+clean_room_run_playbook() {
+  local log="$1"
+  local rc=0
+  shift
+  set +e
+  set +o pipefail
+  ANSIBLE_CONFIG="${ANSIBLE_CONFIG_FILE:-}" "${ANSIBLE_PLAYBOOK:?ansible-playbook is not set}" "$@" 2>&1 | tee "$log"
+  rc="${PIPESTATUS[0]}"
+  set -o pipefail
+  return "$rc"
+}
+
 clean_room_eval_argo_json() {
   local json_file="$1"
   local py
@@ -204,33 +220,58 @@ clean_room_eval_argo_json() {
 import json
 import sys
 
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-items = data.get("items")
-if not isinstance(items, list) or not items:
-    print("FAIL: no Argo Applications found")
+# PASS: every Application is Synced + Healthy.
+# WAIT: incomplete first-reconcile states, including the live-proven
+# OutOfSync/Missing pair. Unknown means status is not yet assessed, not
+# that the Application is Healthy or terminally Degraded; the bounded
+# waiter still times out if it never converges.
+# FAIL-FAST (3): Health Degraded — resources were assessed as unhealthy.
+# FAIL (2): empty set or JSON that cannot be evaluated.
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    print(f"FAIL: Argo Application JSON is not evaluable ({type(exc).__name__})")
     sys.exit(2)
 
-immediate = []
-pending = []
-for item in items:
-    name = ((item.get("metadata") or {}).get("name")) or "unnamed"
-    status = item.get("status") or {}
-    sync = ((status.get("sync") or {}).get("status")) or ""
-    health = ((status.get("health") or {}).get("status")) or ""
-    if health in {"Degraded", "Missing", "Unknown"} or sync in {"Unknown"}:
-        immediate.append(f"{name} sync={sync or 'unset'} health={health or 'unset'}")
-        continue
-    if sync != "Synced" or health != "Healthy":
-        pending.append(f"{name} sync={sync or 'unset'} health={health or 'unset'}")
+try:
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        print("FAIL: no Argo Applications found")
+        sys.exit(2)
 
-if immediate:
-    print("FAIL: " + "; ".join(immediate))
-    sys.exit(3)
-if pending:
-    print("WAIT: " + "; ".join(pending))
-    sys.exit(1)
-print("PASS: all Argo Applications are Synced and Healthy")
-sys.exit(0)
+    immediate = []
+    pending = []
+    for item in items:
+        if not isinstance(item, dict):
+            print("FAIL: Argo Application item is not an object")
+            sys.exit(2)
+        name = ((item.get("metadata") or {}).get("name")) or "unnamed"
+        status = item.get("status") or {}
+        if not isinstance(status, dict):
+            status = {}
+        sync = ((status.get("sync") or {}).get("status")) or ""
+        health = ((status.get("health") or {}).get("status")) or ""
+        if health == "Degraded":
+            immediate.append(f"{name} sync={sync or 'unset'} health={health}")
+            continue
+        if sync != "Synced" or health != "Healthy":
+            pending.append(f"{name} sync={sync or 'unset'} health={health or 'unset'}")
+
+    if immediate:
+        print("FAIL: " + "; ".join(immediate))
+        sys.exit(3)
+    if pending:
+        print("WAIT: " + "; ".join(pending))
+        sys.exit(1)
+    print("PASS: all Argo Applications are Synced and Healthy")
+    sys.exit(0)
+except SystemExit:
+    raise
+except Exception as exc:
+    print(f"FAIL: Argo Application evaluation failed ({type(exc).__name__})")
+    sys.exit(2)
 PY
 }
 

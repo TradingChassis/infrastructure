@@ -79,6 +79,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 TF_DIR="${ROOT}/terraform"
+# Consumed by clean_room_run_playbook from the sourced shared helper.
+# shellcheck disable=SC2034
 ANSIBLE_CONFIG_FILE="${ROOT}/ansible/ansible.cfg"
 INVENTORY="${ROOT}/ansible/inventory/local.yml"
 PRIVATE_VARS="${ROOT}/ansible/extra-vars/private-runtime.yml"
@@ -131,15 +133,7 @@ read_boot_id() {
 }
 
 run_playbook() {
-  local log="$1"
-  local rc=0
-  shift
-  set +e
-  ANSIBLE_CONFIG="$ANSIBLE_CONFIG_FILE" "$ANSIBLE_PLAYBOOK" "$@" >"$log" 2>&1
-  rc=$?
-  cat "$log"
-  set +e
-  return "$rc"
+  clean_room_run_playbook "$@"
 }
 
 require_zero_change_playbook() {
