@@ -90,12 +90,12 @@ Attachment type: `paravirtualized`.
 This is the simplest supported attachment for the Ubuntu ARM A1 Flex reference host and avoids Terraform-managed iSCSI login configuration.
 
 Performance: `vpus_per_gb = 0` (Lower Cost) for a predictable, cost-conscious reference profile.
-In-transit encryption for the paravirtualized attachment is enabled. The compute instance must explicitly set `launch_options.is_pv_encryption_in_transit_enabled = true` so OCI accepts that encrypted attachment. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
+In-transit encryption for the paravirtualized attachment is enabled. The compute instance must set top-level `is_pv_encryption_in_transit_enabled = true`. A nested `launch_options` block that only enables PV encryption in transit is rejected by OCI (`400-InvalidParameter`) unless NetworkType is also set; this pin does not use `launch_options`. Platform encryption at rest remains the OCI default without introducing Vault/KMS resources in this scope.
 
 ### Known V1 storage gap (closed in V2 Git manifests)
 
 The V1 host scratch mount and Kubernetes hostpath PVCs were not explicitly bound to the same storage path.
-V2 binds scratch PVCs to `/mnt/scratch/dev` and `/mnt/scratch/prod` via Argo-managed static hostPath PersistentVolumes (`apps/scratch/platform`). Live clean-room validation of that binding remains open.
+V2 binds scratch PVCs to `/mnt/scratch/dev` and `/mnt/scratch/prod` via Argo-managed static hostPath PersistentVolumes (`apps/scratch/platform`). Host mount and PVC binding are operator-verified by `tools/deploy-clean-room` / `tools/verify-clean-room`.
 This Terraform scope only provisions the cloud-side volume and attachment.
 
 ## Instance principal access
@@ -159,7 +159,7 @@ least-privilege Vault secret-bundle IAM policy
 
 ## Terraform cloud-layer status
 
-After this IAM scope, the planned cloud-side Terraform migration layer is substantially complete:
+The cloud-side Terraform root owns the disposable OCI foundation:
 
 ```text
 network
@@ -168,28 +168,18 @@ scratch block storage
 instance principal IAM
 ```
 
-This is **not** a claim that Terraform is production-ready or live-validated.
-
-Still open before collaborative live apply:
-
-```text
-.terraform.lock.hcl (if still absent)
-production Terraform init/plan/apply against the production state key
-live provisioning validation
-```
+Provider selection is reproducible through the tracked `terraform/.terraform.lock.hcl`
+(`oracle/oci` `~> 8.26.0`). `.terraform/` remains local and gitignored.
 
 Remote state uses the native OCI Object Storage backend with an externally
-supplied bucket. Native backend **init** with APIKey / profile `tradingchassis`
-is live proven against an empty backend-test key. Production state write and
-locking are **not** yet live proven.
+supplied bucket. The bucket, Vault lifecycle, and Vault secret values are
+external foundation and are **not** owned by this root.
 
-Canonical Cloud Shell operator workflow (APIKey for backend + provider,
-user-local Terraform 1.15.8, Terraform→Ansible handoff helper, private-runtime
-extra-vars file):
-[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
-
-The next planned operator-facing scope is the first real clean-room deployment,
-not an unrelated Terraform resource expansion.
+Canonical operator workflow (not ad-hoc manual Terraform as the primary path):
+[`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md)
+(`tools/bootstrap-cloud-shell` → `tools/deploy-clean-room` → `tools/verify-clean-room`).
+Cloud Shell uses APIKey / profile `tradingchassis`, user-local Terraform 1.15.x
+(canonical 1.15.8), and operator-local `backend.hcl` / `terraform.tfvars`.
 
 ## Reference compute profile
 
@@ -229,10 +219,11 @@ Private SSH keys must never be stored in Terraform configuration, tfvars committ
 
 ## Operator prerequisites (cloud layer)
 
-Before `plan` / `apply`, the operator machine needs:
+Before a live deploy, the operator machine needs:
 
 ```text
-Terraform ~> 1.15.0 (Cloud Shell: install 1.15.8 under $HOME/bin; do not trust preinstall)
+Terraform ~> 1.15.0 (Cloud Shell: tools/bootstrap-cloud-shell installs 1.15.8 under $HOME/bin; do not trust preinstall)
+tracked terraform/.terraform.lock.hcl (OCI provider selection; do not hand-write hashes)
 an externally pre-existing dedicated OCI Object Storage state bucket
 bucket Versioning Enabled and NoPublicAccess (operational prerequisite)
 operator-local backend.hcl (from backend.hcl.example) with auth = "APIKey"
@@ -245,7 +236,7 @@ SSH public key content for instance metadata (ssh_public_key literal or TF_VAR_s
 Canonical Cloud Shell path: paste the public-key line into ignored `terraform.tfvars`,
 or export `TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/tradingchassis.pub")"`.
 Do not use Terraform functions inside `.tfvars` files.
-Canonical deployment sequence including Ansible handoff:
+Canonical deployment sequence:
 [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 ## Not yet managed
@@ -260,7 +251,7 @@ host firewall
 MicroK8s
 Argo CD
 Kubernetes PV/PVC/StorageClass
-Ansible inventory generation (manual handoff; see clean-room runbook)
+Ansible inventory generation (produced by tools/render-ansible-inventory during deploy)
 ```
 
 ## Validation
@@ -292,12 +283,12 @@ Data sources such as images and availability domains are not resolved by `terraf
 CI / static validation:
 fmt / backend contract checks / init -backend=false / validate only
 
-Operator deployment:
-prepare ignored backend.hcl
-terraform init -backend-config=backend.hcl
-plan
-review
-apply
+Operator deployment (canonical tools, not ad-hoc Terraform):
+prepare ignored backend.hcl and terraform.tfvars
+tools/bootstrap-cloud-shell
+tools/deploy-clean-room
+  (init -backend-config=backend.hcl, plan, APPLY gate, Ansible, Argo)
+tools/verify-clean-room
 ```
 
 Live `plan` / `apply` is intentionally outside automated CI.
@@ -347,18 +338,17 @@ Supply each explicitly even when the values happen to match.
 
 ### First-time operator init
 
-```bash
-cd terraform
-cp backend.hcl.example backend.hcl
-# edit backend.hcl: existing bucket, namespace, region, unique key
+The canonical operator path is `tools/deploy-clean-room`, which initializes the
+native backend. Ad-hoc Terraform is not the primary Greenfield path.
 
+Equivalent backend initialization (what the tool runs):
+
+```bash
 terraform init -backend-config=backend.hcl
-terraform validate
-terraform plan
-# terraform apply only after explicit plan review
 ```
 
-`backend.hcl` is gitignored. Commit only `backend.hcl.example`.
+Copy `backend.hcl.example` to ignored `backend.hcl` (bootstrap does this when
+the file is absent). Commit only `backend.hcl.example`.
 
 ### Object key and fork isolation
 
@@ -427,14 +417,13 @@ both `backend.hcl` and provider variables. Do not use Cloud Shell
 `instance_obo_user` for Terraform. SecurityToken remains a portable alternative
 outside that Cloud Shell path.
 
-### First V2 clean-room state
+### Greenfield V2 state
 
-No V2 Terraform state has been live-applied from this repository.
-No state migration is required for the first V2 clean-room deployment.
-Do not run `terraform init -migrate-state` for that first run.
+Greenfield V2 uses this native backend with an operator-chosen unique key.
+Do not run `terraform init -migrate-state` on the Greenfield path.
 
 Future relocation of bucket/namespace/region/key requires deliberate Terraform
-backend reconfiguration/migration and is outside the first-deploy path.
+backend reconfiguration/migration and is outside the Greenfield deploy path.
 
 ### Evidence status
 
@@ -442,11 +431,14 @@ backend reconfiguration/migration and is outside the first-deploy path.
 Native OCI backend declaration: implemented / statically validated
 Partial backend configuration:  implemented / statically validated
 CI backend isolation:           implemented / statically validated
-APIKey backend init (empty test key): live proven
-Real production state write:    not live validated
-State locking:                  backend capability configured / not live validated
+Tracked provider lockfile:      implemented / statically validated
+APIKey backend init:            live proven
+State locking:                  native OCI backend capability
 Bucket versioning:              external prerequisite / operator-verified when Enabled
 ```
+
+CI never writes remote state. Live init/plan/apply/destroy stay with the operator
+tools and the destroy-acceptance procedure in the clean-room runbook.
 
 ## Outputs used by Ansible
 
@@ -467,8 +459,25 @@ Full clean-room sequence: [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](../docs/V2_CLEAN_
 
 ## Provider lock file
 
-`.terraform.lock.hcl` should be committed once it can be generated in a controlled environment. Fabricated lock hashes must not be committed.
-Until a verified lock file is committed, provider selection remains constrained by `versions.tf` only and carries a reproducibility residual risk.
+`terraform/.terraform.lock.hcl` is tracked. It records the selected `oracle/oci`
+provider under `~> 8.26.0` with hashes for the Terraform execution platforms
+this repository actually uses:
+
+```text
+linux_amd64  GitHub Actions (ubuntu-24.04) and Linux amd64 control nodes
+linux_arm64  OCI Cloud Shell (aarch64)
+```
+
+`.terraform/` remains local and gitignored. Do not hand-write provider hashes.
+Regenerate with backend-disabled locking, for example:
+
+```bash
+terraform -chdir=terraform init -backend=false
+terraform -chdir=terraform providers lock -platform=linux_amd64 -platform=linux_arm64
+```
+
+`terraform init -backend=false` is **CI / static validation only**.
+Operator deployment always initializes the native OCI backend.
 
 ## Multi-cloud
 

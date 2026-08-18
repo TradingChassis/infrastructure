@@ -306,6 +306,7 @@ jobs:
               "tools/bootstrap-cloud-shell",
               "tools/deploy-clean-room",
               "tools/verify-clean-room",
+              "terraform/.terraform.lock.hcl",
           ]
           for path in required:
               if not Path(path).is_file():
@@ -326,6 +327,9 @@ jobs:
               "ansible/playbooks/private-runtime-config.yml",
               "NoPublicAccess",
               "TF_VERSION=1.15.8",
+              "tools/bootstrap-cloud-shell",
+              "tools/deploy-clean-room",
+              "tools/verify-clean-room",
           ):
               if needle not in runbook:
                   raise SystemExit(f"runbook missing required contract text: {needle}")
@@ -498,6 +502,11 @@ jobs:
         # Evaluates production vcn_cidr/subnet_cidr validation with concrete values.
         # Isolated fixture only: no OCI provider, no remote backend, no credentials.
         run: ./tests/unit/test_terraform_cidr_validation.sh
+
+      - name: Run Terraform provider lockfile contract unit tests
+        # Static only: tracked lockfile, oracle/oci 8.26.x selection, multi-platform hashes.
+        # Does not contact OCI or run terraform plan/apply.
+        run: ./tests/unit/test_terraform_lockfile_contract.sh
 
       - name: Run Terraform PV encryption contract unit tests
         # Static consistency between instance launch_options and scratch attachment.

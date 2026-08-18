@@ -2,265 +2,120 @@
 
 ## Purpose
 
-This document is the **canonical operator runbook** for deploying a fresh TradingChassis
+This document is the **canonical operator runbook** for a Greenfield TradingChassis
 V2 environment from this repository.
 
-It describes the intended path:
+Do **not** create a second competing runbook (`FINAL_CLEAN_ROOM.md`,
+`ACCEPTANCE.md`, `DEPLOYMENT_FINAL.md`, or equivalent). Consolidate here.
+
+Canonical tools:
 
 ```text
-Terraform
-→ Terraform outputs
-→ SSH / Ansible inventory
-→ site.yml
-→ Argo CD bootstrap
-→ private-runtime-config.yml
-   (bounded platform readiness waits, then mutation)
-→ acceptance checks
+tools/bootstrap-cloud-shell
+→ tools/deploy-clean-room
+→ tools/verify-clean-room
 ```
 
-This document describes the intended V2 clean-room deployment path.
+This document describes the current V2 clean-room operator contract.
 
-It does **not** document the legacy V1 bootstrap path
-or the historical in-place SPC ownership handoff.
+It does **not** document the retired V1 bootstrap path as an active procedure
+and does **not** document the historical in-place SPC ownership handoff as the
+Greenfield path.
 
 For the historical in-place SecretProviderClass ownership procedure (fallback only),
 see [`RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](RUNTIME_SPC_OWNERSHIP_CUTOVER.md).
 
 ---
 
-## Status: implementation in progress
+## Current operator contract vs historical context
+
+### CURRENT OPERATOR CONTRACT
 
 ```text
-Status: implementation in progress
-First V2 clean-room deployment: not yet executed
+Fresh OCI Cloud Shell
+→ fresh clone
+→ ./tools/bootstrap-cloud-shell
+→ operator-local inputs
+→ ./tools/deploy-clean-room
+→ APPLY gate if Terraform has an approved additive/change plan
+→ FORMAT gate only for exact blank scratch discovery
+→ full convergence
+→ ./tools/verify-clean-room
+→ no-drift / idempotency gates
+→ REBOOT gate
+→ reboot proof
+→ post-reboot convergence
+→ Terraform destroy acceptance
+→ prove Terraform state empty
+→ fresh post-destroy plan is create/add-only
+→ external foundation remains intact
 ```
 
-Cloud Shell operator prerequisites:
+PASS and STOP are owned by those tools and by the explicit human gates below.
+Do not treat GitHub Actions static validation as a live rebuild.
 
-```text
-partially live validated / authentication and backend bootstrap live validated
-```
+### HISTORICAL CONTEXT
 
-The V2 clean-room workflow is **not** a completed live rebuild. Remaining
-operator work is the first real clean-room deployment and later post-proof V1
-cleanup.
+Useful history, not the active procedure:
 
-Known remaining blockers:
+- V1 executable repository paths were retired in PR #73. Do not run
+  `scripts/inject-runtime-values.sh` or `scripts/08-runtime.sh`.
+- Incremental current-host firewall observations from earlier PRs were
+  **NOT yet** a Greenfield rebuild; they informed the current Ansible contract.
+- A legacy unused 2022 OCI network generation was independently audited as
+  unused and removed. Objects not named by Version 2 Terraform must not be
+  deleted as part of this workflow.
+- Terraform destroy removes Terraform-owned disposable infrastructure only.
+  The external state bucket (Versioning Enabled, NoPublicAccess) and the
+  external Vault remain operator-managed foundation.
 
-```text
-- First real clean-room deployment has not yet been executed.
-- Production Terraform init/plan/apply against the production state key is not live proven.
-- Post-proof V1 cleanup has not started.
-```
-
-Terraform remote state status:
-
-```text
-implemented / native OCI backend init with APIKey live proven against an empty
-backend-test key / production state write and locking not yet live proven
-```
-
-OCI Cloud Shell execution readiness status:
-
-```text
-APIKey/tradingchassis CLI + Terraform provider + native backend init live proven
-preinstalled Cloud Shell Terraform is not new enough (install 1.15.8 user-locally)
-SecurityToken via oci session authenticate is NOT the Cloud Shell path
-```
-
-V2 runtime overlay status:
-
-```text
-implemented / V2 active / awaiting live validation
-```
-
-OCI secrets bootstrap ordering status:
-
-```text
-implemented / awaiting live validation
-```
-
-Scratch Kubernetes binding status:
-
-```text
-implemented / awaiting live validation
-```
-
-Repository manifests bind scratch-dev/scratch-prod to the OCI-backed `/mnt/scratch`
-filesystem via static hostPath PersistentVolumes. This is **not** live-validated.
-
-Do **not** declare clean-room acceptance complete while remaining gaps above remain,
-or while scratch binding / OCI secrets platform readiness / V2 runtime consumers
-lack live evidence.
-Do **not** treat CI static validation as proof of a successful live rebuild.
+Do not copy live display names, OCIDs, namespaces, usernames, public IPs, or
+host identifiers into this generic runbook.
 
 ---
 
-## Ownership model
+## Canonical operator flow
 
-```text
-Terraform
-  owns OCI cloud resources (network, compute, scratch volume attachment, IAM)
+The operator runs the tools. The tools inspect actual Terraform, Ansible, and
+Kubernetes state. There is no custom persistent step-state machine.
 
-Ansible
-  owns host configuration and initial bootstrap
-  plus narrowly scoped private runtime materialization
-  plus /mnt/scratch mount and scratch workload host directories
+| Step | Operator runs | Automation guarantees | Human gate | PASS / STOP |
+| --- | --- | --- | --- | --- |
+| 1 | Fresh Cloud Shell, Public Network, clone | — | — | STOP if GitHub / HashiCorp / Galaxy / SSH are unreachable |
+| 2 | `./tools/bootstrap-cloud-shell` | Terraform 1.15.x, Python 3.12 venv, collections, example copies | HUMAN OPERATOR INPUT GATE after bootstrap | STOP if Python 3.12 / Terraform / venv contract fails |
+| 3 | Complete gitignored inputs | Readiness checks reject placeholders in `--strict` | Operator completes files; do not infer values | STOP if placeholders remain |
+| 4 | `./tools/deploy-clean-room` | Readiness, OCI preflight, Terraform init/validate/plan, inventory, Ansible, Argo, workloads | **APPLY** when the plan has additive/change actions; **FORMAT** only for the exact blank-scratch error | No-change plan skips APPLY. Destructive delete/replace STOP. Unrelated Ansible failure does not offer FORMAT. Deploy never reboots. |
+| 5 | `./tools/verify-clean-room` | Terraform no-drift (never apply), SSH/scratch, Argo/workloads, `changed=0` second runs, boot-id capture | **REBOOT** | STOP on drift, non-zero changed, invalid Argo JSON, unchanged boot id, or declined REBOOT |
+| 6 | Destroy acceptance (this runbook) | — | Inspect the saved destroy plan before apply | STOP if external foundation appears in the plan |
 
-Argo CD
-  owns long-lived Kubernetes desired state
-  (including Secrets Store CSI Driver and OCI provider via oci-secrets,
-   and scratch StorageClass/static PVs/PVCs)
-
-GitHub Actions
-  owns static repository validation only
-```
-
-Do **not** duplicate ownership. Example anti-patterns:
-
-```text
-Do not install CSI Driver / OCI provider with Bash while Argo owns oci-secrets.
-Do not keep Git-owned SecretProviderClass resources and Ansible-owned SPCs
-authoritative for the same objects in steady state.
-Do not let Terraform manage long-lived Kubernetes application manifests.
-Do not let Ansible declaratively rewrite MicroK8s-owned Calico UFW
-interface rules on vxlan.calico and cali+.
-```
+Do not duplicate every inner command the tools already run unless diagnosing a
+STOP.
 
 ---
 
-## Intentional external dependencies
+## Toolchain contract
 
-A V2 clean-room rebuild recreates Terraform-managed OCI infrastructure and the host /
-GitOps bootstrap. It does **not** necessarily recreate every dependency.
-
-| Dependency | Classification |
+| Tool | Contract |
 | --- | --- |
-| OCI Vault resource | externally supplied / referenced (`oci_vault_id`) |
-| OCI Vault secret contents | preserved external (operator / tenancy managed) |
-| GitHub repository `TradingChassis/infrastructure` | preserved external GitOps source |
-| Container registries / images / Helm charts | preserved external |
-| Operator SSH keypair | private operator input |
-| Operator OCI credentials (for Terraform) | private operator input |
+| Python | **Python 3.12 required** for the dedicated automation environment. Cloud Shell's older default `python3` is **not** an acceptable fallback. `tools/bootstrap-cloud-shell` and `tools/check-cloud-shell-readiness` require `python3.12`. |
+| Ansible | `ansible-core==2.21.2` in `$HOME/.venvs/tradingchassis-ansible`. Collections from `ansible/requirements.yml` (`ansible.posix 2.2.2`, `community.general 13.2.0`, `kubernetes.core 6.5.0`). Do not use Cloud Shell `/usr/bin/ansible-playbook` (Ansible **2.9**). |
+| Terraform | `~> 1.15.0` (`terraform/versions.tf`). Canonical patch used by bootstrap and CI: **1.15.8** (`TF_VERSION=1.15.8`). Provider versions come from the tracked `terraform/.terraform.lock.hcl`. `.terraform/` stays local. |
+| tmux | Recommended for Cloud Shell session durability. **Not a dependency.** Scripts warn when `TMUX` is unset; they do not install or start tmux. |
 
-Terraform does **not** manage Vault lifecycle or secret values in the current source.
+Do not invent hard deployment-duration SLAs.
 
----
+Bootstrap installs user-local Terraform under `$HOME/bin` from
+`releases.hashicorp.com/terraform`, verifies `SHA256SUMS`, and maps
+`aarch64|arm64` → `arm64` and `x86_64|amd64` → `amd64`. No sudo. Do not trust
+the Cloud Shell preinstall.
 
-## Current V1 cluster
-
-Any historical live V1 cluster is **reference / fallback only** for the clean-room strategy.
-
-The V2 path must not depend on that cluster.
-Do **not** execute the multi-phase in-place SPC handoff as part of clean-room deployment.
-
-### Historical live inventory — execution evidence, not architecture
-
-Dated operator evidence from the first Cloud Shell execution-readiness
-exercise is **not** a permanent architecture requirement and is **not** a
-teardown procedure. Do not copy live display names, OCIDs, namespaces, or
-host identifiers from that exercise into this generic runbook.
-
-Observed historical compute and attached storage from that exercise were
-already terminated or detached. Remaining pre-existing tenancy network and
-IAM objects that are **not** named by Version 2 Terraform must not be
-deleted as part of this workflow. Confirm there is no name collision with
-the Terraform-owned dynamic group and policy
-(`tradingchassis-instance-principal` /
-`tradingchassis-vault-secret-bundles`).
-
-Persistent V2 foundation that must **not** be treated as historical
-teardown:
-
-- the externally supplied compartment that will own V2 compute/network
-- the externally supplied OCI Vault referenced by `oci_vault_id`
-- required Vault Secret names (metadata only; values not recorded here)
-- the dedicated Terraform state bucket (NoPublicAccess, Versioning Enabled;
-  namespace is tenancy-specific and must not be committed)
-
-Do not reuse an existing application/`data` bucket as Terraform state.
-
----
-
-## Operator prerequisites
-
-The **recommended** operator environment is OCI Cloud Shell.
-Other machines may follow the same contracts if they provide a supported
-Terraform OCI authentication method, outbound network access, and SSH.
-
-| Requirement | Source / note |
-| --- | --- |
-| Git | clone this repository under `$HOME` (persistent in Cloud Shell) |
-| Terraform | `~> 1.15.0` (`terraform/versions.tf`); install **1.15.8** under `$HOME/bin` (do not trust Cloud Shell preinstall) |
-| Ansible | **REQUIRED** Cloud Shell venv `$HOME/.venvs/tradingchassis-ansible` with `ansible-core==2.21.2`; collections from `ansible/requirements.yml`. Do not use Cloud Shell `/usr/bin/ansible-playbook` (Ansible 2.9.27). |
-| Python 3 | required by Ansible |
-| OCI CLI | Cloud Shell built-in CLI is `instance_obo_user` convenience only; Terraform uses `$HOME/.oci` APIKey profile `tradingchassis` |
-| SSH keypair | operator-local ed25519 keypair (public key → Terraform, private key → Ansible) |
-| Private deployment inputs | `backend.hcl`, `terraform.tfvars`, private-runtime extra-vars file |
-
-Do not commit private values, tfvars, state, kubeconfigs, or SSH private keys.
-
-### Ansible collections
-
-From the repository root:
-
-```bash
-ansible-galaxy collection install -r ansible/requirements.yml
-```
-
-Pinned collections (`ansible/requirements.yml`):
-
-```text
-ansible.posix 2.2.2
-community.general 13.2.0
-kubernetes.core 6.5.0
-```
-
-Cloud Shell ships an obsolete system Ansible (`/usr/bin/ansible-playbook`, live
-observed **2.9.27**) that cannot load `kubernetes.core`. That binary is **not**
-an allowed control-node interpreter.
-
-### REQUIRED Cloud Shell Ansible venv
-
-Activation is mandatory before every Ansible command, including `site.yml`.
-It is not optional and is not implied by `cd` into the repository.
-
-Live-proven control-node venv:
+The dedicated venv is the control-node interpreter the tools use. For manual
+diagnostics only:
 
 ```bash
 source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
-```
 
-Expected after activation:
-
-```text
-which python              → ~/.venvs/tradingchassis-ansible/bin/python
-Python                    → 3.12.x
-which ansible-playbook    → ~/.venvs/tradingchassis-ansible/bin/ansible-playbook
-ansible-core              → 2.21.2
-ansible.posix             → 2.2.2
-community.general         → 13.2.0
-kubernetes.core           → 6.5.0
-```
-
-Preflight (still in the venv):
-
-```bash
-which ansible-playbook
-ansible-playbook --version
-ansible-galaxy collection list
-```
-
-`ansible-playbook --version` without `ANSIBLE_CONFIG` reports Cloud Shell's
-`/etc/ansible/ansible.cfg`. That is **not** this repository's config. The
-working directory does **not** auto-discover `ansible/ansible.cfg`.
-
-Canonical converge from the repository root:
-
-```bash
 cd "$HOME/infrastructure"
-
-source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
 
 ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg" \
   ansible-playbook \
@@ -274,19 +129,105 @@ Do **not** run `ansible-playbook site.yml` without the `ansible/playbooks/` path
 Do **not** omit `ANSIBLE_CONFIG`.
 Do **not** point `-i` at `ansible/inventory/example.yml`.
 
-Inventory comes from Terraform outputs via `./tools/render-ansible-inventory`
-(`instance_public_ip` → `ansible_host`). Exporting `INSTANCE_PUBLIC_IP` is for
-SSH diagnostics, not an Ansible extra-var.
+---
 
-Create the venv once under persistent `$HOME` if it does not exist:
+## Operator-local private inputs
 
-```bash
-python3 -m venv "$HOME/.venvs/tradingchassis-ansible"
-source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
-python -m pip install --upgrade pip
-python -m pip install "ansible-core==2.21.2"
-ansible-galaxy collection install -r ansible/requirements.yml
+Gitignored. Never commit. Never paste real OCIDs, usernames, public IPs, secret
+values, key material, or home paths into tracked docs.
+
+Bootstrap copies the committed examples only when the destination is absent.
+It does not overwrite completed files.
+
+| File | Responsibility |
+| --- | --- |
+| `terraform/backend.hcl` | Remote state **location and auth selection** only. No deployment secrets. Dedicated Object Storage state bucket, namespace, region, unique key, `auth = "APIKey"`, `config_file_profile = "tradingchassis"`. |
+| `terraform/terraform.tfvars` | OCI **deployment selectors**: region, compartment, tenancy, Vault identifiers, SSH ingress CIDR, SSH public-key content, optional sizing. Not backend location. |
+| `ansible/extra-vars/private-runtime.yml` | Private runtime values consumed by Ansible `private-runtime-config.yml` (`private_runtime_config_vault_id`, `private_runtime_config_oci_region`). |
+
+Examples remain placeholders in:
+
+```text
+terraform/backend.hcl.example
+terraform/terraform.tfvars.example
+ansible/extra-vars/private-runtime.yml.example
 ```
+
+---
+
+## Ownership model
+
+### Terraform owns disposable OCI infrastructure
+
+NETWORK
+
+- VCN
+- internet gateway
+- custom route table
+- custom security list
+- subnet
+- compute NSG
+- NSG rules
+
+COMPUTE
+
+- instance
+
+STORAGE
+
+- scratch volume
+- attachment
+
+IAM
+
+- instance-principal dynamic group
+- Vault secret-bundle read policy
+
+Terraform does **not** own host configuration, MicroK8s, Argo CD, or long-lived
+Kubernetes resources.
+
+### Ansible owns
+
+- host configuration
+- MicroK8s prerequisites/configuration
+- scratch preparation/mount behavior
+- private-runtime SecretProviderClass materialization
+
+### Argo CD owns
+
+- Kubernetes/GitOps applications
+- OCI secrets provider installation (`oci-secrets`)
+- workload reconciliation
+- scratch StorageClass / static PVs / PVCs
+
+### GitHub Actions owns
+
+- static repository validation only
+
+Do **not** duplicate ownership. Example anti-patterns:
+
+```text
+Do not install CSI Driver / OCI provider with Bash while Argo owns oci-secrets.
+Do not keep Git-owned SecretProviderClass resources and Ansible-owned SPCs
+authoritative for the same objects in steady state.
+Do not let Terraform manage long-lived Kubernetes application manifests.
+Do not let Ansible declaratively rewrite MicroK8s-owned Calico UFW
+interface rules on vxlan.calico and cali+.
+```
+
+### External foundation (preserved; NOT lifecycle-owned by this Terraform root)
+
+- OCI Vault
+- Vault secret values
+- Object Storage Terraform state bucket
+- OCI API signing config/key
+- SSH keypair
+- GitHub repository
+- tenancy
+- compartment
+
+**Destroy semantics:** `terraform destroy` of this root removes Terraform-owned
+disposable infrastructure. It must **not** destroy external foundation.
 
 ---
 
@@ -302,7 +243,7 @@ OCI CLI config/token    = outside home under /etc/oci (do not modify/copy)
 OCI CLI auth            = instance_obo_user + delegation_token
 OCI CLI profile/region  = follows Console region selected when the shell starts
 Preinstalled Terraform  = may be too old (live Cloud Shell observed 1.5.7)
-Required Terraform      = ~> 1.15.0 (install 1.15.8 user-locally under $HOME/bin)
+Required Terraform      = ~> 1.15.0 (bootstrap installs TF_VERSION=1.15.8 under $HOME/bin)
 Cloud Shell public IP   = dynamic across sessions (stable within one session)
 Public internet access  = requires Cloud Shell Public Network (or equivalent);
                           OCI Service Network alone is insufficient for GitHub,
@@ -310,12 +251,7 @@ Public internet access  = requires Cloud Shell Public Network (or equivalent);
                           Ansible Galaxy, and public SSH
 ```
 
-Clone and store operator files under `$HOME`, never under ephemeral `/tmp`, so a
-session restart can resume.
-
-Do **not** assume the Cloud Shell preinstalled Terraform binary satisfies
-`required_version ~> 1.15.0`. Install the repository-supported version into
-`$HOME/bin` (see below).
+Clone and store operator files under `$HOME`, never under ephemeral `/tmp`.
 
 ---
 
@@ -364,14 +300,9 @@ NO
 ```
 
 Do not use `InstancePrincipal` merely because Cloud Shell runs on an OCI VM.
-That VM is service-managed and is not automatically an instance principal in the
-operator tenancy.
 
 `SecurityToken` remains a supported portable provider/backend mode in Terraform,
-but it is **not** the canonical Cloud Shell path. Live Cloud Shell testing of
-`oci session authenticate` failed with `404 NotAuthorizedOrNotFound` /
-`Calling principal is not allowed or not found` while the shell was already
-authenticated as `instance_obo_user`. Do not engineer around that failure.
+but it is **not** the canonical Cloud Shell path.
 
 ### Canonical Cloud Shell Terraform auth strategy
 
@@ -389,7 +320,7 @@ $HOME/.oci/config                         (mode 0600)
 $HOME/.oci/tradingchassis_api_key.pem     (mode 0600)
 ```
 
-Conceptual profile (placeholders only; use live operator values locally):
+Conceptual profile (placeholders only):
 
 ```text
 [tradingchassis]
@@ -420,11 +351,10 @@ oci iam region list \
   --auth api_key
 ```
 
-Terraform itself is configured through `backend.hcl` and `oci_auth` /
-`oci_config_file_profile`. Do **not** wrap Terraform in `env -u OCI_CLI_*`
-unless a later live defect proves those CLI variables affect the provider or
-backend. OCI CLI environment variables are not automatically the Terraform
-auth contract.
+`tools/deploy-clean-room` runs that identity preflight. Terraform itself is
+configured through `backend.hcl` and `oci_auth` / `oci_config_file_profile`.
+Do **not** wrap Terraform in `env -u OCI_CLI_*` unless a later live defect proves
+those CLI variables affect the provider or backend.
 
 Wire the non-secret auth selection into:
 
@@ -443,6 +373,7 @@ Do not put private keys, fingerprints, tokens, or live OCIDs into those files.
 ### API signing key bootstrap
 
 One-time operator action. Do **not** replace `/etc/oci/config`.
+`tools/bootstrap-cloud-shell` does **not** create this key.
 
 ```bash
 # PREFLIGHT / SAFE TO RUN (local key generation; upload is a Console mutation)
@@ -465,51 +396,15 @@ key. Record the fingerprint, user OCID, tenancy OCID, and region into
 `$HOME/.oci/config` under `[tradingchassis]`. Point `key_file` at the private
 signing key absolute path.
 
-Do not use `SUPPRESS_LABEL_WARNING=True` as the canonical workaround.
-
 Verify with the explicit `--auth api_key` command above. Do not commit the
 generated files.
-
-### User-local Terraform install (Cloud Shell)
-
-Repository constraint: `required_version ~> 1.15.0` (`terraform/versions.tf`).
-CI and the live Cloud Shell proof use **1.15.8**. Preinstalled Cloud Shell
-Terraform may be 1.5.x and cannot initialize the native OCI backend.
-
-Install user-locally. No sudo. Do not overwrite `/usr/bin`.
-
-```bash
-# PREFLIGHT / SAFE TO RUN (downloads HashiCorp release + SHA256SUMS; needs Public Network)
-TF_VERSION=1.15.8
-case "$(uname -m)" in
-  aarch64|arm64) TF_ARCH=arm64 ;;
-  x86_64|amd64)  TF_ARCH=amd64 ;;
-  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-mkdir -p "$HOME/bin" "$HOME/tmp"
-cd "$HOME/tmp"
-curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_${TF_ARCH}.zip"
-curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS"
-sha256sum -c --ignore-missing "terraform_${TF_VERSION}_SHA256SUMS"
-unzip -o "terraform_${TF_VERSION}_linux_${TF_ARCH}.zip" -d "$HOME/bin"
-chmod 755 "$HOME/bin/terraform"
-
-export PATH="$HOME/bin:$PATH"
-command -v terraform
-terraform version
-```
-
-Expect `command -v terraform` to resolve to `$HOME/bin/terraform` and
-`Terraform v1.15.8` on `linux_arm64` in Cloud Shell. Prepend `$HOME/bin` for
-the session; do not permanently edit shell startup files unless the operator
-already manages PATH that way.
 
 ---
 
 ## Terraform inputs
 
-Prepare **local** variable values from the committed example:
+Prepare **local** variable values from the committed example if bootstrap did
+not already copy it:
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
@@ -587,8 +482,9 @@ Native OCI Object Storage backend
 - Production-style example key: `tradingchassis/production/terraform.tfstate`.
   Do not reuse a disposable `backend-test` key for production.
 - Local state is **not** an operator deployment fallback. CI may use
-  `terraform init -backend=false` for static validation only.
-- No V2 state migration is required for the first V2 clean-room deployment.
+  `terraform init -backend=false` for **static validation only**.
+- Provider selection uses the tracked lockfile. Operator deploy never uses
+  `-backend=false`.
 - Details: [`terraform/README.md`](../terraform/README.md).
 
 ### External state-bucket bootstrap (operator mutation)
@@ -689,13 +585,14 @@ OBJECT_INSPECT / OBJECT_CREATE / OBJECT_DELETE / OBJECT_READ
 
 (or the equivalent Get/Put/Delete/Head/multipart object operations). Exact IAM
 policy remains an external prerequisite and is not provisioned by this Terraform
-root. Live `terraform init` is the backend connectivity gate.
+root.
 
 ---
 
 ## SSH key strategy
 
-Generate an operator-local ed25519 keypair under persistent Cloud Shell home:
+Generate an operator-local ed25519 keypair under persistent Cloud Shell home
+if it does not already exist. Bootstrap does not create this keypair.
 
 ```bash
 # PREFLIGHT / SAFE TO RUN
@@ -736,7 +633,7 @@ DEPENDS ON OPERATOR INPUT
 Terraform requires `ssh_ingress_cidr` with no repository default.
 Cloud Shell's public IP can change between sessions.
 
-Before plan/apply (and again after opening a new Cloud Shell session if needed):
+Before deploy (and again after opening a new Cloud Shell session if needed):
 
 ```bash
 # PREFLIGHT / SAFE TO RUN
@@ -757,179 +654,15 @@ SSH to the VM public IP
 public egress IP discovery used for ssh_ingress_cidr
 ```
 
-### First SSH connection
-
-After apply, prefer an explicit first connect that accepts a new host key without
-disabling host-key checking globally:
-
-```bash
-ssh -o StrictHostKeyChecking=accept-new \
-  -i ~/.ssh/tradingchassis \
-  ubuntu@<instance_public_ip>
-```
-
 Canonical image contract is Canonical Ubuntu 24.04 → `ansible_user=ubuntu`.
 
-Privilege escalation: roles set `become: true` on host-mutating tasks.
-`ansible.cfg` does not enable become globally; per-task become remains the contract.
-
 ---
 
-## Terraform execution
+## Deploy contract (`tools/deploy-clean-room`)
 
-### Operator init / plan / apply
-
-```text
-FIRST LIVE DEPLOYMENT — DO NOT RUN DURING READINESS IMPLEMENTATION
-```
-
-```bash
-cd terraform
-cp backend.hcl.example backend.hcl
-cp terraform.tfvars.example terraform.tfvars
-# edit both files
-
-terraform init -backend-config=backend.hcl
-terraform validate
-terraform plan -out=terraform.tfplan
-# review the plan carefully
-terraform apply terraform.tfplan
-```
-
-No `-backend=false`, no `-auto-approve`, no local-state fallback.
-
-If the first live init creates `.terraform.lock.hcl`, do not delete it reflexively;
-review it as a potential follow-up repository commit after successful clean-room
-proof. Do not invent lock hashes in advance.
-
-Static CI validates `fmt`, backend/Cloud Shell contracts, `init -backend=false`,
-and `validate` only.
-
----
-
-## Terraform outputs used by the next stage
-
-| Output | Role for Ansible / operator |
-| --- | --- |
-| `instance_public_ip` | SSH / inventory `ansible_host` |
-| `scratch_volume_id` | diagnostics / correlation |
-| `scratch_volume_attachment_id` | diagnostics / correlation |
-| `scratch_volume_attachment_type` | diagnostics / correlation |
-| `instance_private_ip` | informational |
-| `instance_id` | informational / IAM correlation |
-| `vault_id` | echoes configured Vault reference (not secret contents) |
-| other network/scratch/IAM IDs | diagnostics |
-
-Terraform does not expose a Linux scratch device path. Live paravirtualized
-attachments leave `oci_core_volume_attachment.device` unset, so Ansible
-performs fail-closed automatic scratch-device discovery on the host.
-
-Targeted reads only (do not dump full state):
-
-```bash
-terraform -chdir=terraform output -raw instance_public_ip
-```
-
----
-
-## Explicit Terraform → Ansible handoff contract
-
-Deterministic handoff helper (read-only):
-
-```bash
-# After a successful apply (LIVE DEPLOYMENT STAGE)
-./tools/render-ansible-inventory
-```
-
-This writes the ignored file `ansible/inventory/local.yml` with:
-
-```text
-instance_public_ip     → ansible_host
-ubuntu (default)       → ansible_user
-~/.ssh/tradingchassis  → ansible_ssh_private_key_file
-```
-
-Scratch device identification is Ansible fail-closed auto-discovery.
-The renderer does not emit a Linux device path.
-
-| Terraform / operator source | Ansible input |
-| --- | --- |
-| output `instance_public_ip` | inventory `ansible_host` |
-| Ubuntu 24.04 image contract | inventory `ansible_user=ubuntu` |
-| `~/.ssh/tradingchassis` | inventory `ansible_ssh_private_key_file` |
-| unique eligible non-root whole disk | automatic scratch-device discovery |
-| optional operator-verified path | `-e scratch_storage_device_path=...` (override only) |
-| first-use formatting decision | `-e scratch_storage_allow_format=true` (first converge only) |
-
-The helper must not embed Vault IDs, OCI regions, or credentials.
-
-### Scratch device and format gate
-
-```text
-FIRST CONVERGE
-→ automatic scratch-device discovery
-→ set scratch_storage_allow_format=true only after reviewing that the
-  discovered device is the intended blank Terraform-managed scratch volume
-→ discovery alone does not authorize formatting
-
-SECOND CONVERGE
-→ keep scratch_storage_allow_format=false (default)
-→ discovery remains idempotent for the expected UUID mount at /mnt/scratch
-→ do not reformat
-```
-
-Auto-discovery fails closed when zero or more than one eligible non-root whole
-disk exists. Kernel names are not a stable contract; persistent mounting stays
-UUID-based.
-
-Role defaults remain fail-closed (`scratch_storage_allow_format: false`).
-
-### Inventory example (non-live)
-
-See [`ansible/inventory/example.yml`](../ansible/inventory/example.yml).
-Generated runtime inventory is `ansible/inventory/local.yml` (gitignored).
-
----
-
-## Canonical Cloud Shell operator sequence
-
-This is the authoritative ordered workflow. Stages marked
-`PREFLIGHT / SAFE TO RUN` may be exercised during readiness preparation.
-Stages marked `FIRST LIVE DEPLOYMENT` must wait for the dedicated clean-room
-execution and are **not** part of this readiness implementation.
-
-```text
-1. Open OCI Cloud Shell (Console region chosen intentionally; enable Public Network)
-2. Confirm public-network/internet reachability for GitHub, HashiCorp releases, registries, and SSH
-3. git clone <repo> under $HOME && cd infrastructure
-4. Install Terraform 1.15.8 under $HOME/bin; export PATH="$HOME/bin:$PATH"; terraform version
-5. ./tools/check-cloud-shell-readiness
-6. Create $HOME/.oci API signing key + [tradingchassis] profile (do not modify /etc/oci)
-7. Verify APIKey identity (oci iam region list --config-file "$HOME/.oci/config" --profile tradingchassis --auth api_key)
-8. GET/CREATE/VERIFY dedicated external state bucket (Versioning Enabled, NoPublicAccess)
-9. cp terraform/backend.hcl.example terraform/backend.hcl  # edit location + APIKey fields
-10. cp terraform/terraform.tfvars.example terraform/terraform.tfvars  # edit inputs
-11. Create ~/.ssh/tradingchassis ed25519 keypair; ssh-add; set ssh_public_key literal or TF_VAR_ssh_public_key
-12. Set ssh_ingress_cidr to current Cloud Shell public IP /32
-13. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform init -backend-config=backend.hcl
-14. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform validate
-15. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform plan -out=terraform.tfplan
-16. Review plan
-17. FIRST LIVE DEPLOYMENT: terraform -chdir=terraform apply terraform.tfplan
-18. Read targeted outputs; ./tools/render-ansible-inventory
-    (terraform -chdir=terraform output -raw instance_public_ip → inventory ansible_host)
-19. REQUIRED: source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
-    which ansible-playbook; ansible-playbook --version; ansible-galaxy collection list
-20. SSH with StrictHostKeyChecking=accept-new to ubuntu@$(terraform -chdir=terraform output -raw instance_public_ip)
-21. FIRST LIVE DEPLOYMENT: from repository root, with the venv active:
-    ANSIBLE_CONFIG="$PWD/ansible/ansible.cfg" ansible-playbook -i ansible/inventory/local.yml ansible/playbooks/site.yml
-    Greenfield first format only, after reviewing the blank scratch volume: add -e scratch_storage_allow_format=true
-    Resume on an already-mounted host: omit allow_format (default false)
-22. FIRST LIVE DEPLOYMENT: same venv + ANSIBLE_CONFIG, then
-    ansible/playbooks/private-runtime-config.yml -e @ansible/extra-vars/private-runtime.yml
-23. Verify Argo Applications / CSI DaemonSets / SPC existence via ssh + microk8s kubectl
-24. Run acceptance checks (secret-safe) and a second site.yml converge without formatting
-```
+This is the canonical Greenfield deploy. It inspects live state on every run.
+It does **not** reboot. It does **not** remember APPLY/FORMAT from a previous
+invocation.
 
 Local static helper (no OCI mutation):
 
@@ -937,22 +670,220 @@ Local static helper (no OCI mutation):
 ./tools/check-cloud-shell-readiness
 ```
 
-Session restart resume:
+Deploy uses `--strict` readiness.
+
+### What the operator runs
+
+```bash
+./tools/deploy-clean-room
+```
+
+### What the automation guarantees
+
+1. Dedicated Ansible venv present (`$HOME/.venvs/tradingchassis-ansible`).
+2. `tools/check-cloud-shell-readiness --strict`.
+3. Operator files present without angle-bracket placeholders:
+   `terraform/backend.hcl`, `terraform/terraform.tfvars`,
+   `ansible/extra-vars/private-runtime.yml`.
+4. Read-only OCI APIKey identity preflight
+   (`oci iam region list --config-file "$HOME/.oci/config" --profile tradingchassis --auth api_key`).
+5. `terraform init -backend-config=backend.hcl` then `terraform validate`.
+6. `terraform plan -detailed-exitcode` to a saved plan.
+7. Plan exit handling:
+   - `0` no changes → skip APPLY.
+   - `1` plan failure → STOP.
+   - `2` changes → inspect JSON; STOP if any action includes `delete` (including replace); otherwise show the saved plan and require exact **APPLY**.
+8. After APPLY: a follow-up no-change plan. STOP if that plan is not no-change.
+9. `./tools/render-ansible-inventory` writes ignored `ansible/inventory/local.yml`
+   (`instance_public_ip` → `ansible_host`, `ubuntu`, `~/.ssh/tradingchassis`).
+   The renderer does **not** emit a Linux device path. Scratch uses
+   **automatic scratch-device discovery**. `scratch_storage_device_path` is an
+   optional explicit override only, not a Terraform handoff.
+10. Bounded SSH wait, then `ansible/playbooks/site.yml`.
+11. Exact blank-scratch detection: FORMAT is offered only when the site log
+    contains `The scratch volume has no filesystem. Set scratch_storage_allow_format=true`.
+    Unrelated Ansible failures do **not** offer FORMAT.
+12. Exact **FORMAT** gate, then one rerun with `-e scratch_storage_allow_format=true`.
+13. `ansible/playbooks/private-runtime-config.yml` with `-e @ansible/extra-vars/private-runtime.yml`.
+14. Bounded Argo wait, then bounded workload wait.
+15. No reboot during deploy.
+
+### Human gates
+
+| Gate | Exact input | When |
+| --- | --- | --- |
+| APPLY | `APPLY` | Saved plan has additive/change actions and is not destructive |
+| FORMAT | `FORMAT` | Fail-closed blank scratch condition is proven |
+
+Any other input STOP. Discovery alone does not authorize formatting.
+Role defaults remain `scratch_storage_allow_format: false`.
+
+Inventory example (non-live): [`ansible/inventory/example.yml`](../ansible/inventory/example.yml).
+
+---
+
+## Argo convergence contract
+
+`tools/deploy-clean-room` and `tools/verify-clean-room` evaluate
+
+```text
+sudo microk8s kubectl -n argocd get applications -o json
+```
+
+PASS (exit 0) only when **every** Application in that list is:
+
+```text
+Synced / Healthy
+```
+
+WAIT (retry inside the existing bounded window: 60 attempts × 15 seconds) for a
+structurally valid set that is not yet entirely Synced + Healthy, including:
+
+- Missing
+- Progressing
+- Degraded
+- OutOfSync
+- Unknown
+- Suspended
+- unset
+
+Malformed JSON, an empty Application list, or a shape that cannot be evaluated
+FAIL (exit 2) immediately.
+
+Do **not** describe Degraded as immediate fail-fast during initial
+reconciliation. The bounded waiter is the safety boundary; no non-final state
+can PASS.
+
+Child Applications selected by `argocd/kustomization.yaml`:
+
+| Application | Destination namespace |
+| --- | --- |
+| `postgres` | `postgres` |
+| `mlflow` | `mlflow` |
+| `monitoring` | `monitoring` |
+| `argo` | `argo` |
+| `scratch-storage` | `kube-system` (cluster-scoped SC/PV) |
+| `scratch-dev` | `dev` |
+| `scratch-prod` | `prod` |
+| `oci-secrets` | `kube-system` |
+
+Root Application destination and Application CRs use namespace **`argocd`**.
+
+Completed Kubernetes Jobs (`phase=Succeeded`) are acceptable where structurally
+expected. CrashLoopBackOff / ImagePullBackOff-class waiting is unhealthy FAIL.
+
+---
+
+## Verify / idempotency / reboot (`tools/verify-clean-room`)
+
+```bash
+./tools/verify-clean-room
+```
+
+Verification never repairs Terraform drift and never formats scratch
+(`scratch_storage_allow_format=true` is never passed).
+
+### Pre-reboot
+
+- Terraform init + no-change plan (never apply). Drift STOP.
+- Render inventory, bounded SSH.
+- Scratch mount present at `/mnt/scratch`.
+- Argo Synced + Healthy (same waiter as deploy).
+- Workloads healthy (Succeeded Jobs allowed).
+- `private-runtime-config.yml` second run `changed=0`.
+- `site.yml` second run `changed=0` without format authorization.
+- Capture `/proc/sys/kernel/random/boot_id`.
+
+### Human gate
+
+Exact **REBOOT**. Any other input STOP; acceptance is incomplete; reboot is not
+issued.
+
+### Post-reboot
+
+- Bounded host down, then bounded SSH return.
+- Boot ID **must change**.
+- MicroK8s ready (`microk8s status --wait-ready`).
+- Scratch mount valid.
+- Argo converged (Synced + Healthy).
+- Workloads valid.
+
+PASS only when all required gates pass.
+
+---
+
+## Resumability
+
+Resumability derives from actual infrastructure state:
+
+- Terraform state and plan
+- Ansible idempotency
+- Kubernetes / Argo state
+
+There is **no** custom persistent step-state file. Rerunning the canonical tools
+inspects current state and continues according to their contracts (skip APPLY on
+no-change, skip FORMAT when scratch is already formatted, refuse destroy/replace
+during deploy, require `changed=0` during verify).
+
+Session restart:
 
 ```text
 cd $HOME/.../infrastructure
 export PATH="$HOME/bin:$PATH"
 source "$HOME/.venvs/tradingchassis-ansible/bin/activate"
 reuse $HOME/.oci/config profile tradingchassis (APIKey)
-reuse backend.hcl, terraform.tfvars, SSH keypair, ansible/inventory/local.yml
-recompute ssh_ingress_cidr if Cloud Shell public IP changed, then plan/apply if needed
-terraform init -backend-config=backend.hcl if required
-continue from the interrupted stage
+reuse backend.hcl, terraform.tfvars, SSH keypair
+recompute ssh_ingress_cidr if Cloud Shell public IP changed
+rerun tools/deploy-clean-room or tools/verify-clean-room from actual state
 ```
 
 ---
 
-## Ansible bootstrap sequence (`site.yml`)
+## Final clean-room acceptance / destroy
+
+Documentation only in this repository change. Do not destroy from CI or from an
+implementation task.
+
+There is no destroy automation tool. The operator uses Terraform against the
+same backend after verify has PASSed.
+
+Do **not** hard-code a resource count such as "13 destroys" as the acceptance
+contract. Actual Terraform state and the saved plan are authoritative.
+
+### Before destroy
+
+1. `terraform -chdir=terraform init -backend-config=backend.hcl`
+2. `terraform -chdir=terraform state list` — inspect current managed addresses.
+3. Confirm this state does **not** own:
+   - the OCI Vault
+   - Vault secret values / secret objects
+   - the Object Storage Terraform state bucket
+   - other external foundation
+4. Obtain a no-drift plan (`terraform plan -detailed-exitcode` → 0). STOP on drift.
+5. Create a **saved** destroy plan, for example:
+   `terraform -chdir=terraform plan -destroy -out=destroy.tfplan`
+6. Inspect the actual plan (`terraform show destroy.tfplan` and/or `-json`).
+
+Acceptance requirement:
+
+- the destroy plan contains only disposable Terraform-owned resources
+  (network, compute, scratch volume/attachment, instance-principal IAM);
+- STOP if Vault, secret lifecycle, the state bucket, or other external
+  foundation appears.
+
+### Apply destroy and prove emptiness
+
+1. Apply the saved destroy plan (`terraform apply destroy.tfplan`).
+2. Prove Terraform state is empty (`terraform state list` prints nothing).
+3. Run a **fresh** post-destroy plan (not the saved destroy plan).
+4. Prove it is create/add-only (no leftover managed objects; a subsequent apply
+   would create the disposable root again).
+5. Prove external foundation survives: Vault ACTIVE, secret values untouched,
+   state bucket still present with Versioning Enabled and NoPublicAccess.
+
+---
+
+## Ansible `site.yml` internals
 
 Canonical playbook: `ansible/playbooks/site.yml`
 
@@ -970,12 +901,9 @@ argocd_bootstrap
 applies the root Application through `kubernetes.core` using that dedicated
 venv. It copies repository-owned `requirements.txt` onto the managed node at
 `/opt/tradingchassis/ansible-k8s-runtime/requirements.txt` before remote pip.
-It does not pip-install into Ubuntu system Python. An existing
-`python3-kubernetes` distro package, if present from a partial bootstrap, is
-left in place and is not the `kubernetes.core` interpreter.
+It does not pip-install into Ubuntu system Python.
 
 `private_runtime_config` is **intentionally not** included in `site.yml`.
-It imports the same `ansible_k8s_runtime` before any `kubernetes.core` task.
 
 ### OCI cloud-image firewall (FORWARD + INPUT)
 
@@ -1005,89 +933,24 @@ Both load into the nft-compatible table ahead of UFW.
    microk8s_kubelet_port (10250) immediately before this REJECT.
 
 4. UFW boot does not restore the normalized nft runtime
-   Persistent /etc/iptables/rules.v4 survived reboot with the OCI
-   baseline, both pod allows, INPUT REJECT, and InstanceServices.
-   Runtime iptables-nft INPUT after reboot contained only UFW jumps.
-   iptables-persistent/netfilter-persistent are not the owner; UFW is.
    V2 installs tradingchassis-oci-microk8s-firewall.service to
    reconcile the owned contract after ufw.service, without a
    whole-table restore. The unit is PartOf=ufw.service and
    WantedBy=ufw.service so a later UFW restart or start re-runs
    the same helper. RequiredBy the MicroK8s snap units so a failed
-   boot reconcile keeps kubelite/containerd from starting. After
-   PR #59 this boot path is live-proven: reboot without Ansible
-   restored the OCI nft contract with the unit active (exited).
+   boot reconcile keeps kubelite/containerd from starting.
 ```
-
-UFW `DEFAULT_FORWARD_POLICY=ACCEPT` and UFW Calico interface allows do not
-fix either rule while it still precedes the UFW chains.
 
 Do not flush iptables tables, disable UFW, delete `rules.v4`, delete the OCI
 INPUT REJECT, or rewrite InstanceServices from a template. Do not install
 `iptables-persistent` / `netfilter-persistent` as a second full-table
 manager alongside UFW.
 
-Current-host live evidence after PR #54: the FORWARD REJECT is gone and INPUT
-REJECT remains. After PR #55: the pod → API tcp/16443 allow exists before
-INPUT REJECT and CoreDNS / calico-kube-controllers recovered on the current
-host. After PR #56: the pod → kubelet tcp/10250 allow exists before INPUT
-REJECT, metrics-server became Ready, and a second Ansible converge reported
-`changed=0`. After that same host rebooted **without** Ansible, persistent
-`rules.v4` still had the contract, but runtime iptables-nft INPUT was UFW-only
-and the metrics API returned ServiceUnavailable. Finding 4 is implemented
-here as `tradingchassis-oci-microk8s-firewall.service`. The first live PR #57
-converge failed while appending quoted Oracle InstanceServices comments;
-runtime INPUT kept the pod allows and UFW, InstanceServices existed
-empty, and the boot unit was not installed. The first live PR #58 apply
-parsed those quoted comments, resumed the empty chain, and restored the
-full runtime contract. The second PR #58 converge then failed because
-iptables-nft rendered persist `-p udp --dport 123` as
-`-p udp -m udp --dport 123`. PR #59 compares that redundant protocol match
-semantically. After PR #59, reboot **without** Ansible restored the full
-OCI nft runtime (INPUT, both pod-host allows, InstanceServices, INPUT
-REJECT) with the boot unit `active (exited)`. The next MicroK8s role
-converge left OCI runtime reconciliation unchanged and reported
-`changed=4` only on the four Calico UFW tasks. MicroK8s boot journals
-showed `daemon-kubelite` itself adding `ufw allow in/out` on
-`vxlan.calico` and `cali+`. Ansible had been a second owner of those
-same functional rules via comments. Ansible now verifies that
-MicroK8s-owned contract after readiness and does not rewrite it.
-Post-fix Ansible `changed=0` is **NOT yet** live-proven. The unit uses
-`PartOf=ufw.service` and `RequiredBy` the MicroK8s snap units. None of
-these current-host observations are clean-room rebuild proof.
+Quoted Oracle CLOUD_IMG comments in `iptables-save` output are parsed as a
+single argv element so InstanceServices reconciliation does not fail.
 
-### Example first converge
-
-Use `ANSIBLE_CONFIG` so paths resolve from `ansible/ansible.cfg`.
-Use the generated ignored inventory; never commit real inventory.
-
-```bash
-ANSIBLE_CONFIG=ansible/ansible.cfg \
-  ansible-playbook \
-  -i ansible/inventory/local.yml \
-  ansible/playbooks/site.yml \
-  -e scratch_storage_allow_format=true
-```
-
-Set `scratch_storage_allow_format=true` only for the intentional first format of
-an empty Terraform-managed scratch volume after reviewing discovery (see above).
-Automatic discovery does not authorize formatting.
-
-Optional explicit override, only when intentionally justified:
-
-```bash
--e scratch_storage_device_path=/operator-verified/path
-```
-
-Second converge (idempotency) must omit formatting opt-in and normally omit the
-device-path override so discovery remains canonical:
-
-```bash
-ANSIBLE_CONFIG=ansible/ansible.cfg \
-  ansible-playbook \
-  -i ansible/inventory/local.yml \
-  ansible/playbooks/site.yml
-```
+MicroK8s owns Calico UFW allowances on `vxlan.calico` and `cali+`. Ansible
+verifies that contract after readiness and does not rewrite it.
 
 ### What successful `site.yml` means
 
@@ -1111,57 +974,15 @@ Argo CD installed in namespace argocd
 root Application from argocd/root-app.yaml submitted
 ```
 
-The MicroK8s system-pod Ready state above is the intended first MicroK8s
-converge outcome after OCI FORWARD and INPUT firewall normalizations.
-FORWARD REJECT removal was live-proven after PR #54. The INPUT pod-API allow
-was live-proven on the current host after PR #55. The INPUT pod-kubelet allow
-was live-proven on the current host after PR #56 before reboot. The first
-live PR #58 apply restored the empty InstanceServices chain and the full
-OCI runtime contract. Automatic post-reboot nft reconciliation is
-live-proven after PR #59. The remaining post-reboot Ansible drift was
-Calico UFW dual ownership (`vxlan.calico` / `cali+`). Corrected
-post-fix `changed=0` is **NOT yet** live-proven. None of these
-current-host observations are clean-room rebuild proof.
-
 Successful `site.yml` does **not** mean:
 
 ```text
 all workloads are already Healthy
 private runtime SecretProviderClass resources exist
-V2 overlays are active
 scratch Kubernetes PVCs already consume /mnt/scratch
 ```
 
----
-
-## Argo CD bootstrap sequence
-
-After Ansible applies the root Application:
-
-```text
-Ansible finishes bootstrap
-→ Argo CD reconciles Application/root (namespace argocd)
-→ child Applications under argocd/ appear
-```
-
-Child Applications selected by `argocd/kustomization.yaml` (confirmed from repository):
-
-| Application | Destination namespace |
-| --- | --- |
-| `postgres` | `postgres` |
-| `mlflow` | `mlflow` |
-| `monitoring` | `monitoring` |
-| `argo` | `argo` |
-| `scratch-storage` | `kube-system` (cluster-scoped SC/PV) |
-| `scratch-dev` | `dev` |
-| `scratch-prod` | `prod` |
-| `oci-secrets` | `kube-system` |
-
-Root Application destination and Application CRs use namespace **`argocd`**
-(V2 bootstrap contract). Do not assume the historical V1 `default` namespace.
-
-All child Applications currently track `targetRevision: main` for this repository
-(except `oci-secrets`, which tracks the Oracle chart revision `v0.5.0`).
+Those are later deploy/verify gates.
 
 ---
 
@@ -1170,7 +991,7 @@ All child Applications currently track `targetRevision: main` for this repositor
 Argo owns the Secrets Store CSI Driver and OCI provider via Application `oci-secrets`.
 Do **not** manually install those components for the V2 path.
 
-### Ordering contract (implemented / awaiting live validation)
+### Ordering contract
 
 ```text
 Application sync-wave:
@@ -1208,28 +1029,6 @@ Do **not** insert manual `sleep` timing between `site.yml` and
 These gates prove **platform infrastructure readiness**. They do **not** prove
 OCI Vault retrieval, CSI mounts, or synced Secret contents.
 
-### Optional read-only verification
-
-Adjust access method to your operator practice (for example `microk8s kubectl`
-on the host). These examples are optional verification only:
-
-```bash
-# SPC CRD present
-kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io
-
-# Application namespaces present
-kubectl get namespace postgres mlflow monitoring
-
-# High-level Argo health (no secret values)
-kubectl -n argocd get applications root oci-secrets scratch-storage postgres mlflow monitoring argo scratch-dev scratch-prod \
-  -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status
-
-# Stable platform DaemonSets (not generated Pod names)
-kubectl -n kube-system get daemonset \
-  oci-secrets-secrets-store-csi-driver \
-  oci-secrets-store-csi-driver-provider
-```
-
 Do **not** dump SecretProviderClass `spec`, full YAML/JSON, or all annotations
 as “safe metadata”. Serialized
 `kubectl.kubernetes.io/last-applied-configuration` can contain private
@@ -1237,11 +1036,12 @@ deployment configuration such as `vaultId`.
 
 ---
 
-## Private runtime configuration sequence
+## Private runtime configuration
 
 Playbook: `ansible/playbooks/private-runtime-config.yml`
 Role: `private_runtime_config`
-Not part of `site.yml`.
+Not part of `site.yml`. Vault secret **values** remain external/operator-managed.
+Private runtime SPC ownership remains Ansible. OCI secrets provider remains Argo-owned.
 
 ### Operator input mapping
 
@@ -1261,23 +1061,6 @@ OCI_REGION → private_runtime_config_oci_region
 ```
 
 The role does **not** read `.env`, tfvars, or kubeconfigs from the workspace.
-Do not invent automatic sourcing.
-
-### Example invocation (history-safe)
-
-Prefer an ignored extra-vars file over inline `-e` values that enter shell history:
-
-```bash
-cp ansible/extra-vars/private-runtime.yml.example \
-   ansible/extra-vars/private-runtime.yml
-# edit placeholders; never commit private-runtime.yml
-
-ANSIBLE_CONFIG=ansible/ansible.cfg \
-  ansible-playbook \
-  -i ansible/inventory/local.yml \
-  -e @ansible/extra-vars/private-runtime.yml \
-  ansible/playbooks/private-runtime-config.yml
-```
 
 ### Expected materialization (active V2 contract)
 
@@ -1290,70 +1073,39 @@ authType: instance
 vaultId rendered from private_runtime_config_vault_id (not ${VAULT_ID})
 ```
 
-### Safe existence checks (no private values)
-
-Run verification on the VM over SSH (preferred; avoid exporting kubeconfig to
-Cloud Shell unless necessary):
-
-```bash
-ssh -i ~/.ssh/tradingchassis ubuntu@$(terraform -chdir=terraform output -raw instance_public_ip) \
-  'sudo microk8s kubectl -n mlflow get secret tradingchassis-runtime-config'
-
-ssh -i ~/.ssh/tradingchassis ubuntu@$(terraform -chdir=terraform output -raw instance_public_ip) \
-  'sudo microk8s kubectl -n mlflow get secret tradingchassis-runtime-config -o go-template='"'"'{{ range $k, $_ := .data }}{{ println $k }}{{ end }}'"'"''
-# Expect key name only: OCI_REGION
-
-ssh -i ~/.ssh/tradingchassis ubuntu@$(terraform -chdir=terraform output -raw instance_public_ip) \
-  'sudo microk8s kubectl -n postgres get secretproviderclass postgres-secret-bundle -o custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace'
-```
-
 Do **not** print `.data` values, `spec.parameters.vaultId`, or full SPC YAML/JSON.
 
 ---
 
-## V2 overlay status (active / awaiting live validation)
+## PostgreSQL, monitoring, scratch, secrets
+
+Active overlays:
 
 ```text
-apps/postgres/kustomization.yaml   → overlays/v2   (active)
-apps/mlflow/kustomization.yaml     → overlays/v2   (active)
-apps/monitoring/kustomization.yaml → overlays/v2   (active)
-
-apps/*/overlays/v1                 → historical fallback (inactive)
+apps/postgres/kustomization.yaml   → overlays/v2
+apps/mlflow/kustomization.yaml     → overlays/v2
+apps/monitoring/kustomization.yaml → overlays/v2
 ```
 
 Active V2 overlays contain **no** Git-owned SecretProviderClass resources.
-`private_runtime_config` owns the three SPCs and `tradingchassis-runtime-config`.
-MLflow reads `AWS_DEFAULT_REGION` from Secret `tradingchassis-runtime-config`
-key `OCI_REGION`.
 
-The canonical clean-room path does **not** run
-`scripts/inject-runtime-values.sh` or `scripts/08-runtime.sh`.
-Those scripts remain historical V1 fallback only.
+Normal PostgreSQL convergence must **not** depend on an artificial "hurry"
+deadline. The `init-mlflow-postgres` Job mounts CSI `postgres-secret-bundle`,
+keeps bounded Job retries (`backoffLimit` + `activeDeadlineSeconds`), and waits
+with bounded `pg_isready` before idempotent DB init.
 
-PostgreSQL MLflow-init Job bootstrap:
+Monitoring uses Server-Side Apply (`ServerSideApply=true` on the Monitoring
+Application only) so Prometheus Operator CRDs that exceed the 262144-byte
+client-side last-applied annotation limit can reconcile.
 
-```text
-mounts SecretProviderClass postgres-secret-bundle (CSI)
-keeps bounded Job retries (backoffLimit + activeDeadlineSeconds)
-waits with bounded pg_isready before idempotent DB init
-```
-
-Temporary absence of `postgres-secret` during early Argo reconciliation must not
-leave a permanently failed Job that requires manual recreation.
-Live consumer health remains to be proven on the first clean-room deployment.
-
----
-
-## Scratch Kubernetes binding (implemented / awaiting live validation)
+Scratch formatting remains fail-closed and only behind the exact FORMAT gate.
 
 ```text
-Terraform provisions the OCI scratch block volume (default size_in_gbs=150; OCI block-volume GB = 1024 MiB / GiB-equivalent)
+Terraform provisions the OCI scratch block volume (default size_in_gbs=150)
 → Ansible mounts it at /mnt/scratch and creates /mnt/scratch/dev and /mnt/scratch/prod
 → Argo Application scratch-storage owns StorageClass tradingchassis-scratch and static PVs
 → scratch-dev / scratch-prod PVCs bind deterministically via volumeName + claimRef
 ```
-
-Design notes (statically validated; not live-proven):
 
 ```text
 hostPath static PVs (not local PersistentVolumes): single-node MicroK8s, no hostname affinity
@@ -1363,99 +1115,8 @@ capacity:  70Gi + 70Gi Kubernetes accounting (= 140Gi aggregate)
 backing:   Terraform OCI size_in_gbs=150 (OCI block-volume GB = 1024 MiB / GiB-equivalent)
 headroom:  nominal ~10 Gi before filesystem overhead; PV capacity is NOT a quota
 reclaim:   Retain (Kubernetes PV deletion must not imply cloud volume deletion)
-quota:     PV capacity is NOT a filesystem quota on the shared ext4 volume
 fail-closed hostPath type Directory: missing subdirs after a failed remount refuse the volume
 ```
-
-Do not declare clean-room acceptance complete until live validation confirms PVC binding
-and that workloads consume `/mnt/scratch/*` rather than the root filesystem.
-
----
-
-## Idempotency acceptance
-
-After a successful first deployment, run the Ansible bootstrap again (same inventory,
-`scratch_storage_allow_format=false` once the filesystem exists) and assess whether
-the second converge performs **no destructive or unintended changes**.
-
-Do not require an exact `changed=0` task count unless live evidence for every
-role supports that claim. Prefer:
-
-```text
-no destructive reformatting
-no unintended firewall reset
-no reintroduction of the OCI unconditional IPv4 FORWARD REJECT
-no deletion of the OCI catch-all INPUT REJECT
-no Argo CD reinstall churn beyond idempotent module behavior
-```
-
-The second MicroK8s converge must remain idempotent once the OCI FORWARD
-REJECT is gone, both pod → node-local API and kubelet allows already
-precede INPUT REJECT, InstanceServices is present, the boot firewall
-unit is already enabled, and MicroK8s-owned Calico UFW allowances on
-`vxlan.calico` and `cali+` already exist. OCI boot/runtime
-reconciliation is live-proven after reboot. Post-fix Ansible
-`changed=0` after removing Calico UFW mutation ownership is **NOT yet**
-live-proven.
-
-The private runtime role is designed for idempotent second runs when inputs are
-unchanged; that design is statically described and **not** live-proven by this
-document.
-
----
-
-## Live validation boundary
-
-| Layer | Evidence today |
-| --- | --- |
-| Terraform fmt / backend contract / init `-backend=false` / validate | statically validated by CI |
-| Ansible lint / syntax-check | statically validated by CI |
-| Kustomize / Helm GitOps renders / contracts | statically validated by CI |
-| Cloud Shell built-in `instance_obo_user` OCI CLI | live proven (CLI convenience only) |
-| APIKey / profile `tradingchassis` OCI CLI | live proven |
-| Terraform 1.15.8 linux_arm64 in Cloud Shell (`$HOME/bin`) | live proven |
-| OCI provider APIKey / `tradingchassis` data-source read | live proven (no resources) |
-| Dedicated state bucket exists, NoPublicAccess, Versioning Enabled | live proven |
-| Native OCI backend init with APIKey / empty backend-test key | live proven |
-| Production state key write / locking / root plan / apply | **not yet live proven** |
-| Scratch PVC binding to `/mnt/scratch` | implemented in Git; must be proven live |
-| OCI secrets Application sync-wave + Ansible readiness gate | implemented in Git; must be proven live |
-| Terraform apply | must be proven during first clean-room deployment |
-| SSH reachability / Ansible converge | must be proven live |
-| MicroK8s Ready / Argo reconciliation | must be proven live |
-| Vault retrieval / workload health | must be proven live |
-
----
-
-## Clean-room acceptance checklist
-
-Mark each item only with live evidence. None of these are claimed proven by this document.
-
-| Check | Live-only? |
-| --- | --- |
-| Terraform apply succeeded | yes |
-| Instance reachable over SSH from operator CIDR | yes |
-| Ansible first `site.yml` converge succeeded | yes |
-| Kubernetes node Ready | yes |
-| Architecture ARM64 / MicroK8s `1.29` line as intended | yes |
-| `/mnt/scratch` mounted from Terraform scratch volume | yes |
-| Argo CD Application `root` exists in namespace `argocd` | yes |
-| Child Applications exist: `oci-secrets`, `scratch-storage`, `postgres`, `mlflow`, `monitoring`, `argo`, `scratch-dev`, `scratch-prod` | yes |
-| `oci-secrets` Synced/Healthy | yes |
-| Secrets Store CSI Driver Ready | yes |
-| OCI provider Ready | yes |
-| SPC CRD present | yes |
-| Namespaces `postgres` / `mlflow` / `monitoring` present | yes |
-| `private-runtime-config.yml` succeeded | yes |
-| Three SPCs exist (names only; no spec dumps) | yes |
-| Secret `tradingchassis-runtime-config` exists with key `OCI_REGION` | yes |
-| PostgreSQL Healthy | yes |
-| MLflow Healthy | yes |
-| Monitoring Synced + Healthy | yes |
-| Argo Workflows Healthy | yes |
-| Scratch PVCs Bound to `/mnt/scratch/dev` and `/mnt/scratch/prod` | yes — **awaiting live validation** |
-| No V1 runtime injection (`inject-runtime-values.sh`) executed for this deployment | yes |
-| Second Ansible converge shows no destructive/unintended changes | yes |
 
 ---
 
@@ -1463,7 +1124,7 @@ Mark each item only with live evidence. None of these are claimed proven by this
 
 | Document | Role |
 | --- | --- |
-| This file | **Primary** V2 clean-room deployment path |
+| This file | **Canonical** V2 clean-room operator runbook |
 | [`RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](RUNTIME_SPC_OWNERSHIP_CUTOVER.md) | Historical / in-place SPC ownership fallback — **not** the primary V2 path |
 | [`VERSION_1_BASELINE.md`](../VERSION_1_BASELINE.md) | Historical V1 baseline |
 | [`terraform/README.md`](../terraform/README.md) | Terraform ownership and cloud layer |

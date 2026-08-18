@@ -21,11 +21,14 @@ GitHub Actions → static validation only
 
 **Start here for a fresh environment:** [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
-That runbook is the canonical operator contract. Remaining Phase-A scopes are
-the first live clean-room deployment and post-proof V1 cleanup. Cloud Shell
-operator prerequisites are partially live validated (APIKey authentication and
-backend bootstrap). The first V2 clean-room deployment is **not yet executed**.
-It is **not** live-validated merely because CI passes.
+That runbook is the canonical operator contract:
+
+```text
+tools/bootstrap-cloud-shell → tools/deploy-clean-room → tools/verify-clean-room
+```
+
+GitHub Actions static validation is not live rebuild proof. Historical V1
+executable paths are retired.
 
 The historical in-place SecretProviderClass handoff document
 ([`docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md`](docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md))
@@ -44,8 +47,8 @@ is a fallback procedure, not the primary V2 path.
 ### Version 2 path (target)
 
 See [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) for the
-deterministic operator sequence (Terraform outputs → Ansible inventory →
-`site.yml` → Argo → private runtime → acceptance).
+canonical operator sequence (`tools/bootstrap-cloud-shell` →
+`tools/deploy-clean-room` → `tools/verify-clean-room`).
 
 ### Version 1 (historical record only)
 
@@ -233,7 +236,7 @@ Open <https://localhost:8080> while the port-forward is active.
 
 ## Scratch Storage Model
 
-### V2 contract (Git; awaiting live validation)
+### V2 contract
 
 ```text
 Terraform → OCI scratch block volume (default 150 GB) + attachment
@@ -249,7 +252,7 @@ Argo CD   → StorageClass tradingchassis-scratch + static hostPath PVs + namesp
 
 ### V1 historical note
 
-Legacy V1 Bash storage bootstrap mounted `/mnt/scratch` while scratch PVCs used `microk8s-hostpath`. That gap is closed in the V2 Git manifests above and still requires live clean-room validation.
+Legacy V1 Bash storage bootstrap mounted `/mnt/scratch` while scratch PVCs used `microk8s-hostpath`. That gap is closed in the V2 Git manifests above. Operator verification of the mount and PVC binding is part of the canonical clean-room tools, not a hardcoded host device path.
 
 ## Post-Install Verification
 
@@ -289,7 +292,7 @@ sudo rm -rf ~/.kube/
 
 After reset, also review manually:
 
-- `/etc/fstab` entries added for `/dev/oracleoci/oraclevds`
+- `/etc/fstab` UUID entries for `/mnt/scratch` (Ansible owns persistent mounting; kernel names such as `/dev/oracleoci/oraclevds` are not a stable contract)
 - whether `/mnt/scratch` should be unmounted/cleaned
 - whether attached block volume data should be preserved or re-formatted
 
@@ -332,7 +335,7 @@ For vulnerability reporting and security policy, see `SECURITY.md`.
 - Vault lifecycle and Vault secret **values** (referenced by Terraform / consumed via CSI; not provisioned as secret contents here)
 
 Additional Version 1 limitations and evidence gaps are listed in [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
-V2 clean-room status and remaining blockers are listed in [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
+The V2 clean-room operator procedure is [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md).
 
 ## AI-Assisted Development
 
