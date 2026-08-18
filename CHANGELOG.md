@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Documented the current GitHub `main-protection` required checks as present external policy, not future work
 - Documented one explicitly authorized finalization task after PRE-COMMIT review, with stop-on-failure and a mandatory exact-head CI gate
 
+### Removed
+
+- Retired historical V1 application overlays (`apps/*/overlays/v1`), the legacy Bash bootstrap and runtime-injection path under `scripts/`, and the unused `infrastructure/oci-provider` manifests. Canonical operator automation remains `tools/bootstrap-cloud-shell` → `tools/deploy-clean-room` → `tools/verify-clean-room`.
+
 ### Fixed
 
 - Replaced the invalid Terraform-provided scratch device-path handoff with fail-closed host-side Ansible device discovery after live OCI paravirtualized attachments returned no device path.

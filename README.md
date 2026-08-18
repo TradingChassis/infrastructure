@@ -7,7 +7,7 @@ Single-node infrastructure for quantitative research and backtesting on OCI.
 | Generation | Role today | Path |
 | --- | --- | --- |
 | **Version 2** | **Current target** — Terraform → Ansible → Argo CD clean-room deploy | [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) |
-| **Version 1** | Historical / fallback — Bash bootstrap on an existing VM | `scripts/`, [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md) |
+| **Version 1** | Historical record — not an executable repository path | [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md) |
 
 V2 ownership:
 
@@ -38,7 +38,6 @@ is a fallback procedure, not the primary V2 path.
 - GitOps-driven application reconciliation from manifests in this repository
 - OCI Vault-backed secret delivery through Secrets Store CSI + OCI provider
 - Predefined workloads: PostgreSQL, MLflow, monitoring stack, Argo Workflows, and scratch PVC overlays
-- Legacy V1 Bash bootstrap scripts retained as historical fallback until V2 clean-room proof
 
 ## Architecture Overview
 
@@ -48,18 +47,18 @@ See [`docs/V2_CLEAN_ROOM_DEPLOYMENT.md`](docs/V2_CLEAN_ROOM_DEPLOYMENT.md) for t
 deterministic operator sequence (Terraform outputs → Ansible inventory →
 `site.yml` → Argo → private runtime → acceptance).
 
-### Version 1 host bootstrap layer (`scripts/`) — historical / fallback
+### Version 1 (historical record only)
 
-`scripts/bootstrap-cluster.sh` runs these stages in order:
+Version 1 Bash bootstrap and runtime-injection scripts are retired from this
+repository. The historical generation is recorded in
+[`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md). It is not an executable
+deployment path.
 
-1. `01-system.sh`: flushes host iptables rules and sets ACCEPT policies
-2. `02-microk8s.sh`: installs MicroK8s (`1.29/stable`) via snap and enables addons
-3. `03-storage.sh`: validates/formats/mounts `/dev/oracleoci/oraclevds` at `/mnt/scratch`
-4. `04-secrets.sh`: installs Secrets Store CSI Driver and OCI provider manifests
-5. `05-monitoring.sh`: installs Prometheus Operator CRDs
-6. `06-argocd.sh`: installs Argo CD and enables `--enable-helm` in Argo CD Kustomize build options
-7. `07-apps.sh`: applies all Argo CD Application manifests from `argocd/`
-8. `08-runtime.sh`: historical V1 runtime injection only (not part of the V2 clean-room path)
+Canonical operator automation:
+
+```text
+tools/bootstrap-cloud-shell → tools/deploy-clean-room → tools/verify-clean-room
+```
 
 ### GitOps application layer (`apps/` and `argocd/`)
 
@@ -81,9 +80,6 @@ argocd/
 │   ├── postgres/          # PostgreSQL deployment/pvc/service + DB init job
 │   └── scratch/           # scratch PVC overlays for dev/prod
 ├── argocd/                # Argo CD Application definitions
-├── infrastructure/
-│   └── oci-provider/      # OCI CSI provider DaemonSet/RBAC
-├── scripts/               # Bootstrap and runtime-injection scripts
 ├── VERSION_1_BASELINE.md  # Version 1 ownership, limits, and V2 direction
 ├── CONTRIBUTING.md
 ├── SECURITY.md
@@ -123,25 +119,24 @@ set +a
 
 | Variable | Required | Purpose | Used by |
 | --- | --- | --- | --- |
-| `VAULT_ID` | Yes | OCI Vault OCID used in `SecretProviderClass` patches | `.env.example`, `scripts/inject-runtime-values.sh` |
-| `OCI_REGION` | Yes | Region value injected as `AWS_DEFAULT_REGION` into MLflow deployment patch | `.env.example`, `scripts/inject-runtime-values.sh` |
-| `ARGO_NS` | No (default: `default`) | Namespace where Argo CD `Application` resources are patched | `scripts/inject-runtime-values.sh` |
+| `VAULT_ID` | Yes | OCI Vault OCID used when materializing SecretProviderClass resources | `.env.example`, Ansible `private_runtime_config` extra-vars |
+| `OCI_REGION` | Yes | Region value stored in `tradingchassis-runtime-config` / `OCI_REGION` for MLflow | `.env.example`, Ansible `private_runtime_config` extra-vars |
 
 ## Required OCI Vault Secrets
 
 The following secret names are referenced directly by `SecretProviderClass` manifests and must exist in OCI Vault before bootstrap.
 
-| Secret name | Used by | Purpose / expected value type | Source manifest |
+| Secret name | Used by | Purpose / expected value type | Source contract |
 | --- | --- | --- | --- |
-| `postgresdb-naming` | PostgreSQL | PostgreSQL database name (string) | `apps/postgres/overlays/v1/secrets.yaml` |
-| `postgres-user` | PostgreSQL | PostgreSQL username (string) | `apps/postgres/overlays/v1/secrets.yaml` |
-| `postgres-password` | PostgreSQL | PostgreSQL password (secret string) | `apps/postgres/overlays/v1/secrets.yaml` |
-| `mlflowdb-naming` | PostgreSQL init job | MLflow database name in PostgreSQL (string) | `apps/postgres/overlays/v1/secrets.yaml` |
-| `mlflow-user` | PostgreSQL init job | MLflow DB user (string) | `apps/postgres/overlays/v1/secrets.yaml` |
-| `mlflow-password` | PostgreSQL init job | MLflow DB user password (secret string) | `apps/postgres/overlays/v1/secrets.yaml` |
-| `mlflow-db-uri` | MLflow | Full backend store URI (secret string/URI) | `apps/mlflow/overlays/v1/secrets.yaml` |
-| `grafana-login-user` | Monitoring / Grafana | Grafana admin username (string) | `apps/monitoring/overlays/v1/secrets.yaml` |
-| `grafana-login-password` | Monitoring / Grafana | Grafana admin password (secret string) | `apps/monitoring/overlays/v1/secrets.yaml` |
+| `postgresdb-naming` | PostgreSQL | PostgreSQL database name (string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `postgres-user` | PostgreSQL | PostgreSQL username (string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `postgres-password` | PostgreSQL | PostgreSQL password (secret string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `mlflowdb-naming` | PostgreSQL init job | MLflow database name in PostgreSQL (string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `mlflow-user` | PostgreSQL init job | MLflow DB user (string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `mlflow-password` | PostgreSQL init job | MLflow DB user password (secret string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `mlflow-db-uri` | MLflow | Full backend store URI (secret string/URI) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `grafana-login-user` | Monitoring / Grafana | Grafana admin username (string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
+| `grafana-login-password` | Monitoring / Grafana | Grafana admin password (secret string) | `ansible/roles/private_runtime_config/defaults/main.yml` |
 
 Do not commit secret values to Git.
 
@@ -151,7 +146,7 @@ All `SecretProviderClass` resources in this repository use `authType: instance`.
 
 This repository does not include OCI IAM policy text. You must configure OCI IAM policies so the instance principal can read the required vault secrets.
 
-## V1 historical / fallback bootstrap
+## V1 historical record
 
 For **new V2 deployments**, use the canonical clean-room runbook:
 
@@ -159,26 +154,15 @@ For **new V2 deployments**, use the canonical clean-room runbook:
 docs/V2_CLEAN_ROOM_DEPLOYMENT.md
 ```
 
-The script-based bootstrap below is retained only as the **historical V1 / fallback**
-path until V2 clean-room validation is complete. It is not the primary setup path
-and is not claimed live-validated as the V2 workflow.
+Canonical operator automation:
 
-> V1 bootstrap is intended for a fresh VM under the legacy model.
-> Re-running on an existing cluster is not supported by this repository flow.
-
-Run (V1 fallback only):
-
-```bash
-chmod +x scripts/*
-./scripts/bootstrap-cluster.sh
+```text
+tools/bootstrap-cloud-shell → tools/deploy-clean-room → tools/verify-clean-room
 ```
 
-Important operational behavior during bootstrap:
-
-- `01-system.sh` flushes iptables and sets default ACCEPT policies
-- `03-storage.sh` may format `/dev/oracleoci/oraclevds` if it has no filesystem
-- `03-storage.sh` appends an `/etc/fstab` mount entry for the scratch device
-- `07-apps.sh` waits only for Argo CD `Application` objects `postgres` and `mlflow` to exist (not all applications to become healthy)
+The historical Version 1 Bash bootstrap is retired from this repository. See
+[`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md) for that generation's
+ownership and limits. It is not an executable fallback path.
 
 ## GitOps Source of Truth
 
@@ -225,7 +209,7 @@ Access is typically done through SSH local port forwarding. Cloud firewall expos
 (`ansible/roles/argocd_bootstrap`, `argocd/*.yaml`).
 
 **V1 (historical Bash bootstrap):** Application objects were commonly managed in
-namespace `default` (`scripts/inject-runtime-values.sh` defaults `ARGO_NS=default`).
+namespace `default`. See [`VERSION_1_BASELINE.md`](VERSION_1_BASELINE.md).
 
 Check where `argocd-server` service exists:
 
@@ -265,7 +249,7 @@ Argo CD   → StorageClass tradingchassis-scratch + static hostPath PVs + namesp
 
 ### V1 historical note
 
-Legacy Bash `scripts/03-storage.sh` mounted `/mnt/scratch` while scratch PVCs used `microk8s-hostpath`. That gap is closed in the V2 Git manifests above and still requires live clean-room validation.
+Legacy V1 Bash storage bootstrap mounted `/mnt/scratch` while scratch PVCs used `microk8s-hostpath`. That gap is closed in the V2 Git manifests above and still requires live clean-room validation.
 
 ## Post-Install Verification
 

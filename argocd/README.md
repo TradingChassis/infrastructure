@@ -14,7 +14,6 @@ CD paths at `apps/<app>`. Those entry points are shims that now render the
 
 ```text
 apps/<app>/kustomization.yaml  → overlays/v2   (active)
-apps/<app>/overlays/v1         → historical fallback (inactive)
 ```
 
 Active V2 overlays intentionally omit SecretProviderClass resources.
@@ -47,9 +46,9 @@ Historical in-place cutover sequencing (fallback only; not the Greenfield path):
 docs/RUNTIME_SPC_OWNERSHIP_CUTOVER.md
 ```
 
-V1 overlays and `scripts/inject-runtime-values.sh` / `scripts/08-runtime.sh`
-remain in the repository as historical fallback artifacts. They are **not**
-required by the canonical clean-room sequence.
+Canonical operator automation is `tools/bootstrap-cloud-shell` →
+`tools/deploy-clean-room` → `tools/verify-clean-room`. Historical V1 overlays
+and Bash runtime-injection scripts are retired from the repository.
 
 MLflow V2 sets `AWS_DEFAULT_REGION` via `secretKeyRef` to
 `tradingchassis-runtime-config` / `OCI_REGION` in the `mlflow` namespace.
@@ -171,5 +170,3 @@ Canonical operator sequence: `docs/V2_CLEAN_ROOM_DEPLOYMENT.md`.
 ### Deferred
 
 - Activation of `private_runtime_config` inside the canonical Ansible converge
-- Runtime VAULT_ID / OCI_REGION script retirement after clean-room proof
-- Post-proof deletion of inactive V1 overlays and historical injection scripts

@@ -302,8 +302,16 @@ print("PASS: CI enforces the Kubernetes runtime contract")
 
 forbidden_v1 = (
     "scripts/bootstrap-cluster.sh",
-    "scripts/06-argocd.sh",
+    "scripts/inject-runtime-values.sh",
+    "scripts/01-system.sh",
+    "scripts/02-microk8s.sh",
     "scripts/03-storage.sh",
+    "scripts/04-secrets.sh",
+    "scripts/05-monitoring.sh",
+    "scripts/06-argocd.sh",
+    "scripts/07-apps.sh",
+    "scripts/08-runtime.sh",
+    "infrastructure/oci-provider",
 )
 for token in forbidden_v1:
     if token in argo_tasks or token in runtime_tasks:

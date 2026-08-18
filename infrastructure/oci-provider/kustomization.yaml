@@ -1,5 +1,0 @@
-resources:
-  - clusterrole.yaml
-  - clusterrolebinding.yaml
-  - daemonset.yaml
-  - serviceaccount.yaml

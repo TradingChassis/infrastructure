@@ -533,10 +533,10 @@ ANSIBLE_CONFIG=ansible/ansible.cfg \
 ```
 
 Do **not** run that playbook against a cluster while Argo CD is still
-reconciling historical V1 SecretProviderClass resources as the active desired
+reconciling Git-owned SecretProviderClass resources as the active desired
 state. Active V2 overlays omit those Git-owned SPCs; the same SPC identities
 (`postgres-secret-bundle`, `mlflow-secret-bundle`,
-`monitoring-secret-bundle`) remain only in inactive V1 overlays.
+`monitoring-secret-bundle`) are owned by Ansible `private_runtime_config`.
 
 ### Preparation (current repository state)
 
@@ -545,9 +545,8 @@ site.yml unchanged (role not auto-run)
 active apps/*/kustomization.yaml → overlays/v2
 Ansible owns the three SecretProviderClass resources and the runtime Secret
 after private-runtime-config.yml is executed
-historical overlays/v1 remain inactive fallback artifacts
 private-runtime-config playbook exists but is not executed automatically
-V1 scripts/08-runtime.sh and inject-runtime-values.sh are historical only
+V1 Bash runtime injection is retired from the repository
 ```
 
 ### Future ownership notes
@@ -606,7 +605,6 @@ volume remount/reload behavior is not claimed without live evidence.
 ```text
 Prometheus Operator CRD ownership / monitoring app ownership cleanup
 canonical site.yml activation of private_runtime_config
-post-proof V1 overlay and runtime-injection script cleanup
 ```
 Kubernetes scratch binding to `/mnt/scratch` is implemented under `apps/scratch/**`
 (Argo-owned StorageClass/PVs/PVCs) with Ansible creating `/mnt/scratch/dev` and
@@ -646,13 +644,14 @@ Canonical sequence, Cloud Shell auth, wait gates, and acceptance checklist:
 
 Active application shims point at `overlays/v2`. The private-runtime playbook
 supplies the SecretProviderClass resources and `tradingchassis-runtime-config`
-consumed by those overlays. Do not treat V1 `scripts/inject-runtime-values.sh`
+consumed by those overlays. Do not reintroduce V1 runtime injection
 as part of the desired V2 path.
 
 ## V1 migration strategy
 
 ```text
-Existing Bash scripts remain the V1 fallback until each corresponding Ansible/Argo CD replacement has independent validation evidence.
+Existing V1 Bash bootstrap scripts are retired from the repository.
+Historical ownership for that generation is recorded in VERSION_1_BASELINE.md.
 ```
 
 ```text
