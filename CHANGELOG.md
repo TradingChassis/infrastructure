@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-18
+
 ### Added
 
 - Tracked `terraform/.terraform.lock.hcl` for `oracle/oci` `8.26.0` on `linux_amd64` and `linux_arm64`.
